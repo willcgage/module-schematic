@@ -81,10 +81,10 @@ describe("moduleFeatures", () => {
     expect(f.extraTracks[0].fromFrac).toBeCloseTo(40 / 396);
     expect(f.extraTracks[0].toFrac).toBeCloseTo(356 / 396);
     expect(f.turnouts.map((t) => t.posFrac)).toEqual([40 / 396, 356 / 396]);
-    // signals flattened out of control points, carrying the CP name + side
+    // signals flattened out of control points, carrying the CP name/id + side
     expect(f.signals).toHaveLength(2);
-    expect(f.signals[0]).toMatchObject({ name: "West Siding", facing: "AtoB", side: "above", lane: 0 });
-    expect(f.signals[1]).toMatchObject({ name: "East Siding", facing: "BtoA", side: "below" });
+    expect(f.signals[0]).toMatchObject({ name: "West Siding", facing: "AtoB", side: "above", lane: 0, cp: "cpW" });
+    expect(f.signals[1]).toMatchObject({ name: "East Siding", facing: "BtoA", side: "below", cp: "cpE" });
   });
 
   it("reports a double main from the endplate config", () => {

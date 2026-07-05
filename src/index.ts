@@ -457,6 +457,9 @@ export interface DrawSignal {
   lane: number;
   facing: SignalFacing;
   side: SignalSide;
+  /** Owning control point's id, when the signal came from a CP group — lets a
+   * renderer join the drawn signal back to interlocking-level state (aspects). */
+  cp?: string;
 }
 export interface ModuleFeatures {
   /** Whether either endplate declares a double-track main. */
@@ -529,19 +532,24 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     divergeLane: trackLane.get(t.divergeTrack) ?? 1,
   }));
 
-  const drawSignal = (s: SchematicSignal, name: string): DrawSignal => ({
+  const drawSignal = (
+    s: SchematicSignal,
+    name: string,
+    cp?: string,
+  ): DrawSignal => ({
     id: s.id,
     name,
     posFrac: clampFrac(s.pos),
     lane: s.track ? (trackLane.get(s.track) ?? 0) : 0,
     facing: (s.facing as SignalFacing) ?? "AtoB",
     side: s.side === "below" ? "below" : "above",
+    ...(cp ? { cp } : {}),
   });
   // Signals come from control-point groups; fall back to pre-grouping flat
   // signals for docs authored before the model changed.
   const signals: DrawSignal[] = Array.isArray(doc.controlPoints)
     ? doc.controlPoints.flatMap((c) =>
-        (c.signals ?? []).map((s) => drawSignal(s, c.name ?? "")),
+        (c.signals ?? []).map((s) => drawSignal(s, c.name ?? "", c.id)),
       )
     : (doc.signals ?? []).map((s) => drawSignal(s, s.name ?? ""));
 
