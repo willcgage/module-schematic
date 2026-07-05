@@ -1,0 +1,52 @@
+{
+  "name": "freemo-module-schematic",
+  "version": "0.1.0",
+  "description": "Shared FreeMo module operations-schematic (track-graph): doc types, parser, feature resolver, N-scale helpers, and the editor state machine. Authored by the Module Repository, imported by Free-Dispatcher.",
+  "keywords": [
+    "freemo",
+    "free-mo",
+    "model-railroad",
+    "dispatcher",
+    "ctc",
+    "schematic",
+    "track-graph"
+  ],
+  "license": "MIT",
+  "author": "Will Gage",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/willcgage/module-schematic.git"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
