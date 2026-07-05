@@ -1,7 +1,8 @@
 name: Publish
 
-# Publishes to npm when a GitHub Release is published. Requires an NPM_TOKEN
-# repo secret (an npm automation token with publish rights).
+# Publishes to npm when a GitHub Release is published, via Trusted Publishing
+# (OIDC) — no NPM_TOKEN secret. The trusted publisher is configured on
+# npmjs.com (package Settings → Trusted Publisher → this repo + workflow).
 on:
   release:
     types: [published]
@@ -11,16 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # OIDC for npm trusted publishing + provenance
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish
