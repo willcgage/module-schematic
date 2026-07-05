@@ -1,4 +1,4 @@
-# freemo-module-schematic
+# @willcgage/module-schematic
 
 Shared **FreeMo module operations-schematic** (track-graph) — the single source of
 truth for the structured schematic that the **Module Repository** authors and
@@ -25,7 +25,7 @@ client) and Electron. Ships ESM + CJS + type declarations.
 ## Usage
 
 ```ts
-import { asModuleSchematic, moduleFeatures } from "freemo-module-schematic";
+import { asModuleSchematic, moduleFeatures } from "@willcgage/module-schematic";
 
 const doc = asModuleSchematic(row.schematic);
 if (doc) {

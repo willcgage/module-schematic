@@ -1,5 +1,5 @@
 /**
- * freemo-module-schematic — the shared module operations-schematic (track-graph)
+ * @willcgage/module-schematic — the shared module operations-schematic (track-graph)
  * that the Module Repository authors and Free-Dispatcher imports.
  *
  * Topological, straightened-first: positions are 1-D inches along the module
