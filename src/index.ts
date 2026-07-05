@@ -98,6 +98,11 @@ export interface ModuleSchematicDoc {
 }
 
 export const MAIN_TRACK_ID = "main";
+/** The second main on double-track modules — a real track entity so turnouts
+ * and signals can attach to it (a spur off Main 2 must diverge from lane 1,
+ * not draw a crossover from Main 1). Emitted by stateToDoc when either
+ * endplate is double; legacy docs without it still parse. */
+export const MAIN2_TRACK_ID = "main2";
 
 // North American N scale (1:160): 396 real inches → 5280 scale feet = one mile.
 export const N_SCALE_RATIO = 160;
@@ -195,7 +200,11 @@ export function stateToDoc(
       { id: "B", label: "East", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] },
     ],
     tracks: [
-      { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" },
+      { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, from: "A", to: "B" },
+      // Double track: Main 2 is a real entity so turnouts/signals can attach.
+      ...(state.configA === "double" || state.configB === "double"
+        ? [{ id: MAIN2_TRACK_ID, role: "main" as const, lane: 1, from: "A", to: "B" }]
+        : []),
       ...state.extraTracks.map((t) => ({
         id: t.id,
         role: t.role,
@@ -390,7 +399,10 @@ export function buildPassingSiding(state: EditorState): {
   const inset = Math.max(6, Math.round(len * 0.08));
   const fromPos = inset;
   const toPos = Math.max(fromPos + 1, len - inset);
-  const lane = Math.max(1, ...state.extraTracks.map((t) => t.lane + 1));
+  // First free lane above the main(s): lane 1 is Main 2 on double modules.
+  const baseLane =
+    state.configA === "double" || state.configB === "double" ? 2 : 1;
+  const lane = Math.max(baseLane, ...state.extraTracks.map((t) => t.lane + 1));
 
   const trackIds = [MAIN_TRACK_ID, ...state.extraTracks.map((t) => t.id)];
   const sidId = nextId("sid", trackIds);
@@ -442,6 +454,10 @@ export interface DrawTrack {
   fromFrac: number;
   toFrac: number;
   capacityFeet: number | null;
+  /** Lane of the main this track diverges from (via its turnout) — the origin
+   * of the diverge diagonal. A spur off Main 2 starts at lane 1, not lane 0;
+   * without this, renderers draw what looks like a crossover. */
+  divergesFromLane: number;
 }
 export interface DrawTurnout {
   id: string;
@@ -468,6 +484,10 @@ export interface ModuleFeatures {
   extraTracks: DrawTrack[];
   turnouts: DrawTurnout[];
   signals: DrawSignal[];
+  /** Lane extents across every feature (mains included; negative = outside
+   * Main 1). Renderers size their vertical space from these. */
+  laneMin: number;
+  laneMax: number;
 }
 
 /**
@@ -508,6 +528,12 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     e.tracks?.some((t) => t.config === "double"),
   );
 
+  // The lane a track diverges from = the main its turnout sits on.
+  const divergeOrigin = (trackId: string): number => {
+    const sw = (doc.turnouts ?? []).find((t) => t.divergeTrack === trackId);
+    return sw ? (trackLane.get(sw.onTrack) ?? 0) : 0;
+  };
+
   const extraTracks: DrawTrack[] = [];
   for (const t of doc.tracks) {
     if (t.role === "main") continue; // the spine draws mains
@@ -521,6 +547,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       fromFrac: clampFrac(Math.min(from, to)),
       toFrac: clampFrac(Math.max(from, to)),
       capacityFeet: t.capacityFeet ?? null,
+      divergesFromLane: divergeOrigin(t.id),
     });
   }
 
@@ -553,5 +580,18 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       )
     : (doc.signals ?? []).map((s) => drawSignal(s, s.name ?? ""));
 
-  return { doubleMain, extraTracks, turnouts, signals };
+  const allLanes = [
+    0,
+    doubleMain ? 1 : 0,
+    ...extraTracks.map((t) => t.lane),
+    ...signals.map((s) => s.lane),
+  ];
+  return {
+    doubleMain,
+    extraTracks,
+    turnouts,
+    signals,
+    laneMin: Math.min(...allLanes),
+    laneMax: Math.max(...allLanes),
+  };
 }

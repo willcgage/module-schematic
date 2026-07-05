@@ -118,6 +118,70 @@ describe("moduleFeatures", () => {
   });
 });
 
+describe("double track (main2)", () => {
+  it("stateToDoc emits Main 2 as a real track only when an endplate is double", () => {
+    const single = stateToDoc(emptyEditorState(96), "M");
+    expect(single.tracks.map((t) => t.id)).toEqual(["main"]);
+    const dbl = stateToDoc({ ...emptyEditorState(96), configA: "double" }, "M");
+    expect(dbl.tracks.filter((t) => t.role === "main").map((t) => t.id)).toEqual([
+      "main",
+      "main2",
+    ]);
+    expect(dbl.tracks.find((t) => t.id === "main2")?.lane).toBe(1);
+    // round-trip: main2 never becomes an editor extra track
+    expect(docToState(dbl, 96).extraTracks).toEqual([]);
+  });
+
+  it("a team track off Main 2 diverges from lane 1 — not a crossover from Main 1", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 96,
+      endplates: [
+        { id: "A", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+        { id: "B", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+      ],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+        { id: "team", role: "spur", lane: 2, fromPos: 40, toPos: 80 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 40, onTrack: "main2", divergeTrack: "team", kind: "left" },
+      ],
+    };
+    const f = moduleFeatures(doc);
+    const team = f.extraTracks.find((t) => t.id === "team")!;
+    expect(team.divergesFromLane).toBe(1); // off Main 2, outward to lane 2
+    expect(f.turnouts[0]).toMatchObject({ onLane: 1, divergeLane: 2 });
+    expect(f.laneMax).toBe(2);
+  });
+
+  it("negative lanes model a track outside Main 1 and widen the extents", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 96,
+      endplates: [{ id: "A" }, { id: "B" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "house", role: "spur", lane: -1, fromPos: 30, toPos: 70 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 30, onTrack: "main", divergeTrack: "house", kind: "right" },
+      ],
+    };
+    const f = moduleFeatures(doc);
+    expect(f.extraTracks[0]).toMatchObject({ lane: -1, divergesFromLane: 0 });
+    expect(f.laneMin).toBe(-1);
+    expect(f.laneMax).toBe(0);
+  });
+
+  it("buildPassingSiding starts above Main 2 on a double module", () => {
+    const siding = buildPassingSiding({ ...emptyEditorState(96), configA: "double" });
+    expect(siding.track.lane).toBe(2);
+    expect(buildPassingSiding(emptyEditorState(96)).track.lane).toBe(1);
+  });
+});
+
 describe("editor state machine", () => {
   it("stateToDoc → docToState round-trips a passing siding", () => {
     let state = emptyEditorState(396);
