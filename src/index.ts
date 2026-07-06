@@ -43,6 +43,10 @@ export interface SchematicTrack {
   moduleTrackId?: number | null;
   /** Owner's track name, mirrored to module_tracks.track_name. */
   trackName?: string;
+  /** Inside the balloon of a loop module (#165): pos still measures from
+   * endplate A (past the throat = in the loop), lane is the ladder/arc index —
+   * one record drives both the unrolled fan and a geometric render. */
+  inLoop?: boolean;
 }
 export interface SchematicTurnout {
   id: string;
@@ -94,6 +98,15 @@ export interface ModuleSchematicDoc {
    * instead of a second endplate. Also implied by a single-entry endplates
    * array (a category:"loop" module like Seaford). */
   loop?: boolean;
+  /** Where the balloon returns (#165): "same" (default) turns back onto the
+   * same main; "main2" is a directional return on a double-track main —
+   * out on Main 1, back on Main 2 — drawn as a U joining the two lanes
+   * (the transit terminal-loop idiom). */
+  loopReturn?: "same" | "main2";
+  /** Optional rendering override: "bulb" (abstract terminal), "fan" (interior
+   * tracks unrolled as a ladder past the throat — the default when inLoop
+   * tracks exist), "geometric" (drawn balloon, AL&E-style). */
+  loopRender?: "bulb" | "fan" | "geometric";
   endplates: SchematicEndplate[];
   tracks: SchematicTrack[];
   turnouts?: SchematicTurnout[];
@@ -146,6 +159,8 @@ export interface EditorTrack {
   moduleTrackId: number | null;
   /** Owner's track name → module_tracks.track_name. */
   trackName: string;
+  /** Inside the balloon of a loop module (#165). */
+  inLoop?: boolean;
 }
 
 /** A module_tracks row as loaded for the editor. */
@@ -186,6 +201,9 @@ export interface EditorState {
    * throat are inside the balloon. Endplate B stays independently available —
    * present = interchange loop, "none" = pure turnback. */
   loop: boolean;
+  /** Where the balloon returns: same main, or Main 2 (directional return on a
+   * double-track main — drawn as a U joining the two lanes). */
+  loopReturn: "same" | "main2";
   configA: TrackConfig;
   configB: EndplateBConfig;
   extraTracks: EditorTrack[]; // sidings/spurs/…; the main track is implicit
@@ -198,6 +216,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
   return {
     lengthInches: lengthInches > 0 ? lengthInches : 24,
     loop: false,
+    loopReturn: "same",
     configA: "single",
     configB: "single",
     extraTracks: [],
@@ -216,6 +235,7 @@ export function stateToDoc(
     module: recordNumber,
     lengthInches: state.lengthInches,
     ...(state.loop ? { loop: true } : {}),
+    ...(state.loop && state.loopReturn === "main2" ? { loopReturn: "main2" as const } : {}),
     endplates: state.loop
       ? // Balloon loop: A is the entry. A standard endplate B on the balloon
         // makes it an INTERCHANGE (second route connects at the loop, e.g.
@@ -247,8 +267,14 @@ export function stateToDoc(
           { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, fromPos: 0, toPos: state.lengthInches }
         : { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, from: "A", to: "B" },
       // Double track: Main 2 is a real entity so turnouts/signals can attach.
+      // On a loop it exists only for a Main 2 directional return (the U joins
+      // the two lanes at the balloon); a same-main loop's parallel lead legs
+      // are ONE main.
       ...(!state.loop && (state.configA === "double" || state.configB === "double")
         ? [{ id: MAIN2_TRACK_ID, role: "main" as const, lane: 1, from: "A", to: "B" }]
+        : []),
+      ...(state.loop && state.loopReturn === "main2"
+        ? [{ id: MAIN2_TRACK_ID, role: "main" as const, lane: 1, fromPos: 0, toPos: state.lengthInches }]
         : []),
       ...state.extraTracks.map((t) => ({
         id: t.id,
@@ -259,6 +285,7 @@ export function stateToDoc(
         moduleTrackId: t.moduleTrackId,
         trackName: t.trackName || undefined,
         capacityFeet: Math.round(inchesToScaleFeet(Math.abs(t.toPos - t.fromPos))),
+        ...(state.loop && t.inLoop ? { inLoop: true } : {}),
       })),
     ],
     turnouts: state.turnouts.map((t) => ({
@@ -329,6 +356,7 @@ export function docToState(
         toPos: t.toPos != null ? sc(t.toPos) : len,
         moduleTrackId,
         trackName: t.trackName ?? nameOf(moduleTrackId),
+        ...(t.inLoop ? { inLoop: true } : {}),
       });
     }
   }
@@ -371,6 +399,7 @@ export function docToState(
   return {
     lengthInches: len,
     loop,
+    loopReturn: loop && d!.loopReturn === "main2" ? "main2" : "same",
     configA: configOf("A"),
     // On a loop, a missing B means pure turnback; present = interchange loop.
     configB: loop && !hasB ? "none" : configOf("B"),
@@ -507,6 +536,8 @@ export interface DrawTrack {
    * of the diverge diagonal. A spur off Main 2 starts at lane 1, not lane 0;
    * without this, renderers draw what looks like a crossover. */
   divergesFromLane: number;
+  /** Inside the balloon of a loop module (#165). */
+  inLoop: boolean;
 }
 export interface DrawTurnout {
   id: string;
@@ -534,6 +565,12 @@ export interface ModuleFeatures {
   /** Loop with a standard endplate B on the balloon: an interchange — a
    * second route connects at the loop (draw an endplate branch off the bulb). */
   loopInterchange: boolean;
+  /** Where the balloon returns: "main2" = directional return on a double-track
+   * main — draw a U joining lanes 0 and 1 instead of the bulb (#165). */
+  loopReturn: "same" | "main2";
+  /** Rendering override from the doc; renderers may ignore modes they don't
+   * implement yet ("geometric"). */
+  loopRender: "bulb" | "fan" | "geometric" | null;
   /** Non-main tracks (sidings/spurs/yard/crossover). */
   extraTracks: DrawTrack[];
   turnouts: DrawTurnout[];
@@ -602,6 +639,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       toFrac: clampFrac(Math.max(from, to)),
       capacityFeet: t.capacityFeet ?? null,
       divergesFromLane: divergeOrigin(t.id),
+      inLoop: t.inLoop === true,
     });
   }
 
@@ -645,6 +683,8 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     doubleMain,
     loop,
     loopInterchange: loop && doc.endplates.length >= 2,
+    loopReturn: loop && doc.loopReturn === "main2" ? "main2" : "same",
+    loopRender: loop ? (doc.loopRender ?? null) : null,
     extraTracks,
     turnouts,
     signals,

@@ -242,6 +242,45 @@ describe("loop modules (single-endplate turnback)", () => {
     expect(docToState(turnback, 120).configB).toBe("none");
   });
 
+  it("a Main 2 return emits main2 as a positioned track and round-trips (#165)", () => {
+    const s = {
+      ...emptyEditorState(96),
+      loop: true,
+      loopReturn: "main2" as const,
+      configA: "double" as const,
+      configB: "none" as const,
+    };
+    const doc = stateToDoc(s, "M");
+    expect(doc.loopReturn).toBe("main2");
+    // The U joins the two lanes at the balloon — main2 exists on the lead.
+    const main2 = doc.tracks.find((t) => t.id === "main2")!;
+    expect(main2).toMatchObject({ role: "main", lane: 1, fromPos: 0, toPos: 96 });
+    expect(moduleFeatures(doc)).toMatchObject({ loop: true, loopReturn: "main2" });
+
+    const back = docToState(doc, 96);
+    expect(back.loopReturn).toBe("main2");
+    // Same-main loops stay "same" and never emit main2.
+    const same = stateToDoc({ ...emptyEditorState(96), loop: true, configB: "none" as const }, "M");
+    expect(same.loopReturn).toBeUndefined();
+    expect(same.tracks.some((t) => t.id === "main2")).toBe(false);
+    expect(moduleFeatures(same).loopReturn).toBe("same");
+  });
+
+  it("inLoop marks balloon-interior tracks and survives the round trip (#165)", () => {
+    const s = { ...emptyEditorState(120), loop: true, configB: "none" as const };
+    s.extraTracks.push(
+      { id: "t1", role: "yard", lane: 1, fromPos: 95, toPos: 118, moduleTrackId: null, trackName: "Staging 1", inLoop: true },
+      { id: "lead", role: "spur", lane: 2, fromPos: 40, toPos: 80, moduleTrackId: null, trackName: "Lead" },
+    );
+    const doc = stateToDoc(s, "M");
+    expect(doc.tracks.find((t) => t.id === "t1")?.inLoop).toBe(true);
+    expect(doc.tracks.find((t) => t.id === "lead")?.inLoop).toBeUndefined();
+    const f = moduleFeatures(doc);
+    expect(f.extraTracks.find((t) => t.id === "t1")?.inLoop).toBe(true);
+    expect(f.extraTracks.find((t) => t.id === "lead")?.inLoop).toBe(false);
+    expect(docToState(doc, 120).extraTracks.find((t) => t.id === "t1")?.inLoop).toBe(true);
+  });
+
   it("a non-loop module never drops endplate B ('none' coerces to single)", () => {
     const doc = stateToDoc({ ...emptyEditorState(96), configB: "none" }, "M");
     expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B"]);
