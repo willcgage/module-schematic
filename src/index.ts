@@ -89,12 +89,22 @@ export interface ModuleSchematicDoc {
   version: number;
   module?: string;
   lengthInches?: number;
+  /** Single-endplate turnback (balloon loop): the main enters at A, runs the
+   * lead, and turns back — renderers draw a terminal bulb at the far end
+   * instead of a second endplate. Also implied by a single-entry endplates
+   * array (a category:"loop" module like Seaford). */
+  loop?: boolean;
   endplates: SchematicEndplate[];
   tracks: SchematicTrack[];
   turnouts?: SchematicTurnout[];
   controlPoints?: SchematicControlPoint[];
   /** @deprecated pre-grouping flat signals; read for back-compat. */
   signals?: SchematicSignal[];
+}
+
+/** Whether a doc is a single-endplate turnback (explicit flag or one endplate). */
+export function isLoopDoc(doc: ModuleSchematicDoc): boolean {
+  return doc.loop === true || doc.endplates.length === 1;
 }
 
 export const MAIN_TRACK_ID = "main";
@@ -167,6 +177,9 @@ export interface EditorControlPoint {
 }
 export interface EditorState {
   lengthInches: number;
+  /** Single-endplate turnback (balloon loop): endplate B is replaced by the
+   * loop; positions past the throat are inside the balloon. */
+  loop: boolean;
   configA: TrackConfig;
   configB: TrackConfig;
   extraTracks: EditorTrack[]; // sidings/spurs/…; the main track is implicit
@@ -178,6 +191,7 @@ export interface EditorState {
 export function emptyEditorState(lengthInches: number): EditorState {
   return {
     lengthInches: lengthInches > 0 ? lengthInches : 24,
+    loop: false,
     configA: "single",
     configB: "single",
     extraTracks: [],
@@ -195,14 +209,21 @@ export function stateToDoc(
     version: 1,
     module: recordNumber,
     lengthInches: state.lengthInches,
-    endplates: [
-      { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
-      { id: "B", label: "East", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] },
-    ],
+    ...(state.loop ? { loop: true } : {}),
+    endplates: state.loop
+      ? // Single-endplate turnback: only A exists; the far end is the balloon.
+        [{ id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] }]
+      : [
+          { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+          { id: "B", label: "East", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] },
+        ],
     tracks: [
-      { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, from: "A", to: "B" },
+      state.loop
+        ? // The main runs the lead from A and turns back at the balloon.
+          { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, fromPos: 0, toPos: state.lengthInches }
+        : { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, from: "A", to: "B" },
       // Double track: Main 2 is a real entity so turnouts/signals can attach.
-      ...(state.configA === "double" || state.configB === "double"
+      ...(!state.loop && (state.configA === "double" || state.configB === "double")
         ? [{ id: MAIN2_TRACK_ID, role: "main" as const, lane: 1, from: "A", to: "B" }]
         : []),
       ...state.extraTracks.map((t) => ({
@@ -323,6 +344,7 @@ export function docToState(
   };
   return {
     lengthInches: len,
+    loop: isLoopDoc(d!),
     configA: configOf("A"),
     configB: configOf("B"),
     extraTracks,
@@ -480,6 +502,8 @@ export interface DrawSignal {
 export interface ModuleFeatures {
   /** Whether either endplate declares a double-track main. */
   doubleMain: boolean;
+  /** Single-endplate turnback — draw a terminal bulb at the far end. */
+  loop: boolean;
   /** Non-main tracks (sidings/spurs/yard/crossover). */
   extraTracks: DrawTrack[];
   turnouts: DrawTurnout[];
@@ -588,6 +612,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   ];
   return {
     doubleMain,
+    loop: isLoopDoc(doc),
     extraTracks,
     turnouts,
     signals,

@@ -182,6 +182,48 @@ describe("double track (main2)", () => {
   });
 });
 
+describe("loop modules (single-endplate turnback)", () => {
+  it("stateToDoc emits one endplate + a positioned main; round-trips", () => {
+    const s = { ...emptyEditorState(120), loop: true };
+    s.extraTracks.push({
+      id: "grain", role: "spur", lane: 1, fromPos: 90, toPos: 118,
+      moduleTrackId: null, trackName: "Grain",
+    });
+    const doc = stateToDoc(s, "FMN-SEAFORD");
+    expect(doc.loop).toBe(true);
+    expect(doc.endplates).toHaveLength(1);
+    expect(doc.endplates[0].id).toBe("A");
+    const main = doc.tracks.find((t) => t.id === "main")!;
+    expect(main).toMatchObject({ fromPos: 0, toPos: 120 });
+
+    const back = docToState(doc, 120);
+    expect(back.loop).toBe(true);
+    expect(back.extraTracks).toHaveLength(1);
+  });
+
+  it("moduleFeatures reports loop, from the flag or a single endplate", () => {
+    const doc = stateToDoc({ ...emptyEditorState(96), loop: true }, "M");
+    expect(moduleFeatures(doc).loop).toBe(true);
+    // legacy-ish doc without the flag but only one endplate
+    const implied: ModuleSchematicDoc = {
+      version: 1, lengthInches: 96,
+      endplates: [{ id: "A" }],
+      tracks: [{ id: "main", role: "main", lane: 0, fromPos: 0, toPos: 96 }],
+    };
+    expect(moduleFeatures(implied).loop).toBe(true);
+    // ordinary through module stays false
+    expect(moduleFeatures(stateToDoc(emptyEditorState(96), "M")).loop).toBe(false);
+  });
+
+  it("a loop never emits main2 (the parallel lead legs are one main)", () => {
+    const doc = stateToDoc(
+      { ...emptyEditorState(96), loop: true, configA: "double" },
+      "M",
+    );
+    expect(doc.tracks.filter((t) => t.role === "main")).toHaveLength(1);
+  });
+});
+
 describe("editor state machine", () => {
   it("stateToDoc → docToState round-trips a passing siding", () => {
     let state = emptyEditorState(396);
