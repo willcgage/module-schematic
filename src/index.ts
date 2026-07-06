@@ -25,9 +25,14 @@ export interface SchematicEndplateTrack {
   config?: TrackConfig | null;
 }
 export interface SchematicEndplate {
-  id: string; // "A" (West) | "B" (East)
+  id: string; // "A" (West) | "B" (East) | "C"… (branch, #170)
   label?: string | null;
   tracks?: SchematicEndplateTrack[];
+  /** Branch endplates (#170): where a 3rd+ endplate sits — pos inches from A,
+   * on the up (north/above) or down side. Absent = axial (A at 0, B at
+   * lengthInches). Renderers draw a named connector arrow (the CATS/US&S
+   * off-band idiom) until branch spines land. */
+  at?: { pos: number; side: "up" | "down" };
 }
 export interface SchematicTrack {
   id: string;
@@ -78,6 +83,16 @@ export interface SchematicBlock {
   from: number;
   to: number;
 }
+/** A grade crossing / diamond (#170): two tracks cross with no route choice —
+ * a conflict node, not a turnout. A connected diamond adds normal turnouts
+ * alongside. Drawn as an X between the two tracks' lanes. */
+export interface SchematicCrossing {
+  id: string;
+  pos: number;
+  /** The two crossing tracks, by id. */
+  tracks: [string, string];
+  name?: string | null;
+}
 /**
  * A control point is an interlocking: a named group of one or more signals and
  * zero or more turnouts. A passing siding has two (West/East); a lone block
@@ -87,6 +102,8 @@ export interface SchematicControlPoint {
   id: string;
   name?: string | null;
   turnouts?: string[];
+  /** Crossings this interlocking protects (#170). */
+  crossings?: string[];
   signals?: SchematicSignal[];
 }
 export interface ModuleSchematicDoc {
@@ -110,6 +127,8 @@ export interface ModuleSchematicDoc {
   endplates: SchematicEndplate[];
   tracks: SchematicTrack[];
   turnouts?: SchematicTurnout[];
+  /** Grade crossings / diamonds (#170). */
+  crossings?: SchematicCrossing[];
   controlPoints?: SchematicControlPoint[];
   /** @deprecated pre-grouping flat signals; read for back-compat. */
   signals?: SchematicSignal[];
@@ -188,7 +207,23 @@ export interface EditorControlPoint {
   id: string;
   name: string;
   turnouts: string[]; // turnout ids grouped under this control point
+  /** Crossing ids this interlocking protects (#170). */
+  crossings?: string[];
   signals: EditorCpSignal[];
+}
+export interface EditorCrossing {
+  id: string;
+  name: string;
+  pos: number;
+  trackA: string;
+  trackB: string;
+}
+/** A 3rd endplate — a branch/junction connection off the module (#170). */
+export interface EditorBranch {
+  label: string;
+  pos: number;
+  side: "up" | "down";
+  config: TrackConfig;
 }
 /** Endplate B on a loop module: a standard endplate makes the balloon an
  * INTERCHANGE (a second route connects at the loop, e.g. Seaford); "none"
@@ -208,6 +243,10 @@ export interface EditorState {
   configB: EndplateBConfig;
   extraTracks: EditorTrack[]; // sidings/spurs/…; the main track is implicit
   turnouts: EditorTurnout[];
+  /** Grade crossings / diamonds (#170). */
+  crossings: EditorCrossing[];
+  /** Branch endplate C — a junction connection (#170); null = through module. */
+  branch: EditorBranch | null;
   controlPoints: EditorControlPoint[];
 }
 
@@ -221,6 +260,8 @@ export function emptyEditorState(lengthInches: number): EditorState {
     configB: "single",
     extraTracks: [],
     turnouts: [],
+    crossings: [],
+    branch: null,
     controlPoints: [],
   };
 }
@@ -236,31 +277,44 @@ export function stateToDoc(
     lengthInches: state.lengthInches,
     ...(state.loop ? { loop: true } : {}),
     ...(state.loop && state.loopReturn === "main2" ? { loopReturn: "main2" as const } : {}),
-    endplates: state.loop
-      ? // Balloon loop: A is the entry. A standard endplate B on the balloon
-        // makes it an INTERCHANGE (second route connects at the loop, e.g.
-        // Seaford); configB "none" makes it a pure turnback.
-        [
-          { id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
-          ...(state.configB !== "none"
-            ? [{ id: "B", label: "Interchange", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] }]
-            : []),
-        ]
-      : [
-          { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
-          // Non-loop modules always have a real B ("none" never applies).
-          {
-            id: "B",
-            label: "East",
-            tracks: [
-              {
-                trackId: MAIN_TRACK_ID,
-                lane: 0,
-                config: state.configB === "none" ? "single" : state.configB,
-              },
-            ],
-          },
-        ],
+    endplates: [
+      ...(state.loop
+        ? // Balloon loop: A is the entry. A standard endplate B on the balloon
+          // makes it an INTERCHANGE (second route connects at the loop, e.g.
+          // Seaford); configB "none" makes it a pure turnback.
+          [
+            { id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+            ...(state.configB !== "none"
+              ? [{ id: "B", label: "Interchange", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] }]
+              : []),
+          ]
+        : [
+            { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+            // Non-loop modules always have a real B ("none" never applies).
+            {
+              id: "B",
+              label: "East",
+              tracks: [
+                {
+                  trackId: MAIN_TRACK_ID,
+                  lane: 0,
+                  config: state.configB === "none" ? "single" : state.configB,
+                },
+              ],
+            },
+          ]),
+      // Branch endplate C — a junction connection at pos, off one side (#170).
+      ...(state.branch
+        ? [
+            {
+              id: "C",
+              label: state.branch.label || "Branch",
+              tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.branch.config }],
+              at: { pos: state.branch.pos, side: state.branch.side },
+            },
+          ]
+        : []),
+    ],
     tracks: [
       state.loop
         ? // The main runs the lead from A and turns back at the balloon.
@@ -296,10 +350,21 @@ export function stateToDoc(
       kind: t.kind,
       name: t.name || undefined,
     })),
+    ...(state.crossings.length > 0
+      ? {
+          crossings: state.crossings.map((x) => ({
+            id: x.id,
+            pos: x.pos,
+            tracks: [x.trackA, x.trackB] as [string, string],
+            name: x.name || undefined,
+          })),
+        }
+      : {}),
     controlPoints: state.controlPoints.map((c) => ({
       id: c.id,
       name: c.name,
       turnouts: c.turnouts,
+      ...(c.crossings?.length ? { crossings: c.crossings } : {}),
       signals: c.signals.map((s) => ({
         id: s.id,
         pos: s.pos,
@@ -396,6 +461,8 @@ export function docToState(
   };
   const loop = isLoopDoc(d!);
   const hasB = (d!.endplates ?? []).some((e) => e.id === "B");
+  // Branch endplate C (junction connection, #170).
+  const epC = (d!.endplates ?? []).find((e) => e.id !== "A" && e.id !== "B" && e.at);
   return {
     lengthInches: len,
     loop,
@@ -403,6 +470,21 @@ export function docToState(
     configA: configOf("A"),
     // On a loop, a missing B means pure turnback; present = interchange loop.
     configB: loop && !hasB ? "none" : configOf("B"),
+    branch: epC
+      ? {
+          label: epC.label ?? "Branch",
+          pos: sc(epC.at!.pos),
+          side: epC.at!.side === "down" ? "down" : "up",
+          config: epC.tracks?.[0]?.config === "double" ? "double" : "single",
+        }
+      : null,
+    crossings: (d!.crossings ?? []).map((x) => ({
+      id: x.id,
+      name: x.name ?? "",
+      pos: sc(x.pos),
+      trackA: x.tracks?.[0] ?? MAIN_TRACK_ID,
+      trackB: x.tracks?.[1] ?? MAIN_TRACK_ID,
+    })),
     extraTracks,
     turnouts: (d!.turnouts ?? []).map((t) => ({
       id: t.id,
@@ -426,6 +508,7 @@ function readControlPoints(
       id: c.id,
       name: c.name ?? "",
       turnouts: c.turnouts ?? [],
+      ...(c.crossings?.length ? { crossings: c.crossings } : {}),
       signals: (c.signals ?? []).map((s) => ({
         id: s.id,
         pos: sc(s.pos),
@@ -557,6 +640,22 @@ export interface DrawSignal {
    * renderer join the drawn signal back to interlocking-level state (aspects). */
   cp?: string;
 }
+/** A grade crossing / diamond — draw an X spanning the two lanes (#170). */
+export interface DrawCrossing {
+  id: string;
+  name: string;
+  posFrac: number;
+  laneA: number;
+  laneB: number;
+}
+/** A branch endplate — draw a connector stub + arrow + label off the given
+ * side (the CATS/US&S off-band idiom, #170). */
+export interface BranchConnector {
+  id: string;
+  label: string;
+  posFrac: number;
+  side: "up" | "down";
+}
 export interface ModuleFeatures {
   /** Whether either endplate declares a double-track main. */
   doubleMain: boolean;
@@ -575,6 +674,10 @@ export interface ModuleFeatures {
   extraTracks: DrawTrack[];
   turnouts: DrawTurnout[];
   signals: DrawSignal[];
+  /** Grade crossings / diamonds (#170). */
+  crossings: DrawCrossing[];
+  /** Branch endplates — junction connectors off the module (#170). */
+  branchConnectors: BranchConnector[];
   /** Lane extents across every feature (mains included; negative = outside
    * Main 1). Renderers size their vertical space from these. */
   laneMin: number;
@@ -672,22 +775,43 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       )
     : (doc.signals ?? []).map((s) => drawSignal(s, s.name ?? ""));
 
+  const crossings: DrawCrossing[] = (doc.crossings ?? []).map((x) => ({
+    id: x.id,
+    name: x.name ?? "",
+    posFrac: clampFrac(x.pos),
+    laneA: trackLane.get(x.tracks?.[0] ?? "") ?? 0,
+    laneB: trackLane.get(x.tracks?.[1] ?? "") ?? 1,
+  }));
+
+  // Branch endplates (any beyond A/B with a placement) → connector arrows.
+  const branchConnectors: BranchConnector[] = doc.endplates
+    .filter((e) => e.id !== "A" && e.id !== "B" && e.at)
+    .map((e) => ({
+      id: e.id,
+      label: e.label ?? e.id,
+      posFrac: clampFrac(e.at!.pos),
+      side: e.at!.side === "down" ? "down" : "up",
+    }));
+
   const allLanes = [
     0,
     doubleMain ? 1 : 0,
     ...extraTracks.map((t) => t.lane),
     ...signals.map((s) => s.lane),
+    ...crossings.flatMap((x) => [x.laneA, x.laneB]),
   ];
   const loop = isLoopDoc(doc);
   return {
     doubleMain,
     loop,
-    loopInterchange: loop && doc.endplates.length >= 2,
+    loopInterchange: loop && doc.endplates.filter((e) => !e.at).length >= 2,
     loopReturn: loop && doc.loopReturn === "main2" ? "main2" : "same",
     loopRender: loop ? (doc.loopRender ?? null) : null,
     extraTracks,
     turnouts,
     signals,
+    crossings,
+    branchConnectors,
     laneMin: Math.min(...allLanes),
     laneMax: Math.max(...allLanes),
   };

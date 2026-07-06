@@ -288,6 +288,58 @@ describe("loop modules (single-endplate turnback)", () => {
   });
 });
 
+describe("crossings and branch endplates (#170)", () => {
+  it("a diamond round-trips and resolves to an X between the two lanes", () => {
+    const s = emptyEditorState(96);
+    s.extraTracks.push({ id: "foreign", role: "crossover", lane: 1, fromPos: 0, toPos: 96, moduleTrackId: null, trackName: "Foreign line" });
+    s.crossings.push({ id: "x1", name: "GSP Diamond", pos: 48, trackA: "main", trackB: "foreign" });
+    s.controlPoints.push({ id: "cp1", name: "Diamond", turnouts: [], crossings: ["x1"], signals: [] });
+
+    const doc = stateToDoc(s, "M");
+    expect(doc.crossings).toEqual([{ id: "x1", pos: 48, tracks: ["main", "foreign"], name: "GSP Diamond" }]);
+    expect(doc.controlPoints?.[0].crossings).toEqual(["x1"]);
+
+    const f = moduleFeatures(doc);
+    expect(f.crossings).toEqual([
+      { id: "x1", name: "GSP Diamond", posFrac: 0.5, laneA: 0, laneB: 1 },
+    ]);
+
+    const back = docToState(doc, 96);
+    expect(back.crossings).toEqual([
+      { id: "x1", name: "GSP Diamond", pos: 48, trackA: "main", trackB: "foreign" },
+    ]);
+    expect(back.controlPoints[0].crossings).toEqual(["x1"]);
+  });
+
+  it("a branch endplate C round-trips and becomes a connector arrow", () => {
+    const s = emptyEditorState(120);
+    s.branch = { label: "Bowl Idaho", pos: 60, side: "down", config: "single" };
+    const doc = stateToDoc(s, "M");
+    const epC = doc.endplates.find((e) => e.id === "C")!;
+    expect(epC).toMatchObject({ label: "Bowl Idaho", at: { pos: 60, side: "down" } });
+    // A/B untouched — still a through module, not a loop.
+    expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B", "C"]);
+
+    const f = moduleFeatures(doc);
+    expect(f.branchConnectors).toEqual([
+      { id: "C", label: "Bowl Idaho", posFrac: 0.5, side: "down" },
+    ]);
+    expect(f.loop).toBe(false);
+
+    const back = docToState(doc, 120);
+    expect(back.branch).toEqual({ label: "Bowl Idaho", pos: 60, side: "down", config: "single" });
+  });
+
+  it("docs without crossings or branches are unchanged", () => {
+    const doc = stateToDoc(emptyEditorState(96), "M");
+    expect(doc.crossings).toBeUndefined();
+    expect(doc.endplates).toHaveLength(2);
+    const f = moduleFeatures(doc);
+    expect(f.crossings).toEqual([]);
+    expect(f.branchConnectors).toEqual([]);
+  });
+});
+
 describe("editor state machine", () => {
   it("stateToDoc → docToState round-trips a passing siding", () => {
     let state = emptyEditorState(396);
