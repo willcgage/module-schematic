@@ -184,7 +184,7 @@ describe("double track (main2)", () => {
 
 describe("loop modules (single-endplate turnback)", () => {
   it("stateToDoc emits one endplate + a positioned main; round-trips", () => {
-    const s = { ...emptyEditorState(120), loop: true };
+    const s = { ...emptyEditorState(120), loop: true, configB: "none" as const };
     s.extraTracks.push({
       id: "grain", role: "spur", lane: 1, fromPos: 90, toPos: 118,
       moduleTrackId: null, trackName: "Grain",
@@ -221,6 +221,31 @@ describe("loop modules (single-endplate turnback)", () => {
       "M",
     );
     expect(doc.tracks.filter((t) => t.role === "main")).toHaveLength(1);
+  });
+
+  it("a standard endplate B on the balloon makes an interchange loop (Seaford)", () => {
+    // loop + B present → interchange; loop + "none" → pure turnback
+    const inter = stateToDoc({ ...emptyEditorState(120), loop: true, configB: "single" }, "M");
+    expect(inter.loop).toBe(true);
+    expect(inter.endplates.map((e) => e.id)).toEqual(["A", "B"]);
+    expect(inter.endplates[1].label).toBe("Interchange");
+    const fi = moduleFeatures(inter);
+    expect(fi).toMatchObject({ loop: true, loopInterchange: true });
+
+    const turnback = stateToDoc({ ...emptyEditorState(120), loop: true, configB: "none" }, "M");
+    expect(turnback.endplates.map((e) => e.id)).toEqual(["A"]);
+    expect(moduleFeatures(turnback)).toMatchObject({ loop: true, loopInterchange: false });
+
+    // round-trips both ways
+    expect(docToState(inter, 120).configB).toBe("single");
+    expect(docToState(inter, 120).loop).toBe(true);
+    expect(docToState(turnback, 120).configB).toBe("none");
+  });
+
+  it("a non-loop module never drops endplate B ('none' coerces to single)", () => {
+    const doc = stateToDoc({ ...emptyEditorState(96), configB: "none" }, "M");
+    expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B"]);
+    expect(doc.endplates[1].tracks?.[0]?.config).toBe("single");
   });
 });
 

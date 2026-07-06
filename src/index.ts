@@ -175,13 +175,19 @@ export interface EditorControlPoint {
   turnouts: string[]; // turnout ids grouped under this control point
   signals: EditorCpSignal[];
 }
+/** Endplate B on a loop module: a standard endplate makes the balloon an
+ * INTERCHANGE (a second route connects at the loop, e.g. Seaford); "none"
+ * makes it a pure turnback. Non-loop modules always have a real B. */
+export type EndplateBConfig = TrackConfig | "none";
+
 export interface EditorState {
   lengthInches: number;
-  /** Single-endplate turnback (balloon loop): endplate B is replaced by the
-   * loop; positions past the throat are inside the balloon. */
+  /** Balloon loop: the main runs the lead and turns back; positions past the
+   * throat are inside the balloon. Endplate B stays independently available —
+   * present = interchange loop, "none" = pure turnback. */
   loop: boolean;
   configA: TrackConfig;
-  configB: TrackConfig;
+  configB: EndplateBConfig;
   extraTracks: EditorTrack[]; // sidings/spurs/…; the main track is implicit
   turnouts: EditorTurnout[];
   controlPoints: EditorControlPoint[];
@@ -211,11 +217,29 @@ export function stateToDoc(
     lengthInches: state.lengthInches,
     ...(state.loop ? { loop: true } : {}),
     endplates: state.loop
-      ? // Single-endplate turnback: only A exists; the far end is the balloon.
-        [{ id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] }]
+      ? // Balloon loop: A is the entry. A standard endplate B on the balloon
+        // makes it an INTERCHANGE (second route connects at the loop, e.g.
+        // Seaford); configB "none" makes it a pure turnback.
+        [
+          { id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+          ...(state.configB !== "none"
+            ? [{ id: "B", label: "Interchange", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] }]
+            : []),
+        ]
       : [
           { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
-          { id: "B", label: "East", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] },
+          // Non-loop modules always have a real B ("none" never applies).
+          {
+            id: "B",
+            label: "East",
+            tracks: [
+              {
+                trackId: MAIN_TRACK_ID,
+                lane: 0,
+                config: state.configB === "none" ? "single" : state.configB,
+              },
+            ],
+          },
         ],
     tracks: [
       state.loop
@@ -342,11 +366,14 @@ export function docToState(
     const ep = (d!.endplates ?? []).find((e) => e.id === id);
     return ep?.tracks?.[0]?.config === "double" ? "double" : "single";
   };
+  const loop = isLoopDoc(d!);
+  const hasB = (d!.endplates ?? []).some((e) => e.id === "B");
   return {
     lengthInches: len,
-    loop: isLoopDoc(d!),
+    loop,
     configA: configOf("A"),
-    configB: configOf("B"),
+    // On a loop, a missing B means pure turnback; present = interchange loop.
+    configB: loop && !hasB ? "none" : configOf("B"),
     extraTracks,
     turnouts: (d!.turnouts ?? []).map((t) => ({
       id: t.id,
@@ -502,8 +529,11 @@ export interface DrawSignal {
 export interface ModuleFeatures {
   /** Whether either endplate declares a double-track main. */
   doubleMain: boolean;
-  /** Single-endplate turnback — draw a terminal bulb at the far end. */
+  /** Balloon loop — draw a terminal bulb at the far end. */
   loop: boolean;
+  /** Loop with a standard endplate B on the balloon: an interchange — a
+   * second route connects at the loop (draw an endplate branch off the bulb). */
+  loopInterchange: boolean;
   /** Non-main tracks (sidings/spurs/yard/crossover). */
   extraTracks: DrawTrack[];
   turnouts: DrawTurnout[];
@@ -610,9 +640,11 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     ...extraTracks.map((t) => t.lane),
     ...signals.map((s) => s.lane),
   ];
+  const loop = isLoopDoc(doc);
   return {
     doubleMain,
-    loop: isLoopDoc(doc),
+    loop,
+    loopInterchange: loop && doc.endplates.length >= 2,
     extraTracks,
     turnouts,
     signals,
