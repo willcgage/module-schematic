@@ -9,6 +9,7 @@ import {
   stateToDoc,
   docToState,
   buildPassingSiding,
+  buildTransition,
   MAIN_TRACK_ID,
   type ModuleSchematicDoc,
 } from "./index";
@@ -285,6 +286,67 @@ describe("loop modules (single-endplate turnback)", () => {
     const doc = stateToDoc({ ...emptyEditorState(96), configB: "none" }, "M");
     expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B"]);
     expect(doc.endplates[1].tracks?.[0]?.config).toBe("single");
+  });
+});
+
+describe("transition modules — one single + one double endplate (FMN-0038)", () => {
+  it("buildTransition creates the mainline turnout + End of Double Track CP", () => {
+    const s = { ...emptyEditorState(96), configB: "double" as const };
+    const built = buildTransition(s)!;
+    expect(built.turnout).toMatchObject({
+      onTrack: "main",
+      divergeTrack: "main2",
+      name: "End of Double Track",
+    });
+    expect(built.controlPoint.turnouts).toEqual([built.turnout.id]);
+    expect(built.controlPoint.signals.map((x) => `${x.facing}:${x.side}`)).toEqual([
+      "AtoB:above",
+      "BtoA:below",
+    ]);
+    // Not a transition → null
+    expect(buildTransition(emptyEditorState(96))).toBeNull();
+    expect(buildTransition({ ...emptyEditorState(96), configA: "double" as const, configB: "double" as const })).toBeNull();
+  });
+
+  it("Main 2 runs only from the transition turnout to the double end", () => {
+    // Single at A, double at B: main2 begins at the turnout.
+    const s = { ...emptyEditorState(96), configB: "double" as const };
+    const built = buildTransition(s)!;
+    s.turnouts.push(built.turnout);
+    s.controlPoints.push(built.controlPoint);
+    const doc = stateToDoc(s, "FMN-0038");
+    const main2 = doc.tracks.find((t) => t.id === "main2")!;
+    expect(main2).toMatchObject({ fromPos: built.turnout.pos, toPos: 96 });
+    const f = moduleFeatures(doc);
+    expect(f.main2Extent).toEqual({
+      fromFrac: built.turnout.pos / 96,
+      toFrac: 1,
+    });
+    // Round-trips: the turnout comes back, so the extent re-derives.
+    const back = docToState(doc, 96);
+    expect(back.turnouts.find((t) => t.divergeTrack === "main2")?.pos).toBe(built.turnout.pos);
+
+    // Double at A instead: main2 ends at the turnout.
+    const s2 = { ...emptyEditorState(96), configA: "double" as const };
+    const b2 = buildTransition(s2)!;
+    s2.turnouts.push(b2.turnout);
+    const doc2 = stateToDoc(s2, "M");
+    expect(doc2.tracks.find((t) => t.id === "main2")).toMatchObject({
+      fromPos: 0,
+      toPos: b2.turnout.pos,
+    });
+  });
+
+  it("both-double modules keep the full-length Main 2 (no extent)", () => {
+    const s = { ...emptyEditorState(96), configA: "double" as const, configB: "double" as const };
+    const doc = stateToDoc(s, "M");
+    expect(doc.tracks.find((t) => t.id === "main2")).toMatchObject({ from: "A", to: "B" });
+    expect(moduleFeatures(doc).main2Extent).toBeNull();
+  });
+
+  it("a mismatched module WITHOUT a transition turnout falls back to full length", () => {
+    const doc = stateToDoc({ ...emptyEditorState(96), configB: "double" as const }, "M");
+    expect(doc.tracks.find((t) => t.id === "main2")).toMatchObject({ from: "A", to: "B" });
   });
 });
 

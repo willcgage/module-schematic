@@ -266,6 +266,69 @@ export function emptyEditorState(lengthInches: number): EditorState {
   };
 }
 
+/** Main 2's doc track for a non-loop double module. Full length when both
+ * endplates are double; on a transition module (one single, one double) it
+ * runs between the mainline transition turnout (the one diverging to main2)
+ * and the double end. */
+function main2Track(state: EditorState): SchematicTrack {
+  const bothDouble = state.configA === "double" && state.configB === "double";
+  const sw = state.turnouts.find((t) => t.divergeTrack === MAIN2_TRACK_ID);
+  if (bothDouble || !sw) {
+    return { id: MAIN2_TRACK_ID, role: "main", lane: 1, from: "A", to: "B" };
+  }
+  return state.configA === "double"
+    ? // Double at A: Main 2 runs from A and ends at the turnout.
+      { id: MAIN2_TRACK_ID, role: "main", lane: 1, fromPos: 0, toPos: sw.pos }
+    : // Double at B: Main 2 begins at the turnout and runs to B.
+      { id: MAIN2_TRACK_ID, role: "main", lane: 1, fromPos: sw.pos, toPos: state.lengthInches };
+}
+
+/**
+ * Build the single↔double transition as one unit (like buildPassingSiding):
+ * the mainline turnout where Main 2 begins/ends, grouped in a control point —
+ * an "End of Double Track" is a classic CTC interlocking — with signals both
+ * directions. Returns items to merge into the editor state.
+ */
+export function buildTransition(state: EditorState): {
+  turnout: EditorTurnout;
+  controlPoint: EditorControlPoint;
+} | null {
+  const aDouble = state.configA === "double";
+  const bDouble = state.configB === "double";
+  if (state.loop || aDouble === bDouble) return null; // not a transition module
+  const len = state.lengthInches > 0 ? state.lengthInches : 24;
+  const inset = Math.max(6, Math.round(len * 0.25));
+  // The turnout sits toward the single end so the double track carries most
+  // of the module; owner adjusts the position afterwards.
+  const pos = aDouble ? len - inset : inset;
+
+  const swId = nextId("sw", state.turnouts.map((t) => t.id));
+  const turnout: EditorTurnout = {
+    id: swId,
+    name: "End of Double Track",
+    pos,
+    onTrack: MAIN_TRACK_ID,
+    divergeTrack: MAIN2_TRACK_ID,
+    kind: aDouble ? "left" : "right",
+  };
+
+  const cpId = nextId("cp", state.controlPoints.map((c) => c.id));
+  const sig = (facing: SignalFacing): EditorCpSignal => ({
+    id: `${cpId}-${facing}`,
+    pos,
+    track: MAIN_TRACK_ID,
+    facing,
+    side: facing === "AtoB" ? "above" : "below",
+  });
+  const controlPoint: EditorControlPoint = {
+    id: cpId,
+    name: "End of Double Track",
+    turnouts: [swId],
+    signals: [sig("AtoB"), sig("BtoA")],
+  };
+  return { turnout, controlPoint };
+}
+
 /** Assemble a spec-conformant doc from the editor state. */
 export function stateToDoc(
   state: EditorState,
@@ -323,9 +386,12 @@ export function stateToDoc(
       // Double track: Main 2 is a real entity so turnouts/signals can attach.
       // On a loop it exists only for a Main 2 directional return (the U joins
       // the two lanes at the balloon); a same-main loop's parallel lead legs
-      // are ONE main.
+      // are ONE main. On a TRANSITION module (one endplate single, the other
+      // double) Main 2 only runs from the mainline turnout to the double end —
+      // the turnout that diverges to main2 is the single source of truth for
+      // where the transition sits (fd#175 / FMN-0038).
       ...(!state.loop && (state.configA === "double" || state.configB === "double")
-        ? [{ id: MAIN2_TRACK_ID, role: "main" as const, lane: 1, from: "A", to: "B" }]
+        ? [main2Track(state)]
         : []),
       ...(state.loop && state.loopReturn === "main2"
         ? [{ id: MAIN2_TRACK_ID, role: "main" as const, lane: 1, fromPos: 0, toPos: state.lengthInches }]
@@ -678,6 +744,10 @@ export interface ModuleFeatures {
   crossings: DrawCrossing[];
   /** Branch endplates — junction connectors off the module (#170). */
   branchConnectors: BranchConnector[];
+  /** Main 2's extent when it doesn't run the full module — a single↔double
+   * transition (Main 2 starts/ends at the mainline turnout). Null = full
+   * length (or no Main 2). Renderers draw the partial line + its diverge. */
+  main2Extent: { fromFrac: number; toFrac: number } | null;
   /** Lane extents across every feature (mains included; negative = outside
    * Main 1). Renderers size their vertical space from these. */
   laneMin: number;
@@ -801,9 +871,20 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     ...crossings.flatMap((x) => [x.laneA, x.laneB]),
   ];
   const loop = isLoopDoc(doc);
+  // A positioned Main 2 = a transition module (partial second main).
+  const main2 = doc.tracks.find((t) => t.id === MAIN2_TRACK_ID);
+  const main2Positioned =
+    !!main2 && (main2.fromPos != null || main2.toPos != null) && !loop;
+  const main2Extent = main2Positioned
+    ? {
+        fromFrac: clampFrac(main2!.fromPos ?? 0),
+        toFrac: clampFrac(main2!.toPos ?? len),
+      }
+    : null;
   return {
     doubleMain,
     loop,
+    main2Extent,
     loopInterchange: loop && doc.endplates.filter((e) => !e.at).length >= 2,
     loopReturn: loop && doc.loopReturn === "main2" ? "main2" : "same",
     loopRender: loop ? (doc.loopRender ?? null) : null,
