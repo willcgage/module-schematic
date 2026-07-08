@@ -218,7 +218,9 @@ export interface EditorCrossing {
   trackA: string;
   trackB: string;
 }
-/** A 3rd endplate — a branch/junction connection off the module (#170). */
+/** A 3rd+ endplate — a branch/junction connection off the module (#170).
+ * A module may have several (e.g. a set carrying a second railroad through:
+ * MoPac enters at one branch endplate and leaves at another). */
 export interface EditorBranch {
   label: string;
   pos: number;
@@ -245,8 +247,9 @@ export interface EditorState {
   turnouts: EditorTurnout[];
   /** Grade crossings / diamonds (#170). */
   crossings: EditorCrossing[];
-  /** Branch endplate C — a junction connection (#170); null = through module. */
-  branch: EditorBranch | null;
+  /** Branch endplates C, D, … — junction connections (#170); empty = through
+   * module. Emitted in order as endplates "C", "D", "E"… */
+  branches: EditorBranch[];
   controlPoints: EditorControlPoint[];
 }
 
@@ -261,7 +264,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     extraTracks: [],
     turnouts: [],
     crossings: [],
-    branch: null,
+    branches: [],
     controlPoints: [],
   };
 }
@@ -366,17 +369,14 @@ export function stateToDoc(
               ],
             },
           ]),
-      // Branch endplate C — a junction connection at pos, off one side (#170).
-      ...(state.branch
-        ? [
-            {
-              id: "C",
-              label: state.branch.label || "Branch",
-              tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.branch.config }],
-              at: { pos: state.branch.pos, side: state.branch.side },
-            },
-          ]
-        : []),
+      // Branch endplates C, D, … — junction connections at pos, off one side
+      // (#170). A set can carry several (e.g. a second railroad through).
+      ...state.branches.map((b, i) => ({
+        id: String.fromCharCode(67 + i), // C, D, E…
+        label: b.label || `Branch ${i + 1}`,
+        tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: b.config }],
+        at: { pos: b.pos, side: b.side },
+      })),
     ],
     tracks: [
       state.loop
@@ -527,8 +527,10 @@ export function docToState(
   };
   const loop = isLoopDoc(d!);
   const hasB = (d!.endplates ?? []).some((e) => e.id === "B");
-  // Branch endplate C (junction connection, #170).
-  const epC = (d!.endplates ?? []).find((e) => e.id !== "A" && e.id !== "B" && e.at);
+  // Branch endplates C, D, … (junction connections, #170).
+  const branchEps = (d!.endplates ?? []).filter(
+    (e) => e.id !== "A" && e.id !== "B" && e.at,
+  );
   return {
     lengthInches: len,
     loop,
@@ -536,14 +538,12 @@ export function docToState(
     configA: configOf("A"),
     // On a loop, a missing B means pure turnback; present = interchange loop.
     configB: loop && !hasB ? "none" : configOf("B"),
-    branch: epC
-      ? {
-          label: epC.label ?? "Branch",
-          pos: sc(epC.at!.pos),
-          side: epC.at!.side === "down" ? "down" : "up",
-          config: epC.tracks?.[0]?.config === "double" ? "double" : "single",
-        }
-      : null,
+    branches: branchEps.map((ep) => ({
+      label: ep.label ?? "Branch",
+      pos: sc(ep.at!.pos),
+      side: ep.at!.side === "down" ? "down" : "up",
+      config: ep.tracks?.[0]?.config === "double" ? "double" : "single",
+    })),
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
       name: x.name ?? "",

@@ -373,23 +373,31 @@ describe("crossings and branch endplates (#170)", () => {
     expect(back.controlPoints[0].crossings).toEqual(["x1"]);
   });
 
-  it("a branch endplate C round-trips and becomes a connector arrow", () => {
+  it("branch endplates C, D round-trip and become connector arrows", () => {
+    // The Frisco/MoPac case: a second railroad enters at one branch endplate
+    // and leaves at another.
     const s = emptyEditorState(120);
-    s.branch = { label: "Bowl Idaho", pos: 60, side: "down", config: "single" };
+    s.branches.push(
+      { label: "MoPac West", pos: 20, side: "down", config: "single" },
+      { label: "MoPac East", pos: 110, side: "up", config: "single" },
+    );
     const doc = stateToDoc(s, "M");
-    const epC = doc.endplates.find((e) => e.id === "C")!;
-    expect(epC).toMatchObject({ label: "Bowl Idaho", at: { pos: 60, side: "down" } });
-    // A/B untouched — still a through module, not a loop.
-    expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B", "C"]);
+    expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B", "C", "D"]);
+    expect(doc.endplates[2]).toMatchObject({ label: "MoPac West", at: { pos: 20, side: "down" } });
+    expect(doc.endplates[3]).toMatchObject({ label: "MoPac East", at: { pos: 110, side: "up" } });
 
     const f = moduleFeatures(doc);
     expect(f.branchConnectors).toEqual([
-      { id: "C", label: "Bowl Idaho", posFrac: 0.5, side: "down" },
+      { id: "C", label: "MoPac West", posFrac: 20 / 120, side: "down" },
+      { id: "D", label: "MoPac East", posFrac: 110 / 120, side: "up" },
     ]);
     expect(f.loop).toBe(false);
 
     const back = docToState(doc, 120);
-    expect(back.branch).toEqual({ label: "Bowl Idaho", pos: 60, side: "down", config: "single" });
+    expect(back.branches).toEqual([
+      { label: "MoPac West", pos: 20, side: "down", config: "single" },
+      { label: "MoPac East", pos: 110, side: "up", config: "single" },
+    ]);
   });
 
   it("docs without crossings or branches are unchanged", () => {
