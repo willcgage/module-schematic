@@ -897,3 +897,187 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     laneMax: Math.max(...allLanes),
   };
 }
+
+// ---- Endplate geometry & poses (#175) --------------------------------------
+//
+// Free-moN endplates are one standard interface; a single (x, y, heading) at
+// the track-crossing point fully determines mating (any endplate ↔ any
+// compatible endplate). Poses are in MODULE-LOCAL inches: endplate A's track
+// point at the origin, its OUTWARD normal pointing west (180°), so the module
+// body runs toward +X. A layout composes modules by walking joins and stacking
+// each pose's rigid transform (rotation + optional reflection for flips).
+//
+// Poses are DERIVED from the simple fields owners already enter — length +
+// geometry type/degrees/offset for the two axial endplates, plus the schematic
+// doc's branch endplates (#170). Complex shapes (wye, loop, other) fall back to
+// hand-entered overrides. Nothing is stored unless overridden.
+
+export type GeometryType =
+  | "straight"
+  | "corner_45"
+  | "corner_90"
+  | "curve"
+  | "offset"
+  | "dead_end"
+  | "wye"
+  | "other";
+
+export interface EndplatePose {
+  /** Endplate id — "A"/"B" axial, "C"/"D"… branch. */
+  id: string;
+  /** Module-local inches; endplate A's track point is the origin. */
+  x: number;
+  y: number;
+  /** Outward normal in degrees (0 = +X east, 90 = +Y north). A neighbour mates
+   * facing the opposite heading. */
+  heading: number;
+  trackConfig: "single" | "double";
+  /** Lateral track offsets from the crossing anchor (0 = centred single). */
+  trackOffsets: number[];
+  /** True when the pose was hand-entered, not derived (wye/loop/other). */
+  manual?: boolean;
+}
+
+export interface ModuleGeometryInput {
+  lengthInches: number;
+  geometryType?: string | null;
+  geometryDegrees?: number | null;
+  geometryOffsetInches?: number | null;
+  /** Axial endplate configs (A first, then B). Missing → single. */
+  endplateConfigs?: ("single" | "double" | null | undefined)[];
+  /** Branch endplates (from the schematic doc, #170), positioned along the
+   * mainline axis. */
+  branches?: {
+    id: string;
+    atPos: number;
+    side: "up" | "down";
+    config?: "single" | "double" | null;
+  }[];
+  /** Hand-entered pose overrides by endplate id — win over derivation. */
+  poseOverrides?: Record<string, { x: number; y: number; heading: number }>;
+  /** Half the spacing between the two tracks of a double endplate (Free-mo ≈ 1",
+   * Free-moN ≈ 9/16"). */
+  trackHalfSpacingInches?: number;
+}
+
+/** Signed turn a module applies to the through track (CCW/left positive). */
+export function geometryTurnDegrees(
+  geometryType?: string | null,
+  geometryDegrees?: number | null,
+): number {
+  switch (geometryType) {
+    case "corner_45":
+      return 45;
+    case "corner_90":
+      return 90;
+    case "curve":
+      return geometryDegrees ?? 0;
+    default:
+      return 0;
+  }
+}
+
+const DEG = Math.PI / 180;
+const norm360 = (d: number) => ((d % 360) + 360) % 360;
+
+function offsetsFor(
+  config: "single" | "double",
+  half: number,
+): number[] {
+  return config === "double" ? [-half, half] : [0];
+}
+
+/**
+ * Derive every endplate's module-local pose. A at the origin facing west; B
+ * placed by the module's geometry (straight/offset/corner/curve via a
+ * constant-radius arc = arc-length `lengthInches`, turning by the geometry
+ * angle); branch endplates positioned along the mainline axis facing out their
+ * side. A `dead_end`/loop module has no B. Overrides replace any derived pose.
+ */
+export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
+  const L = geo.lengthInches > 0 ? geo.lengthInches : 24;
+  const half = geo.trackHalfSpacingInches ?? 1;
+  const cfg = (i: number): "single" | "double" =>
+    geo.endplateConfigs?.[i] === "double" ? "double" : "single";
+  const withOverride = (p: EndplatePose): EndplatePose => {
+    const o = geo.poseOverrides?.[p.id];
+    return o ? { ...p, x: o.x, y: o.y, heading: norm360(o.heading), manual: true } : p;
+  };
+
+  const poses: EndplatePose[] = [];
+
+  // Endplate A — origin, outward normal west.
+  poses.push(
+    withOverride({
+      id: "A",
+      x: 0,
+      y: 0,
+      heading: 180,
+      trackConfig: cfg(0),
+      trackOffsets: offsetsFor(cfg(0), half),
+    }),
+  );
+
+  // Endplate B — unless the module is a dead end / turnback (single endplate).
+  const noB = geo.geometryType === "dead_end";
+  if (!noB) {
+    const turn = geometryTurnDegrees(geo.geometryType, geo.geometryDegrees);
+    let bx: number;
+    let by: number;
+    let bHeading: number;
+    if (geo.geometryType === "offset") {
+      // Parallel endplates, jogged sideways over the run.
+      bx = L;
+      by = geo.geometryOffsetInches ?? 0;
+      bHeading = 0;
+    } else if (turn === 0) {
+      bx = L;
+      by = 0;
+      bHeading = 0;
+    } else {
+      // Constant-radius arc of arc-length L turning `turn` (CCW/left).
+      const t = turn * DEG;
+      const r = L / t;
+      bx = r * Math.sin(t);
+      by = r * (1 - Math.cos(t));
+      bHeading = turn;
+    }
+    poses.push(
+      withOverride({
+        id: "B",
+        x: bx,
+        y: by,
+        heading: norm360(bHeading),
+        trackConfig: cfg(1),
+        trackOffsets: offsetsFor(cfg(1), half),
+      }),
+    );
+  }
+
+  // Branch endplates — at their along-axis position, facing out their side.
+  // Position along the (possibly curved) mainline is approximated on the A→B
+  // chord; the join solver refines with overrides where a module needs it.
+  for (const b of geo.branches ?? []) {
+    const frac = L > 0 ? Math.min(1, Math.max(0, b.atPos / L)) : 0;
+    const px = frac * L;
+    const config = b.config === "double" ? "double" : "single";
+    poses.push(
+      withOverride({
+        id: b.id,
+        x: px,
+        y: 0,
+        heading: b.side === "down" ? 270 : 90,
+        trackConfig: config,
+        trackOffsets: offsetsFor(config, half),
+      }),
+    );
+  }
+
+  return poses;
+}
+
+/** Whether a module shape's poses are fully derivable, or need manual entry
+ * (a helpful cue for the authoring UI). */
+export function poseNeedsManual(geometryType?: string | null): boolean {
+  return geometryType === "wye" || geometryType === "other";
+}

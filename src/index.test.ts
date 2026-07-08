@@ -11,6 +11,8 @@ import {
   buildPassingSiding,
   buildTransition,
   MAIN_TRACK_ID,
+  deriveEndplatePoses,
+  poseNeedsManual,
   type ModuleSchematicDoc,
 } from "./index";
 
@@ -458,5 +460,81 @@ describe("editor state machine", () => {
     ]);
     const adopted = state.extraTracks.find((t) => t.moduleTrackId === 7);
     expect(adopted?.trackName).toBe("House Track");
+  });
+});
+
+describe("endplate poses (#175)", () => {
+  it("straight: A at origin facing west, B at the far end facing east", () => {
+    const [a, b] = deriveEndplatePoses({ lengthInches: 100 });
+    expect(a).toMatchObject({ id: "A", x: 0, y: 0, heading: 180, trackConfig: "single", trackOffsets: [0] });
+    expect(b).toMatchObject({ id: "B", x: 100, y: 0, heading: 0 });
+  });
+
+  it("offset: B parallel but jogged sideways by the offset", () => {
+    const [, b] = deriveEndplatePoses({ lengthInches: 100, geometryType: "offset", geometryOffsetInches: 6 });
+    expect(b).toMatchObject({ id: "B", x: 100, y: 6, heading: 0 });
+  });
+
+  it("corner_90: B on a quarter arc of arc-length L, heading 90", () => {
+    const [, b] = deriveEndplatePoses({ lengthInches: 100, geometryType: "corner_90" });
+    const r = 100 / (Math.PI / 2);
+    expect(b.x).toBeCloseTo(r, 3);   // r·sin90 = r
+    expect(b.y).toBeCloseTo(r, 3);   // r·(1-cos90) = r
+    expect(b.heading).toBe(90);
+  });
+
+  it("corner_45 and curve turn by their angle", () => {
+    const [, b45] = deriveEndplatePoses({ lengthInches: 100, geometryType: "corner_45" });
+    expect(b45.heading).toBe(45);
+    const [, bc] = deriveEndplatePoses({ lengthInches: 60, geometryType: "curve", geometryDegrees: 30 });
+    expect(bc.heading).toBe(30);
+    const r = 60 / (30 * (Math.PI / 180));
+    expect(bc.x).toBeCloseTo(r * Math.sin(Math.PI / 6), 3);
+    expect(bc.y).toBeCloseTo(r * (1 - Math.cos(Math.PI / 6)), 3);
+  });
+
+  it("dead_end / turnback has a single endplate (no B)", () => {
+    const poses = deriveEndplatePoses({ lengthInches: 96, geometryType: "dead_end" });
+    expect(poses.map((p) => p.id)).toEqual(["A"]);
+  });
+
+  it("double endplate carries two track offsets (± half spacing)", () => {
+    const [a, b] = deriveEndplatePoses({
+      lengthInches: 96,
+      endplateConfigs: ["single", "double"],
+      trackHalfSpacingInches: 0.5625,
+    });
+    expect(a.trackOffsets).toEqual([0]);
+    expect(b.trackOffsets).toEqual([-0.5625, 0.5625]);
+    expect(b.trackConfig).toBe("double");
+  });
+
+  it("branch endplates sit along the axis facing out their side", () => {
+    const poses = deriveEndplatePoses({
+      lengthInches: 120,
+      branches: [
+        { id: "C", atPos: 20, side: "down" },
+        { id: "D", atPos: 108, side: "up", config: "double" },
+      ],
+      trackHalfSpacingInches: 1,
+    });
+    expect(poses.find((p) => p.id === "C")).toMatchObject({ x: 20, heading: 270, trackOffsets: [0] });
+    expect(poses.find((p) => p.id === "D")).toMatchObject({ x: 108, heading: 90, trackOffsets: [-1, 1] });
+  });
+
+  it("a manual override replaces the derived pose and flags it", () => {
+    const poses = deriveEndplatePoses({
+      lengthInches: 100,
+      geometryType: "wye",
+      poseOverrides: { B: { x: 40, y: -30, heading: 300 } },
+    });
+    expect(poses.find((p) => p.id === "B")).toMatchObject({ x: 40, y: -30, heading: 300, manual: true });
+  });
+
+  it("poseNeedsManual flags wye and other only", () => {
+    expect(poseNeedsManual("wye")).toBe(true);
+    expect(poseNeedsManual("other")).toBe(true);
+    expect(poseNeedsManual("corner_90")).toBe(false);
+    expect(poseNeedsManual("straight")).toBe(false);
   });
 });
