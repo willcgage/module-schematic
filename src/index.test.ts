@@ -13,6 +13,7 @@ import {
   MAIN_TRACK_ID,
   deriveEndplatePoses,
   poseNeedsManual,
+  poseOverridesFromDoc,
   type ModuleSchematicDoc,
 } from "./index";
 
@@ -536,5 +537,28 @@ describe("endplate poses (#175)", () => {
     expect(poseNeedsManual("other")).toBe(true);
     expect(poseNeedsManual("corner_90")).toBe(false);
     expect(poseNeedsManual("straight")).toBe(false);
+  });
+});
+
+describe("manual pose overrides (#175 phase 1b)", () => {
+  it("stateToDoc writes endplate.pose; docToState + poseOverridesFromDoc read it", () => {
+    const s = { ...emptyEditorState(120), poseOverrides: { B: { x: 40, y: -30, heading: 300 } } };
+    const doc = stateToDoc(s, "M");
+    expect(doc.endplates.find((e) => e.id === "B")?.pose).toEqual({ x: 40, y: -30, heading: 300 });
+    expect(doc.endplates.find((e) => e.id === "A")?.pose).toBeUndefined();
+    expect(poseOverridesFromDoc(doc)).toEqual({ B: { x: 40, y: -30, heading: 300 } });
+    expect(docToState(doc, 120).poseOverrides).toEqual({ B: { x: 40, y: -30, heading: 300 } });
+  });
+
+  it("deriveEndplatePoses honours the doc's overrides via poseOverridesFromDoc", () => {
+    const doc = stateToDoc(
+      { ...emptyEditorState(100), poseOverrides: { B: { x: 10, y: 90, heading: 90 } } },
+      "M",
+    );
+    const poses = deriveEndplatePoses({
+      lengthInches: 100,
+      poseOverrides: poseOverridesFromDoc(doc),
+    });
+    expect(poses.find((p) => p.id === "B")).toMatchObject({ x: 10, y: 90, heading: 90, manual: true });
   });
 });

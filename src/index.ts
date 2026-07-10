@@ -33,6 +33,11 @@ export interface SchematicEndplate {
    * lengthInches). Renderers draw a named connector arrow (the CATS/US&S
    * off-band idiom) until branch spines land. */
   at?: { pos: number; side: "up" | "down" };
+  /** Manual pose override (#175 phase 1b) — the endplate's module-local track
+   * point (x, y inches) + outward-normal heading (°). Hand-entered for shapes
+   * the geometry fields can't derive (wye, freeform, loop); wins over
+   * deriveEndplatePoses' derivation. */
+  pose?: { x: number; y: number; heading: number };
 }
 export interface SchematicTrack {
   id: string;
@@ -250,6 +255,8 @@ export interface EditorState {
   /** Branch endplates C, D, … — junction connections (#170); empty = through
    * module. Emitted in order as endplates "C", "D", "E"… */
   branches: EditorBranch[];
+  /** Manual endplate pose overrides by endplate id (#175 phase 1b). */
+  poseOverrides: Record<string, { x: number; y: number; heading: number }>;
   controlPoints: EditorControlPoint[];
 }
 
@@ -265,6 +272,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     turnouts: [],
     crossings: [],
     branches: [],
+    poseOverrides: {},
     controlPoints: [],
   };
 }
@@ -332,6 +340,16 @@ export function buildTransition(state: EditorState): {
   return { turnout, controlPoint };
 }
 
+/** Attach manual pose overrides (#175 phase 1b) to endplates by id. */
+function withPoses(
+  endplates: SchematicEndplate[],
+  overrides: Record<string, { x: number; y: number; heading: number }>,
+): SchematicEndplate[] {
+  return endplates.map((e) =>
+    overrides[e.id] ? { ...e, pose: overrides[e.id] } : e,
+  );
+}
+
 /** Assemble a spec-conformant doc from the editor state. */
 export function stateToDoc(
   state: EditorState,
@@ -343,41 +361,44 @@ export function stateToDoc(
     lengthInches: state.lengthInches,
     ...(state.loop ? { loop: true } : {}),
     ...(state.loop && state.loopReturn === "main2" ? { loopReturn: "main2" as const } : {}),
-    endplates: [
-      ...(state.loop
-        ? // Balloon loop: A is the entry. A standard endplate B on the balloon
-          // makes it an INTERCHANGE (second route connects at the loop, e.g.
-          // Seaford); configB "none" makes it a pure turnback.
-          [
-            { id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
-            ...(state.configB !== "none"
-              ? [{ id: "B", label: "Interchange", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] }]
-              : []),
-          ]
-        : [
-            { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
-            // Non-loop modules always have a real B ("none" never applies).
-            {
-              id: "B",
-              label: "East",
-              tracks: [
-                {
-                  trackId: MAIN_TRACK_ID,
-                  lane: 0,
-                  config: state.configB === "none" ? "single" : state.configB,
-                },
-              ],
-            },
-          ]),
-      // Branch endplates C, D, … — junction connections at pos, off one side
-      // (#170). A set can carry several (e.g. a second railroad through).
-      ...state.branches.map((b, i) => ({
-        id: String.fromCharCode(67 + i), // C, D, E…
-        label: b.label || `Branch ${i + 1}`,
-        tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: b.config }],
-        at: { pos: b.pos, side: b.side },
-      })),
-    ],
+    endplates: withPoses(
+      [
+        ...(state.loop
+          ? // Balloon loop: A is the entry. A standard endplate B on the balloon
+            // makes it an INTERCHANGE (second route connects at the loop, e.g.
+            // Seaford); configB "none" makes it a pure turnback.
+            [
+              { id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+              ...(state.configB !== "none"
+                ? [{ id: "B", label: "Interchange", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] }]
+                : []),
+            ]
+          : [
+              { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+              // Non-loop modules always have a real B ("none" never applies).
+              {
+                id: "B",
+                label: "East",
+                tracks: [
+                  {
+                    trackId: MAIN_TRACK_ID,
+                    lane: 0,
+                    config: state.configB === "none" ? "single" : state.configB,
+                  },
+                ],
+              },
+            ]),
+        // Branch endplates C, D, … — junction connections at pos, off one side
+        // (#170). A set can carry several (e.g. a second railroad through).
+        ...state.branches.map((b, i) => ({
+          id: String.fromCharCode(67 + i), // C, D, E…
+          label: b.label || `Branch ${i + 1}`,
+          tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: b.config }],
+          at: { pos: b.pos, side: b.side },
+        })),
+      ],
+      state.poseOverrides,
+    ),
     tracks: [
       state.loop
         ? // The main runs the lead from A and turns back at the balloon.
@@ -531,6 +552,7 @@ export function docToState(
   const branchEps = (d!.endplates ?? []).filter(
     (e) => e.id !== "A" && e.id !== "B" && e.at,
   );
+  const poseOverrides = poseOverridesFromDoc(d!);
   return {
     lengthInches: len,
     loop,
@@ -544,6 +566,7 @@ export function docToState(
       side: ep.at!.side === "down" ? "down" : "up",
       config: ep.tracks?.[0]?.config === "double" ? "double" : "single",
     })),
+    poseOverrides,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
       name: x.name ?? "",
@@ -1080,4 +1103,24 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
  * (a helpful cue for the authoring UI). */
 export function poseNeedsManual(geometryType?: string | null): boolean {
   return geometryType === "wye" || geometryType === "other";
+}
+
+/** Extract manual pose overrides from a schematic doc's endplates (#175 phase
+ * 1b) — the map deriveEndplatePoses / a footprint solver feeds as overrides. */
+export function poseOverridesFromDoc(
+  doc: ModuleSchematicDoc,
+): Record<string, { x: number; y: number; heading: number }> {
+  const out: Record<string, { x: number; y: number; heading: number }> = {};
+  for (const e of doc.endplates ?? []) {
+    if (
+      e.id &&
+      e.pose &&
+      typeof e.pose.x === "number" &&
+      typeof e.pose.y === "number" &&
+      typeof e.pose.heading === "number"
+    ) {
+      out[e.id] = { x: e.pose.x, y: e.pose.y, heading: e.pose.heading };
+    }
+  }
+  return out;
 }
