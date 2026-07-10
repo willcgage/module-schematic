@@ -109,8 +109,31 @@ describe("moduleFeatures", () => {
     };
     const f = moduleFeatures(legacy);
     expect(f.signals).toEqual([
-      { id: "s1", name: "Home", posFrac: 0.5, lane: 0, facing: "AtoB", side: "above" },
+      { id: "s1", name: "Home", posFrac: 0.5, lane: 0, facing: "AtoB", side: "above", stack: 0 },
     ]);
+  });
+
+  it("stacks signals that share a lane+side+position so they don't overlap", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 96,
+      endplates: [{ id: "A" }, { id: "B" }],
+      tracks: [{ id: "main", role: "main", lane: 0 }],
+      controlPoints: [
+        {
+          id: "cp1",
+          name: "Bridge",
+          turnouts: [],
+          signals: [
+            { id: "a1", pos: 48, track: "main", facing: "AtoB", side: "above" },
+            { id: "a2", pos: 48, track: "main", facing: "AtoB", side: "above" }, // same spot
+            { id: "b1", pos: 48, track: "main", facing: "BtoA", side: "below" },
+          ],
+        },
+      ],
+    };
+    const stacks = Object.fromEntries(moduleFeatures(doc).signals.map((s) => [s.id, s.stack]));
+    expect(stacks).toEqual({ a1: 0, a2: 1, b1: 0 }); // a2 fans out; b1 (other side) stays 0
   });
 
   it("clamps out-of-range positions into [0,1]", () => {

@@ -728,6 +728,10 @@ export interface DrawSignal {
   /** Owning control point's id, when the signal came from a CP group — lets a
    * renderer join the drawn signal back to interlocking-level state (aspects). */
   cp?: string;
+  /** 0-based rank among signals that would otherwise land on the exact same
+   * spot (same lane + side + position). Renderers offset each further from the
+   * track by `stack` so a control point's signals never overlap. */
+  stack: number;
 }
 /** A grade crossing / diamond — draw an X spanning the two lanes (#170). */
 export interface DrawCrossing {
@@ -859,6 +863,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     facing: (s.facing as SignalFacing) ?? "AtoB",
     side: s.side === "below" ? "below" : "above",
     ...(cp ? { cp } : {}),
+    stack: 0,
   });
   // Signals come from control-point groups; fall back to pre-grouping flat
   // signals for docs authored before the model changed.
@@ -867,6 +872,16 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         (c.signals ?? []).map((s) => drawSignal(s, c.name ?? "", c.id)),
       )
     : (doc.signals ?? []).map((s) => drawSignal(s, s.name ?? ""));
+  // De-collide: signals landing on the exact same lane+side+position get a
+  // rising stack rank so a renderer can fan them out (a control point often
+  // carries several signals at one interlocking).
+  const stackCount = new Map<string, number>();
+  for (const s of signals) {
+    const key = `${s.lane}|${s.side}|${Math.round(s.posFrac * 1000)}`;
+    const n = stackCount.get(key) ?? 0;
+    s.stack = n;
+    stackCount.set(key, n + 1);
+  }
 
   const crossings: DrawCrossing[] = (doc.crossings ?? []).map((x) => ({
     id: x.id,
