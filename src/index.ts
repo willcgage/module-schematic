@@ -320,7 +320,9 @@ export function buildTransition(state: EditorState): {
     pos,
     onTrack: MAIN_TRACK_ID,
     divergeTrack: MAIN2_TRACK_ID,
-    kind: aDouble ? "left" : "right",
+    // Main 2 sits above (lane 1); the throw that runs toward the double end is
+    // left when that end is east (single at A), right when it's west (#bug1).
+    kind: aDouble ? "right" : "left",
   };
 
   const cpId = nextId("cp", state.controlPoints.map((c) => c.id));
@@ -669,9 +671,12 @@ export function buildPassingSiding(state: EditorState): {
   const swIds = state.turnouts.map((t) => t.id);
   const swW = nextId("sw", swIds);
   const swE = nextId("sw", [...swIds, swW]);
+  // A siding above the main throws LEFT at its west turnout (body runs east) and
+  // RIGHT at its east turnout (body runs west) — both resolve to the same side,
+  // so `kind` and the drawn lane agree (divergeSideForHand / #bug1).
   const turnouts: EditorTurnout[] = [
-    { id: swW, name: "West Siding", pos: fromPos, onTrack: MAIN_TRACK_ID, divergeTrack: sidId, kind: "right" },
-    { id: swE, name: "East Siding", pos: toPos, onTrack: MAIN_TRACK_ID, divergeTrack: sidId, kind: "left" },
+    { id: swW, name: "West Siding", pos: fromPos, onTrack: MAIN_TRACK_ID, divergeTrack: sidId, kind: "left" },
+    { id: swE, name: "East Siding", pos: toPos, onTrack: MAIN_TRACK_ID, divergeTrack: sidId, kind: "right" },
   ];
 
   // One control point at each end, each grouping its switch and both-direction
@@ -695,6 +700,47 @@ export function buildPassingSiding(state: EditorState): {
   return { track, turnouts, controlPoints };
 }
 
+/**
+ * Build a crossover as one unit: a short connector track between Main 1 and
+ * Main 2, with a turnout on each main. The two turnouts sit on different lanes,
+ * so the feature resolver draws it as a diagonal (not a lane-paralleling siding)
+ * — this is what connects the two dots (#bug2). Needs a double-track module.
+ */
+export function buildCrossover(state: EditorState): {
+  track: EditorTrack;
+  turnouts: EditorTurnout[];
+} | null {
+  const hasSecond = state.configA === "double" || state.configB === "double";
+  if (state.loop || !hasSecond) return null;
+  const len = state.lengthInches > 0 ? state.lengthInches : 24;
+  const mid = Math.round(len / 2);
+  const gap = Math.max(3, Math.round(len * 0.04));
+  const w = Math.round(mid - gap / 2);
+  const e = Math.round(mid + gap / 2);
+
+  const trackIds = [MAIN_TRACK_ID, MAIN2_TRACK_ID, ...state.extraTracks.map((t) => t.id)];
+  const xoId = nextId("xo", trackIds);
+  const track: EditorTrack = {
+    id: xoId,
+    role: "crossover",
+    lane: 1,
+    fromPos: w,
+    toPos: e,
+    moduleTrackId: null,
+    trackName: "Crossover",
+  };
+
+  const swIds = state.turnouts.map((t) => t.id);
+  const sw1 = nextId("sw", swIds);
+  const sw2 = nextId("sw", [...swIds, sw1]);
+  const turnouts: EditorTurnout[] = [
+    { id: sw1, name: "Crossover", pos: w, onTrack: MAIN_TRACK_ID, divergeTrack: xoId, kind: "left" },
+    { id: sw2, name: "Crossover", pos: e, onTrack: MAIN2_TRACK_ID, divergeTrack: xoId, kind: "right" },
+  ];
+
+  return { track, turnouts };
+}
+
 // ---- Pure feature resolver (both renderers draw these) --------------------
 
 export interface DrawTrack {
@@ -708,6 +754,13 @@ export interface DrawTrack {
    * of the diverge diagonal. A spur off Main 2 starts at lane 1, not lane 0;
    * without this, renderers draw what looks like a crossover. */
   divergesFromLane: number;
+  /** The end that meets the main at its turnout (throat) and the far stub end,
+   * as fractions of length. Direction-preserving: unlike fromFrac/toFrac (always
+   * sorted West→East), these keep WHICH end joins, so an east-facing spur draws
+   * its throat on the east. A siding meets the main at both ends — there
+   * throat=fromFrac, stub=toFrac (the fields are only meaningful for spurs). */
+  throatFrac: number;
+  stubFrac: number;
   /** Inside the balloon of a loop module (#165). */
   inLoop: boolean;
 }
@@ -741,6 +794,18 @@ export interface DrawCrossing {
   laneA: number;
   laneB: number;
 }
+/** A crossover — a connector track joining two parallel mains through a turnout
+ * on each. Draw a straight diagonal between the two turnout points (unlike a
+ * siding, which parallels a lane between its turnouts). Detected structurally:
+ * a track whose turnouts sit on two different lanes. */
+export interface DrawCrossover {
+  id: string;
+  name: string;
+  fromPosFrac: number;
+  fromLane: number;
+  toPosFrac: number;
+  toLane: number;
+}
 /** A branch endplate — draw a connector stub + arrow + label off the given
  * side (the CATS/US&S off-band idiom, #170). */
 export interface BranchConnector {
@@ -769,6 +834,8 @@ export interface ModuleFeatures {
   signals: DrawSignal[];
   /** Grade crossings / diamonds (#170). */
   crossings: DrawCrossing[];
+  /** Crossovers — connector tracks between two mains (drawn as a diagonal). */
+  crossovers: DrawCrossover[];
   /** Branch endplates — junction connectors off the module (#170). */
   branchConnectors: BranchConnector[];
   /** Main 2's extent when it doesn't run the full module — a single↔double
@@ -779,6 +846,25 @@ export interface ModuleFeatures {
    * Main 1). Renderers size their vertical space from these. */
   laneMin: number;
   laneMax: number;
+}
+
+/**
+ * Which side of the main a diverging track draws on, given the turnout's HAND
+ * and the direction the track body runs along the main from the turnout
+ * (`stubDir`: +1 = the body extends east / toward B, −1 = west / toward A).
+ * Returns +1 (above the main) or −1 (below); 0 for a wye or unset hand (keep the
+ * authored side). A left-hand turnout throws its route to the same side its body
+ * runs (facing the frog, left is the inside of a body running that way); a
+ * right-hand throws to the opposite side. `kind` is the source of truth for the
+ * drawn side (#bug1) — the stored lane's sign is reconciled to match it.
+ */
+export function divergeSideForHand(
+  kind: TurnoutKind | undefined,
+  stubDir: number,
+): -1 | 0 | 1 {
+  if (kind !== "left" && kind !== "right") return 0; // wye / unset → no change
+  const s = stubDir >= 0 ? 1 : -1;
+  return kind === "left" ? (s as 1 | -1) : ((-s) as 1 | -1);
 }
 
 /**
@@ -825,21 +911,84 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     return sw ? (trackLane.get(sw.onTrack) ?? 0) : 0;
   };
 
+  // Turnouts grouped by the track they diverge onto (a track's throat/hand).
+  const turnoutsByTrack = new Map<string, SchematicTurnout[]>();
+  for (const sw of doc.turnouts ?? []) {
+    const arr = turnoutsByTrack.get(sw.divergeTrack) ?? [];
+    arr.push(sw);
+    turnoutsByTrack.set(sw.divergeTrack, arr);
+  }
+  // A crossover is a connector whose turnouts sit on two different lanes (one on
+  // each main) — drawn as a diagonal between them, never as a lane-paralleling
+  // siding. A passing siding's two turnouts share one lane, so it isn't one.
+  const isCrossover = (trackId: string): boolean => {
+    const sws = turnoutsByTrack.get(trackId) ?? [];
+    if (sws.length < 2) return false;
+    return new Set(sws.map((s) => trackLane.get(s.onTrack) ?? 0)).size >= 2;
+  };
+  // The in-inches extent of a track (explicit fromPos/toPos or node lookup).
+  const extentOf = (t: SchematicTrack): [number, number] | null => {
+    const from = t.fromPos ?? posOf(t.from);
+    const to = t.toPos ?? posOf(t.to);
+    return from == null || to == null ? null : [from, to];
+  };
+
+  // Reconcile each diverging track's drawn SIDE to its turnout's hand — `kind`
+  // is the source of truth (#bug1). Keep the stored lane's magnitude (which
+  // stacking slot) but take its sign from the hand + which way the body runs.
+  for (const t of doc.tracks) {
+    if (t.role === "main" || isCrossover(t.id)) continue;
+    const sw = turnoutsByTrack.get(t.id)?.[0];
+    if (!sw) continue;
+    const ext = extentOf(t);
+    if (!ext) continue;
+    const [from, to] = ext;
+    const far = Math.abs(to - sw.pos) >= Math.abs(from - sw.pos) ? to : from;
+    const side = divergeSideForHand(sw.kind, far - sw.pos);
+    if (side !== 0) trackLane.set(t.id, side * Math.abs(t.lane));
+  }
+
   const extraTracks: DrawTrack[] = [];
   for (const t of doc.tracks) {
     if (t.role === "main") continue; // the spine draws mains
-    const from = t.fromPos ?? posOf(t.from);
-    const to = t.toPos ?? posOf(t.to);
-    if (from == null || to == null) continue; // can't place it
+    if (isCrossover(t.id)) continue; // crossovers draw as diagonals, below
+    const ext = extentOf(t);
+    if (!ext) continue; // can't place it
+    const [from, to] = ext;
+    // Throat = the end nearest this track's turnout (the join to the main);
+    // with no turnout, keep entry order (from = throat) so the author's chosen
+    // joining end is honoured. This is what makes an east-facing spur draw its
+    // throat on the east instead of always west (#bug3).
+    const sw = turnoutsByTrack.get(t.id)?.[0];
+    const throatAtTo = sw != null && Math.abs(to - sw.pos) < Math.abs(from - sw.pos);
+    const throat = throatAtTo ? to : from;
+    const stub = throatAtTo ? from : to;
     extraTracks.push({
       id: t.id,
       role: t.role,
-      lane: t.lane,
+      lane: trackLane.get(t.id) ?? t.lane,
       fromFrac: clampFrac(Math.min(from, to)),
       toFrac: clampFrac(Math.max(from, to)),
+      throatFrac: clampFrac(throat),
+      stubFrac: clampFrac(stub),
       capacityFeet: t.capacityFeet ?? null,
       divergesFromLane: divergeOrigin(t.id),
       inLoop: t.inLoop === true,
+    });
+  }
+
+  // Crossovers — one connector track, a diagonal between its two turnout points.
+  const crossovers: DrawCrossover[] = [];
+  for (const t of doc.tracks) {
+    if (!isCrossover(t.id)) continue;
+    const [s1, s2] = turnoutsByTrack.get(t.id)!;
+    crossovers.push({
+      id: t.id,
+      name: t.trackName ?? "",
+      fromPosFrac: clampFrac(s1.pos),
+      fromLane: trackLane.get(s1.onTrack) ?? 0,
+      toPosFrac: clampFrac(s2.pos),
+      toLane: trackLane.get(s2.onTrack) ?? 1,
     });
   }
 
@@ -907,6 +1056,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     ...extraTracks.map((t) => t.lane),
     ...signals.map((s) => s.lane),
     ...crossings.flatMap((x) => [x.laneA, x.laneB]),
+    ...crossovers.flatMap((x) => [x.fromLane, x.toLane]),
   ];
   const loop = isLoopDoc(doc);
   // A positioned Main 2 = a transition module (partial second main).
@@ -930,6 +1080,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     turnouts,
     signals,
     crossings,
+    crossovers,
     branchConnectors,
     laneMin: Math.min(...allLanes),
     laneMax: Math.max(...allLanes),

@@ -10,6 +10,8 @@ import {
   docToState,
   buildPassingSiding,
   buildTransition,
+  buildCrossover,
+  divergeSideForHand,
   MAIN_TRACK_ID,
   deriveEndplatePoses,
   poseNeedsManual,
@@ -57,8 +59,10 @@ const oneMile: ModuleSchematicDoc = {
     { id: "sid1", role: "siding", lane: 1, fromPos: 40, toPos: 356, capacityFeet: 4213 },
   ],
   turnouts: [
-    { id: "sw1", pos: 40, onTrack: "main", divergeTrack: "sid1", kind: "right" },
-    { id: "sw2", pos: 356, onTrack: "main", divergeTrack: "sid1", kind: "left" },
+    // Siding above the main: west turnout throws left, east throws right (both
+    // resolve to the same "above" side — divergeSideForHand / #bug1).
+    { id: "sw1", pos: 40, onTrack: "main", divergeTrack: "sid1", kind: "left" },
+    { id: "sw2", pos: 356, onTrack: "main", divergeTrack: "sid1", kind: "right" },
   ],
   controlPoints: [
     {
@@ -206,6 +210,102 @@ describe("double track (main2)", () => {
     const siding = buildPassingSiding({ ...emptyEditorState(96), configA: "double" });
     expect(siding.track.lane).toBe(2);
     expect(buildPassingSiding(emptyEditorState(96)).track.lane).toBe(1);
+  });
+});
+
+describe("turnout hand drives the drawn side (#bug1)", () => {
+  it("divergeSideForHand: left throws to the body's side, right to the opposite", () => {
+    // body running east (stubDir +1)
+    expect(divergeSideForHand("left", 1)).toBe(1); // above
+    expect(divergeSideForHand("right", 1)).toBe(-1); // below
+    // body running west (stubDir −1) flips both
+    expect(divergeSideForHand("left", -1)).toBe(-1);
+    expect(divergeSideForHand("right", -1)).toBe(1);
+    // wye / unset → no opinion
+    expect(divergeSideForHand("wye", 1)).toBe(0);
+    expect(divergeSideForHand(undefined, 1)).toBe(0);
+  });
+
+  it("reconciles a spur's lane sign to its turnout's hand, keeping magnitude", () => {
+    const base: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 96,
+      endplates: [{ id: "A" }, { id: "B" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        // authored ABOVE (lane 2), but the hand says right → below
+        { id: "spur", role: "spur", lane: 2, fromPos: 30, toPos: 70 },
+      ],
+      turnouts: [{ id: "sw1", pos: 30, onTrack: "main", divergeTrack: "spur", kind: "right" }],
+    };
+    // right-hand, body runs east → below; magnitude 2 preserved
+    expect(moduleFeatures(base).extraTracks[0].lane).toBe(-2);
+    // flip the hand → above
+    const left = { ...base, turnouts: [{ ...base.turnouts![0], kind: "left" as const }] };
+    expect(moduleFeatures(left).extraTracks[0].lane).toBe(2);
+  });
+});
+
+describe("spur throat direction (#bug3)", () => {
+  const spurDoc = (fromPos: number, toPos: number, swPos: number): ModuleSchematicDoc => ({
+    version: 1,
+    lengthInches: 100,
+    endplates: [{ id: "A" }, { id: "B" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+      { id: "spur", role: "spur", lane: 1, fromPos, toPos },
+    ],
+    turnouts: [{ id: "sw1", pos: swPos, onTrack: "main", divergeTrack: "spur", kind: "left" }],
+  });
+
+  it("puts the throat at the turnout end — east-facing spur throats east", () => {
+    // spur body 20..60, turnout at 60 (east end) → throat east, stub west
+    const f = moduleFeatures(spurDoc(20, 60, 60)).extraTracks[0];
+    expect(f.throatFrac).toBeCloseTo(0.6);
+    expect(f.stubFrac).toBeCloseTo(0.2);
+    // extent stays sorted W→E for consumers that want it
+    expect(f.fromFrac).toBeCloseTo(0.2);
+    expect(f.toFrac).toBeCloseTo(0.6);
+  });
+
+  it("west-facing spur throats west", () => {
+    const f = moduleFeatures(spurDoc(20, 60, 20)).extraTracks[0];
+    expect(f.throatFrac).toBeCloseTo(0.2);
+    expect(f.stubFrac).toBeCloseTo(0.6);
+  });
+});
+
+describe("crossovers (#bug2)", () => {
+  it("a connector with turnouts on two mains resolves to a diagonal", () => {
+    const s = { ...emptyEditorState(96), configA: "double" as const, configB: "double" as const };
+    const built = buildCrossover(s)!;
+    expect(built.track.role).toBe("crossover");
+    s.extraTracks.push(built.track);
+    s.turnouts.push(...built.turnouts);
+    const doc = stateToDoc(s, "M");
+    const f = moduleFeatures(doc);
+    // drawn as one crossover, not two sidings
+    expect(f.crossovers).toHaveLength(1);
+    expect(f.extraTracks.find((t) => t.id === built.track.id)).toBeUndefined();
+    const xo = f.crossovers[0];
+    expect(xo.fromLane).toBe(0);
+    expect(xo.toLane).toBe(1);
+    expect(xo.fromPosFrac).toBeLessThan(xo.toPosFrac);
+  });
+
+  it("buildCrossover needs a double-track module", () => {
+    expect(buildCrossover(emptyEditorState(96))).toBeNull();
+    expect(buildCrossover({ ...emptyEditorState(96), configA: "double" })).not.toBeNull();
+  });
+
+  it("a passing siding (both turnouts on one main) is NOT a crossover", () => {
+    const s = emptyEditorState(96);
+    const built = buildPassingSiding(s);
+    s.extraTracks.push(built.track);
+    s.turnouts.push(...built.turnouts);
+    const f = moduleFeatures(stateToDoc(s, "M"));
+    expect(f.crossovers).toEqual([]);
+    expect(f.extraTracks).toHaveLength(1);
   });
 });
 
