@@ -508,48 +508,48 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
     expect(buildTransition({ ...emptyEditorState(96), configA: "double" as const, configB: "double" as const })).toBeNull();
   });
 
-  it("Main 2 runs only from the transition turnout to the double end", () => {
-    // Single at A, double at B: main2 begins at the turnout.
+  it("buildTransition makes Main 2 the surviving through main; Main 1 ends", () => {
+    // Single at A, double at B (east double): turnout ON Main 2 → Main 2 runs
+    // full length, Main 1 is the branch that ends at the junction.
     const s = { ...emptyEditorState(96), configB: "double" as const };
     const built = buildTransition(s)!;
     s.turnouts.push(built.turnout);
     s.controlPoints.push(built.controlPoint);
     const doc = stateToDoc(s, "FMN-0038");
-    const main2 = doc.tracks.find((t) => t.id === "main2")!;
-    expect(main2).toMatchObject({ fromPos: built.turnout.pos, toPos: 96 });
+    expect(doc.tracks.find((t) => t.id === "main2")).toMatchObject({ from: "A", to: "B" }); // full
     const f = moduleFeatures(doc);
-    expect(f.main2Extent).toEqual({
-      fromFrac: built.turnout.pos / 96,
-      toFrac: 1,
+    expect(f.main2Extent).toBeNull();
+    expect(f.transition).toEqual({
+      throughLane: 1, branchLane: 0, atFrac: built.turnout.pos / 96, doubleSide: "east",
     });
-    // Round-trips: the turnout comes back, so the extent re-derives.
+    // Round-trips: the turnout comes back.
     const back = docToState(doc, 96);
     expect(back.turnouts.find(isTransitionTurnout)?.pos).toBe(built.turnout.pos);
 
-    // Double at A instead: main2 ends at the turnout.
+    // Double at A (west double): the junction sits toward the west.
     const s2 = { ...emptyEditorState(96), configA: "double" as const };
     const b2 = buildTransition(s2)!;
     s2.turnouts.push(b2.turnout);
-    const doc2 = stateToDoc(s2, "M");
-    expect(doc2.tracks.find((t) => t.id === "main2")).toMatchObject({
-      fromPos: 0,
-      toPos: b2.turnout.pos,
+    expect(moduleFeatures(stateToDoc(s2, "M")).transition).toEqual({
+      throughLane: 1, branchLane: 0, atFrac: b2.turnout.pos / 96, doubleSide: "west",
     });
   });
 
-  it("recognises a transition turnout authored ON Main 2 (either direction)", () => {
-    // FMN-0043 shape: west double, turnout on Main 2 diverging down to Main 1.
+  it("a turnout diverging TO Main 2 makes Main 2 the branch (partial + through=Main 1)", () => {
+    // west double, turnout on Main 1 diverging up to Main 2 → Main 2 ends.
     const s = { ...emptyEditorState(96), configA: "double" as const };
     s.turnouts.push({
       id: "sw1", name: "End of Double Track", pos: 72,
-      onTrack: MAIN2_TRACK_ID, divergeTrack: MAIN_TRACK_ID, kind: "left",
+      onTrack: MAIN_TRACK_ID, divergeTrack: MAIN2_TRACK_ID, kind: "right",
     });
     const doc = stateToDoc(s, "M");
     expect(doc.tracks.find((t) => t.id === "main2")).toMatchObject({ fromPos: 0, toPos: 72 });
-    expect(moduleFeatures(doc).main2Extent).toEqual({ fromFrac: 0, toFrac: 72 / 96 });
+    const f = moduleFeatures(doc);
+    expect(f.main2Extent).toEqual({ fromFrac: 0, toFrac: 72 / 96 });
+    expect(f.transition).toEqual({ throughLane: 0, branchLane: 1, atFrac: 72 / 96, doubleSide: "west" });
   });
 
-  it("derives the transition extent even if Main 2 is stored full-length, and it's not a crossover", () => {
+  it("FMN-0043: turnout ON Main 2, Main 2 stored full-length → Main 2 is the through main, not a crossover", () => {
     const doc: ModuleSchematicDoc = {
       version: 1, lengthInches: 30,
       endplates: [
@@ -563,8 +563,9 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
       turnouts: [{ id: "sw1", pos: 18, kind: "left", onTrack: "main2", divergeTrack: "main" }],
     };
     const f = moduleFeatures(doc);
-    expect(f.main2Extent).toEqual({ fromFrac: 0, toFrac: 18 / 30 });
-    expect(f.crossovers).toEqual([]); // the lone Main1↔Main2 turnout is the transition, not a crossover
+    expect(f.transition).toEqual({ throughLane: 1, branchLane: 0, atFrac: 18 / 30, doubleSide: "west" });
+    expect(f.main2Extent).toBeNull(); // Main 2 is the through main → full
+    expect(f.crossovers).toEqual([]); // the lone Main1↔Main2 turnout is the transition
   });
 
   it("both-double modules keep the full-length Main 2 (no extent)", () => {

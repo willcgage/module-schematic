@@ -300,7 +300,10 @@ export function isTransitionTurnout(t: {
 function main2Track(state: EditorState): SchematicTrack {
   const bothDouble = state.configA === "double" && state.configB === "double";
   const sw = state.turnouts.find(isTransitionTurnout);
-  if (bothDouble || !sw) {
+  // Main 2 runs partial only when IT is the branch that ends (turnout diverges
+  // TO Main 2). If the turnout sits ON Main 2 (Main 2 is the surviving through
+  // main, #FMN-0043), Main 2 runs full and Main 1 is the one that ends.
+  if (bothDouble || !sw || sw.divergeTrack !== MAIN2_TRACK_ID) {
     return { id: MAIN2_TRACK_ID, role: "main", lane: 1, from: "A", to: "B" };
   }
   return state.configA === "double"
@@ -860,6 +863,17 @@ export interface ModuleFeatures {
    * transition (Main 2 starts/ends at the mainline turnout). Null = full
    * length (or no Main 2). Renderers draw the partial line + its diverge. */
   main2Extent: { fromFrac: number; toFrac: number } | null;
+  /** Single↔double transition, fully described (#FMN-0043). The `through` main
+   * runs the whole module; the `branch` main exists only on the double side and
+   * merges at `atFrac`. EITHER main can be through/branch — the surviving single
+   * track follows the transition turnout's onTrack, so the drawn side isn't
+   * hard-wired to Main 1. Null when not a transition. */
+  transition: {
+    throughLane: number;
+    branchLane: number;
+    atFrac: number;
+    doubleSide: "west" | "east";
+  } | null;
   /** Lane extents across every feature (mains included; negative = outside
    * Main 1). Renderers size their vertical space from these. */
   laneMin: number;
@@ -1160,17 +1174,34 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       fromFrac: clampFrac(main2!.fromPos ?? 0),
       toFrac: clampFrac(main2!.toPos ?? len),
     };
-  } else if (main2 && transitionSw && !loop) {
-    // Main 2 stored full-length but a transition turnout says otherwise — derive
-    // the extent from the junction so the double end reaches only to the turnout.
+  } else if (
+    main2 &&
+    transitionSw &&
+    transitionSw.divergeTrack === MAIN2_TRACK_ID &&
+    !loop
+  ) {
+    // Main 2 is the branch but stored full-length — derive its extent from the
+    // junction. (When Main 2 is the through main, it stays full: extent null.)
     main2Extent = aDbl
       ? { fromFrac: 0, toFrac: clampFrac(transitionSw.pos) } // double at west
       : { fromFrac: clampFrac(transitionSw.pos), toFrac: 1 }; // double at east
   }
+  // Full transition descriptor: the surviving (through) main follows the
+  // turnout's onTrack, so either main can be the one that ends (#FMN-0043).
+  const transition =
+    transitionSw && aDbl !== bDbl && !loop
+      ? {
+          throughLane: trackLane.get(transitionSw.onTrack) ?? 0,
+          branchLane: trackLane.get(transitionSw.divergeTrack) ?? 1,
+          atFrac: clampFrac(transitionSw.pos),
+          doubleSide: (aDbl ? "west" : "east") as "west" | "east",
+        }
+      : null;
   return {
     doubleMain,
     loop,
     main2Extent,
+    transition,
     loopInterchange: loop && doc.endplates.filter((e) => !e.at).length >= 2,
     loopReturn: loop && doc.loopReturn === "main2" ? "main2" : "same",
     loopRender: loop ? (doc.loopRender ?? null) : null,
