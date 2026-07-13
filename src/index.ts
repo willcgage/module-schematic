@@ -933,19 +933,48 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     return from == null || to == null ? null : [from, to];
   };
 
-  // Reconcile each diverging track's drawn SIDE to its turnout's hand — `kind`
-  // is the source of truth (#bug1). Keep the stored lane's magnitude (which
-  // stacking slot) but take its sign from the hand + which way the body runs.
+  // Reconcile each diverging track's drawn SIDE from its turnout's hand — `kind`
+  // is the source of truth (#bug1) — resolved TOPOLOGICALLY. The hand only picks
+  // a side for a turnout sitting on the main CENTERLINE (lane 0); a track
+  // diverging off any other track (Main 2, or a ladder rung) stays on its
+  // PARENT's side and stacks outward — a ladder turnout's hand is relative to
+  // its parent, not the main, so it must never flip a rung across the main. The
+  // stored lane's magnitude (stacking slot) is always kept.
+  const trackById = new Map(doc.tracks.map((t) => [t.id, t]));
+  const resolvedLanes = new Map<string, number>();
+  const resolving = new Set<string>();
+  const resolveLane = (id: string): number => {
+    const trk = trackById.get(id);
+    if (!trk) return 0;
+    if (trk.role === "main") return trk.lane; // mains are fixed (0, 1, …)
+    if (resolvedLanes.has(id)) return resolvedLanes.get(id)!;
+    if (resolving.has(id)) return trk.lane; // cycle guard
+    resolving.add(id);
+    let lane = trk.lane;
+    const sw = turnoutsByTrack.get(id)?.[0];
+    const ext = extentOf(trk);
+    if (sw && (sw.kind === "left" || sw.kind === "right") && !isCrossover(id) && ext) {
+      const parentLane = resolveLane(sw.onTrack);
+      let sign: number;
+      if (parentLane === 0) {
+        // On the main centerline — the hand chooses above/below.
+        const [from, to] = ext;
+        const far = Math.abs(to - sw.pos) >= Math.abs(from - sw.pos) ? to : from;
+        const s = divergeSideForHand(sw.kind, far - sw.pos);
+        sign = s !== 0 ? s : Math.sign(trk.lane) || 1;
+      } else {
+        // Off Main 2 / a ladder rung — follow the parent's side.
+        sign = Math.sign(parentLane) || 1;
+      }
+      lane = sign * Math.abs(trk.lane);
+    }
+    resolving.delete(id);
+    resolvedLanes.set(id, lane);
+    return lane;
+  };
   for (const t of doc.tracks) {
-    if (t.role === "main" || isCrossover(t.id)) continue;
-    const sw = turnoutsByTrack.get(t.id)?.[0];
-    if (!sw) continue;
-    const ext = extentOf(t);
-    if (!ext) continue;
-    const [from, to] = ext;
-    const far = Math.abs(to - sw.pos) >= Math.abs(from - sw.pos) ? to : from;
-    const side = divergeSideForHand(sw.kind, far - sw.pos);
-    if (side !== 0) trackLane.set(t.id, side * Math.abs(t.lane));
+    if (t.role === "main") continue;
+    trackLane.set(t.id, resolveLane(t.id));
   }
 
   const extraTracks: DrawTrack[] = [];
@@ -977,8 +1006,9 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     });
   }
 
-  // Crossovers — one connector track, a diagonal between its two turnout points.
+  // Crossovers — a diagonal between two parallel mains. Two shapes are drawn:
   const crossovers: DrawCrossover[] = [];
+  // (1) a dedicated connector track (buildCrossover) with a turnout on each main.
   for (const t of doc.tracks) {
     if (!isCrossover(t.id)) continue;
     const [s1, s2] = turnoutsByTrack.get(t.id)!;
@@ -989,6 +1019,36 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       fromLane: trackLane.get(s1.onTrack) ?? 0,
       toPosFrac: clampFrac(s2.pos),
       toLane: trackLane.get(s2.onTrack) ?? 1,
+    });
+  }
+  // (2) modelled as two turnouts each diverging onto the OTHER main (no connector
+  // track). Pair a leg with its return leg and connect the two turnout points.
+  const isMainId = (id?: string) => !!id && trackById.get(id)?.role === "main";
+  const m2m = (doc.turnouts ?? []).filter(
+    (sw) =>
+      isMainId(sw.onTrack) &&
+      isMainId(sw.divergeTrack) &&
+      (trackLane.get(sw.onTrack) ?? 0) !== (trackLane.get(sw.divergeTrack) ?? 1),
+  );
+  const usedLegs = new Set<string>();
+  for (const t1 of m2m) {
+    if (usedLegs.has(t1.id)) continue;
+    usedLegs.add(t1.id);
+    const t2 = m2m.find(
+      (x) =>
+        !usedLegs.has(x.id) &&
+        x.onTrack === t1.divergeTrack &&
+        x.divergeTrack === t1.onTrack,
+    );
+    if (t2) usedLegs.add(t2.id);
+    const end = t2 ?? t1; // lone leg → a straight rung across at its own pos
+    crossovers.push({
+      id: t2 ? `${t1.id}-${t2.id}` : t1.id,
+      name: t1.name ?? t2?.name ?? "",
+      fromPosFrac: clampFrac(t1.pos),
+      fromLane: trackLane.get(t1.onTrack) ?? 0,
+      toPosFrac: clampFrac(end === t1 ? t1.pos : end.pos),
+      toLane: trackLane.get(t1.divergeTrack) ?? 1,
     });
   }
 

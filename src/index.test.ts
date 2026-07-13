@@ -226,6 +226,50 @@ describe("turnout hand drives the drawn side (#bug1)", () => {
     expect(divergeSideForHand(undefined, 1)).toBe(0);
   });
 
+  it("a ladder rung follows its PARENT's side, not the main — hand never flips it across", () => {
+    // East yard ladder: each rung diverges off the previous, stacking below.
+    // sw2/sw3 are left-hand, but that's relative to their parent rung, so they
+    // must stay below the main (not flip above like a main-centerline turnout).
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 48,
+      endplates: [{ id: "A" }, { id: "B" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "r1", role: "spur", lane: -1, fromPos: 8, toPos: 45 },
+        { id: "r2", role: "spur", lane: -2, fromPos: 13, toPos: 45 },
+        { id: "r3", role: "spur", lane: -3, fromPos: 18, toPos: 45 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 8, onTrack: "main", divergeTrack: "r1", kind: "right" },
+        { id: "sw2", pos: 13, onTrack: "r1", divergeTrack: "r2", kind: "left" },
+        { id: "sw3", pos: 18, onTrack: "r2", divergeTrack: "r3", kind: "left" },
+      ],
+    };
+    const lanes = Object.fromEntries(
+      moduleFeatures(doc).extraTracks.map((t) => [t.id, t.lane]),
+    );
+    expect(lanes).toEqual({ r1: -1, r2: -2, r3: -3 }); // ladder stays intact
+  });
+
+  it("a spur off Main 2 stacks on Main 2's side (above), not driven across the main", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 48,
+      endplates: [
+        { id: "A", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+        { id: "B", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+      ],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+        { id: "w1", role: "spur", lane: 2, fromPos: 8, toPos: 45 },
+      ],
+      turnouts: [{ id: "sw", pos: 8, onTrack: "main2", divergeTrack: "w1", kind: "right" }],
+    };
+    expect(moduleFeatures(doc).extraTracks[0].lane).toBe(2); // follows Main 2, above
+  });
+
   it("reconciles a spur's lane sign to its turnout's hand, keeping magnitude", () => {
     const base: ModuleSchematicDoc = {
       version: 1,
@@ -291,6 +335,33 @@ describe("crossovers (#bug2)", () => {
     expect(xo.fromLane).toBe(0);
     expect(xo.toLane).toBe(1);
     expect(xo.fromPosFrac).toBeLessThan(xo.toPosFrac);
+  });
+
+  it("draws a crossover modelled as two turnouts diverging onto the other main", () => {
+    // FMN-0025 shape: no connector track — a leg on each main pointing at the
+    // other. They pair into one diagonal between the two mains.
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 48,
+      endplates: [
+        { id: "A", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+        { id: "B", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+      ],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+      ],
+      turnouts: [
+        { id: "x1", pos: 40, onTrack: "main", divergeTrack: "main2", kind: "right" },
+        { id: "x2", pos: 34, onTrack: "main2", divergeTrack: "main", kind: "right" },
+      ],
+    };
+    const xs = moduleFeatures(doc).crossovers;
+    expect(xs).toHaveLength(1);
+    expect(xs[0]).toMatchObject({ fromLane: 0, toLane: 1 });
+    expect(new Set([xs[0].fromPosFrac, xs[0].toPosFrac])).toEqual(
+      new Set([40 / 48, 34 / 48]),
+    );
   });
 
   it("buildCrossover needs a double-track module", () => {
