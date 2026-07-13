@@ -281,9 +281,25 @@ export function emptyEditorState(lengthInches: number): EditorState {
  * endplates are double; on a transition module (one single, one double) it
  * runs between the mainline transition turnout (the one diverging to main2)
  * and the double end. */
+/**
+ * A single↔double transition turnout connects Main 1 and Main 2 — where the
+ * second main begins/ends. It may be authored either way round: on Main 1
+ * diverging to Main 2, or on Main 2 diverging to Main 1 (both describe the same
+ * junction). Recognise both so editing the direction doesn't drop the transition.
+ */
+export function isTransitionTurnout(t: {
+  onTrack?: string;
+  divergeTrack?: string;
+}): boolean {
+  return (
+    (t.onTrack === MAIN_TRACK_ID && t.divergeTrack === MAIN2_TRACK_ID) ||
+    (t.onTrack === MAIN2_TRACK_ID && t.divergeTrack === MAIN_TRACK_ID)
+  );
+}
+
 function main2Track(state: EditorState): SchematicTrack {
   const bothDouble = state.configA === "double" && state.configB === "double";
-  const sw = state.turnouts.find((t) => t.divergeTrack === MAIN2_TRACK_ID);
+  const sw = state.turnouts.find(isTransitionTurnout);
   if (bothDouble || !sw) {
     return { id: MAIN2_TRACK_ID, role: "main", lane: 1, from: "A", to: "B" };
   }
@@ -318,11 +334,13 @@ export function buildTransition(state: EditorState): {
     id: swId,
     name: "End of Double Track",
     pos,
-    onTrack: MAIN_TRACK_ID,
-    divergeTrack: MAIN2_TRACK_ID,
-    // Main 2 sits above (lane 1); the throw that runs toward the double end is
-    // left when that end is east (single at A), right when it's west (#bug1).
-    kind: aDouble ? "right" : "left",
+    // The turnout sits ON the ending main (Main 2, the upper track) and diverges
+    // down to the continuous Main 1 — the modeller's view of the junction. Left
+    // hand when the double end is west (Main 2 comes down going east), right
+    // when it's east (mirror).
+    onTrack: MAIN2_TRACK_ID,
+    divergeTrack: MAIN_TRACK_ID,
+    kind: aDouble ? "left" : "right",
   };
 
   const cpId = nextId("cp", state.controlPoints.map((c) => c.id));
@@ -1023,9 +1041,21 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   }
   // (2) modelled as two turnouts each diverging onto the OTHER main (no connector
   // track). Pair a leg with its return leg and connect the two turnout points.
+  // A single↔double TRANSITION turnout also connects the two mains but isn't a
+  // crossover (Main 2 ends there) — exclude it, and require a matching return
+  // leg so a lone main-to-main turnout is never drawn as a crossover.
   const isMainId = (id?: string) => !!id && trackById.get(id)?.role === "main";
+  const epDouble = (id: string) =>
+    (doc.endplates.find((e) => e.id === id)?.tracks ?? []).some(
+      (t) => t.config === "double",
+    );
+  const aDbl = epDouble("A");
+  const bDbl = epDouble("B");
+  const transitionSw =
+    aDbl !== bDbl ? (doc.turnouts ?? []).find(isTransitionTurnout) : undefined;
   const m2m = (doc.turnouts ?? []).filter(
     (sw) =>
+      sw !== transitionSw &&
       isMainId(sw.onTrack) &&
       isMainId(sw.divergeTrack) &&
       (trackLane.get(sw.onTrack) ?? 0) !== (trackLane.get(sw.divergeTrack) ?? 1),
@@ -1033,22 +1063,23 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   const usedLegs = new Set<string>();
   for (const t1 of m2m) {
     if (usedLegs.has(t1.id)) continue;
-    usedLegs.add(t1.id);
     const t2 = m2m.find(
       (x) =>
         !usedLegs.has(x.id) &&
+        x.id !== t1.id &&
         x.onTrack === t1.divergeTrack &&
         x.divergeTrack === t1.onTrack,
     );
-    if (t2) usedLegs.add(t2.id);
-    const end = t2 ?? t1; // lone leg → a straight rung across at its own pos
+    if (!t2) continue; // lone leg → a transition/junction, not a crossover
+    usedLegs.add(t1.id);
+    usedLegs.add(t2.id);
     crossovers.push({
-      id: t2 ? `${t1.id}-${t2.id}` : t1.id,
-      name: t1.name ?? t2?.name ?? "",
+      id: `${t1.id}-${t2.id}`,
+      name: t1.name ?? t2.name ?? "",
       fromPosFrac: clampFrac(t1.pos),
       fromLane: trackLane.get(t1.onTrack) ?? 0,
-      toPosFrac: clampFrac(end === t1 ? t1.pos : end.pos),
-      toLane: trackLane.get(t1.divergeTrack) ?? 1,
+      toPosFrac: clampFrac(t2.pos),
+      toLane: trackLane.get(t2.onTrack) ?? 1,
     });
   }
 
@@ -1123,12 +1154,19 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   const main2 = doc.tracks.find((t) => t.id === MAIN2_TRACK_ID);
   const main2Positioned =
     !!main2 && (main2.fromPos != null || main2.toPos != null) && !loop;
-  const main2Extent = main2Positioned
-    ? {
-        fromFrac: clampFrac(main2!.fromPos ?? 0),
-        toFrac: clampFrac(main2!.toPos ?? len),
-      }
-    : null;
+  let main2Extent: { fromFrac: number; toFrac: number } | null = null;
+  if (main2Positioned) {
+    main2Extent = {
+      fromFrac: clampFrac(main2!.fromPos ?? 0),
+      toFrac: clampFrac(main2!.toPos ?? len),
+    };
+  } else if (main2 && transitionSw && !loop) {
+    // Main 2 stored full-length but a transition turnout says otherwise — derive
+    // the extent from the junction so the double end reaches only to the turnout.
+    main2Extent = aDbl
+      ? { fromFrac: 0, toFrac: clampFrac(transitionSw.pos) } // double at west
+      : { fromFrac: clampFrac(transitionSw.pos), toFrac: 1 }; // double at east
+  }
   return {
     doubleMain,
     loop,

@@ -12,7 +12,9 @@ import {
   buildTransition,
   buildCrossover,
   divergeSideForHand,
+  isTransitionTurnout,
   MAIN_TRACK_ID,
+  MAIN2_TRACK_ID,
   deriveEndplatePoses,
   poseNeedsManual,
   poseOverridesFromDoc,
@@ -491,9 +493,10 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
     const s = { ...emptyEditorState(96), configB: "double" as const };
     const built = buildTransition(s)!;
     expect(built.turnout).toMatchObject({
-      onTrack: "main",
-      divergeTrack: "main2",
+      onTrack: "main2",
+      divergeTrack: "main",
       name: "End of Double Track",
+      kind: "right", // double at B (east) → right; west-double → left
     });
     expect(built.controlPoint.turnouts).toEqual([built.turnout.id]);
     expect(built.controlPoint.signals.map((x) => `${x.facing}:${x.side}`)).toEqual([
@@ -521,7 +524,7 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
     });
     // Round-trips: the turnout comes back, so the extent re-derives.
     const back = docToState(doc, 96);
-    expect(back.turnouts.find((t) => t.divergeTrack === "main2")?.pos).toBe(built.turnout.pos);
+    expect(back.turnouts.find(isTransitionTurnout)?.pos).toBe(built.turnout.pos);
 
     // Double at A instead: main2 ends at the turnout.
     const s2 = { ...emptyEditorState(96), configA: "double" as const };
@@ -532,6 +535,36 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
       fromPos: 0,
       toPos: b2.turnout.pos,
     });
+  });
+
+  it("recognises a transition turnout authored ON Main 2 (either direction)", () => {
+    // FMN-0043 shape: west double, turnout on Main 2 diverging down to Main 1.
+    const s = { ...emptyEditorState(96), configA: "double" as const };
+    s.turnouts.push({
+      id: "sw1", name: "End of Double Track", pos: 72,
+      onTrack: MAIN2_TRACK_ID, divergeTrack: MAIN_TRACK_ID, kind: "left",
+    });
+    const doc = stateToDoc(s, "M");
+    expect(doc.tracks.find((t) => t.id === "main2")).toMatchObject({ fromPos: 0, toPos: 72 });
+    expect(moduleFeatures(doc).main2Extent).toEqual({ fromFrac: 0, toFrac: 72 / 96 });
+  });
+
+  it("derives the transition extent even if Main 2 is stored full-length, and it's not a crossover", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1, lengthInches: 30,
+      endplates: [
+        { id: "A", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+        { id: "B", tracks: [{ trackId: "main", lane: 0, config: "single" }] },
+      ],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" }, // stale full-length
+      ],
+      turnouts: [{ id: "sw1", pos: 18, kind: "left", onTrack: "main2", divergeTrack: "main" }],
+    };
+    const f = moduleFeatures(doc);
+    expect(f.main2Extent).toEqual({ fromFrac: 0, toFrac: 18 / 30 });
+    expect(f.crossovers).toEqual([]); // the lone Main1↔Main2 turnout is the transition, not a crossover
   });
 
   it("both-double modules keep the full-length Main 2 (no extent)", () => {
