@@ -16,6 +16,7 @@ import {
   endplateWidthInches,
   FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   benchworkOutline,
+  sampleBenchworkOutline,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
   deriveEndplatePoses,
@@ -215,6 +216,45 @@ describe("benchwork outline (#benchwork authoring)", () => {
     const bare = stateToDoc({ ...emptyEditorState(96), outline: ring.slice(0, 2) }, "M");
     expect(bare.outline).toBeUndefined();
     expect(docToState(bare, 96).outline).toEqual([]);
+  });
+
+  it("round-trips per-edge bulge (curved edges)", () => {
+    const curved = [{ x: 0, y: 0, bulge: 6 }, { x: 40, y: 0 }, { x: 40, y: 20 }, { x: 0, y: 20 }];
+    const doc = stateToDoc({ ...emptyEditorState(96), outline: curved }, "M");
+    expect(doc.outline?.[0].bulge).toBe(6);
+    expect(docToState(doc, 96).outline).toEqual(curved);
+  });
+});
+
+describe("sampleBenchworkOutline", () => {
+  const square = [
+    { x: 0, y: 0 },
+    { x: 40, y: 0 },
+    { x: 40, y: 40 },
+    { x: 0, y: 40 },
+  ];
+
+  it("emits one point per vertex for an all-straight ring", () => {
+    expect(sampleBenchworkOutline(square)).toEqual(square);
+  });
+
+  it("bows a bulged edge out to its sagitta at the midpoint", () => {
+    // First edge (0,0)->(40,0) bulged +8: the arc midpoint sits 8 above the chord
+    // (left of +x is +y). Only the arc points fall strictly between x=0 and x=40.
+    const pts = sampleBenchworkOutline([{ ...square[0], bulge: 8 }, ...square.slice(1)], 20);
+    const onEdge = pts.filter((p) => p.x > 0.01 && p.x < 39.99);
+    const apex = onEdge.reduce((m, p) => (p.y > m.y ? p : m), { x: 0, y: -Infinity });
+    expect(apex.y).toBeCloseTo(8, 1);
+    expect(apex.x).toBeCloseTo(20, 1);
+    // more points than the 4 raw vertices (the arc was tessellated)
+    expect(pts.length).toBeGreaterThan(square.length);
+  });
+
+  it("negative bulge bows the other way", () => {
+    const pts = sampleBenchworkOutline([{ ...square[0], bulge: -8 }, ...square.slice(1)], 20);
+    const onEdge = pts.filter((p) => p.x > 0.01 && p.x < 39.99);
+    const low = onEdge.reduce((m, p) => (p.y < m.y ? p : m), { x: 0, y: Infinity });
+    expect(low.y).toBeCloseTo(-8, 1);
   });
 });
 
