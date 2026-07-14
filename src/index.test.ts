@@ -17,6 +17,8 @@ import {
   FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   benchworkOutline,
   sampleBenchworkOutline,
+  moduleFootprint,
+  moduleCenterline,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
   deriveEndplatePoses,
@@ -255,6 +257,43 @@ describe("sampleBenchworkOutline", () => {
     const onEdge = pts.filter((p) => p.x > 0.01 && p.x < 39.99);
     const low = onEdge.reduce((m, p) => (p.y < m.y ? p : m), { x: 0, y: Infinity });
     expect(low.y).toBeCloseTo(-8, 1);
+  });
+});
+
+describe("moduleFootprint (physical single-module geometry)", () => {
+  it("straight module: centre-line A→B, rectangular band, faces at width, no outline", () => {
+    const fp = moduleFootprint({ lengthInches: 96, geometryType: "straight", endplateWidths: { A: 24, B: 24 } });
+    expect(fp.centerline).toEqual([{ x: 0, y: 0 }, { x: 96, y: 0 }]);
+    // band ±12 around y=0, spanning x 0..96
+    const ys = fp.band.map((p) => p.y).sort((a, b) => a - b);
+    expect(ys[0]).toBeCloseTo(-12);
+    expect(ys[ys.length - 1]).toBeCloseTo(12);
+    // A face at x=0 spans 24"; B face at x=96
+    expect(fp.endplateFaces[0].mid).toEqual({ x: 0, y: 0 });
+    expect(Math.abs(fp.endplateFaces[0].p1.y - fp.endplateFaces[0].p2.y)).toBeCloseTo(24);
+    expect(fp.endplateFaces[1].mid.x).toBeCloseTo(96);
+    expect(fp.outline).toBeNull();
+  });
+
+  it("per-end widths taper the band; a 90° corner curves the centre-line", () => {
+    const fp = moduleFootprint({ lengthInches: 96, geometryType: "straight", endplateWidths: { A: 12, B: 24 } });
+    const atA = fp.band.filter((p) => Math.abs(p.x) < 1e-6).map((p) => Math.abs(p.y));
+    const atB = fp.band.filter((p) => Math.abs(p.x - 96) < 1e-6).map((p) => Math.abs(p.y));
+    expect(Math.max(...atA)).toBeCloseTo(6);
+    expect(Math.max(...atB)).toBeCloseTo(12);
+    const corner = moduleCenterline({ lengthInches: 96, geometryType: "corner_90" });
+    expect(corner.length).toBeGreaterThan(2); // arc sampled
+    expect(corner[corner.length - 1].y).toBeGreaterThan(1); // turned off-axis
+  });
+
+  it("an authored outline (with a curved edge) is sampled and wins over the band", () => {
+    const fp = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      outline: [{ x: 0, y: -12, bulge: -8 }, { x: 96, y: -12 }, { x: 96, y: 12 }, { x: 0, y: 12 }],
+    });
+    expect(fp.outline).not.toBeNull();
+    expect(fp.outline!.length).toBeGreaterThan(4); // the bulged edge tessellated
   });
 });
 

@@ -266,6 +266,144 @@ function arcSweep(a0: number, a1: number, am: number): number {
   return m <= one ? one : one - 2 * Math.PI;
 }
 
+// ── Physical module footprint (shared by the Repository preview + Free-Dispatcher)
+// The single-module geometry both apps draw: the main track centre-line, the
+// derived benchwork band (an endplate-width ribbon, the fallback when no outline
+// is authored), the endplate FACES, and the authored outline (arcs sampled).
+// Module-local inches: endplate A's track point at the origin, mainline +x,
+// perpendicular +y up. Free-Dispatcher's composeFootprint stacks these per module
+// by the join graph; here we expose the per-module primitive so the Repository
+// renders the exact same board.
+
+const DEG_FP = Math.PI / 180;
+
+export interface ModuleFootprintInput {
+  /** Mainline length (falls back to footprint length), inches. */
+  lengthInches: number;
+  geometryType?: string | null;
+  geometryDegrees?: number | null;
+  geometryOffsetInches?: number | null;
+  /** Authored endplate face widths by id ("A"/"B"…), inches; default recommended. */
+  endplateWidths?: Record<string, number>;
+  /** Authored benchwork outline (module-local inches), or absent for the band. */
+  outline?: BenchworkPoint[] | null;
+}
+
+export interface OutlineFace {
+  /** The endplate face's two corners + midpoint (the track point). */
+  p1: BenchworkPoint;
+  p2: BenchworkPoint;
+  mid: BenchworkPoint;
+}
+
+export interface ModuleFootprint {
+  /** Main track centre-line A→B (arcs sampled). */
+  centerline: BenchworkPoint[];
+  /** Derived benchwork band (endplate-width ribbon); the outline fallback. */
+  band: BenchworkPoint[];
+  /** Endplate faces: [A end, B end]. */
+  endplateFaces: OutlineFace[];
+  /** Authored outline (arc-sampled closed ring) or null → render the band. */
+  outline: BenchworkPoint[] | null;
+}
+
+/** Module-local main track centre-line (A→B), sampling arcs for curves/corners. */
+export function moduleCenterline(input: ModuleFootprintInput): BenchworkPoint[] {
+  const L = input.lengthInches > 0 ? input.lengthInches : 24;
+  const gt = input.geometryType;
+  if (gt === "dead_end") return [{ x: 0, y: 0 }];
+  if (gt === "offset") return [{ x: 0, y: 0 }, { x: L, y: input.geometryOffsetInches ?? 0 }];
+  const turn =
+    gt === "corner_45" ? 45 : gt === "corner_90" ? 90 : gt === "curve" ? (input.geometryDegrees ?? 0) : 0;
+  if (turn === 0) return [{ x: 0, y: 0 }, { x: L, y: 0 }];
+  const t = turn * DEG_FP;
+  const r = L / t;
+  const steps = 12;
+  const pts: BenchworkPoint[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = (t * i) / steps;
+    pts.push({ x: r * Math.sin(a), y: r * (1 - Math.cos(a)) });
+  }
+  return pts;
+}
+
+/** Unit left normal of the local direction at each centre-line vertex. */
+function centerlineNormals(center: BenchworkPoint[]): BenchworkPoint[] {
+  return center.map((_, i) => {
+    const a = center[Math.max(0, i - 1)];
+    const b = center[Math.min(center.length - 1, i + 1)];
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len;
+    dy /= len;
+    return { x: -dy, y: dx };
+  });
+}
+
+/** Fraction 0→1 along the centre-line by arc length (A end = 0, B end = 1). */
+function centerlineFractions(center: BenchworkPoint[]): number[] {
+  const cum = [0];
+  for (let i = 1; i < center.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(center[i].x - center[i - 1].x, center[i].y - center[i - 1].y));
+  const total = cum[cum.length - 1] || 1;
+  return cum.map((d) => d / total);
+}
+
+/** Benchwork band: the centre-line offset ±half-width, tapering widthA→widthB. */
+export function benchworkBand(
+  center: BenchworkPoint[],
+  widthA = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+  widthB = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+): BenchworkPoint[] {
+  if (center.length < 2) return [];
+  const n = centerlineNormals(center);
+  const f = centerlineFractions(center);
+  const half = (i: number) => (widthA * (1 - f[i]) + widthB * f[i]) / 2;
+  const left = center.map((p, i) => ({ x: p.x + n[i].x * half(i), y: p.y + n[i].y * half(i) }));
+  const right = center.map((p, i) => ({ x: p.x - n[i].x * half(i), y: p.y - n[i].y * half(i) }));
+  return [...left, ...right.reverse()];
+}
+
+/** The two endplate faces (the band's flat ends): [A end at widthA, B end at widthB]. */
+export function endplateFaceSegments(
+  center: BenchworkPoint[],
+  widthA = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+  widthB = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+): OutlineFace[] {
+  if (center.length < 2) return [];
+  const n = centerlineNormals(center);
+  const face = (i: number, w: number): OutlineFace => ({
+    p1: { x: center[i].x + n[i].x * (w / 2), y: center[i].y + n[i].y * (w / 2) },
+    p2: { x: center[i].x - n[i].x * (w / 2), y: center[i].y - n[i].y * (w / 2) },
+    mid: { x: center[i].x, y: center[i].y },
+  });
+  return [face(0, widthA), face(center.length - 1, widthB)];
+}
+
+/**
+ * The full single-module physical footprint: centre-line + derived band +
+ * endplate faces + the authored outline (arc-sampled), all in module-local
+ * inches. Renderers draw `outline ?? band`.
+ */
+export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
+  const centerline = moduleCenterline(input);
+  const widthA = endplateWidthFor(input.endplateWidths, "A");
+  const widthB = endplateWidthFor(input.endplateWidths, "B");
+  const authored = benchworkOutline(input);
+  return {
+    centerline,
+    band: benchworkBand(centerline, widthA, widthB),
+    endplateFaces: endplateFaceSegments(centerline, widthA, widthB),
+    outline: authored ? sampleBenchworkOutline(authored) : null,
+  };
+}
+
+function endplateWidthFor(widths: Record<string, number> | undefined, id: string): number {
+  const w = widths?.[id];
+  return typeof w === "number" && w > 0 ? w : FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES;
+}
+
 /** Whether a doc is a single-endplate turnback (explicit flag or one endplate). */
 export function isLoopDoc(doc: ModuleSchematicDoc): boolean {
   return doc.loop === true || doc.endplates.length === 1;
