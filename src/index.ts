@@ -38,6 +38,29 @@ export interface SchematicEndplate {
    * the geometry fields can't derive (wye, freeform, loop); wins over
    * deriveEndplatePoses' derivation. */
   pose?: { x: number; y: number; heading: number };
+  /** Free-moN endplate FACE width across the track, inches — the physical size
+   * of the standard interface at this end. Free-moN spec: 12″ minimum, 24″
+   * recommended. Absent = the recommended default (modules may differ end to
+   * end, e.g. a transition). */
+  widthInches?: number | null;
+}
+
+/** Free-moN endplate face width, inches — the connection interface size. */
+export const FREEMO_ENDPLATE_WIDTH_MIN_INCHES = 12;
+export const FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES = 24;
+
+/**
+ * The authored face width for an endplate, or the recommended default when a
+ * module hasn't authored one. The single source of truth both apps read so a
+ * module's endplate size is drawn the same in the Repository and the layout.
+ */
+export function endplateWidthInches(
+  ep: { widthInches?: number | null } | null | undefined,
+): number {
+  const w = ep?.widthInches;
+  return typeof w === "number" && w > 0
+    ? w
+    : FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES;
 }
 export interface SchematicTrack {
   id: string;
@@ -257,6 +280,9 @@ export interface EditorState {
   branches: EditorBranch[];
   /** Manual endplate pose overrides by endplate id (#175 phase 1b). */
   poseOverrides: Record<string, { x: number; y: number; heading: number }>;
+  /** Authored endplate face widths by endplate id, inches (Free-moN 12″ min,
+   * 24″ recommended). Absent id = the recommended default. */
+  endplateWidths: Record<string, number>;
   controlPoints: EditorControlPoint[];
 }
 
@@ -273,6 +299,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     crossings: [],
     branches: [],
     poseOverrides: {},
+    endplateWidths: {},
     controlPoints: [],
   };
 }
@@ -373,6 +400,18 @@ function withPoses(
   );
 }
 
+/** Attach authored endplate face widths by id; a non-positive/absent width is
+ * left off so it falls back to the recommended default. */
+function withWidths(
+  endplates: SchematicEndplate[],
+  widths: Record<string, number>,
+): SchematicEndplate[] {
+  return endplates.map((e) => {
+    const w = widths[e.id];
+    return typeof w === "number" && w > 0 ? { ...e, widthInches: w } : e;
+  });
+}
+
 /** Assemble a spec-conformant doc from the editor state. */
 export function stateToDoc(
   state: EditorState,
@@ -384,7 +423,8 @@ export function stateToDoc(
     lengthInches: state.lengthInches,
     ...(state.loop ? { loop: true } : {}),
     ...(state.loop && state.loopReturn === "main2" ? { loopReturn: "main2" as const } : {}),
-    endplates: withPoses(
+    endplates: withWidths(
+      withPoses(
       [
         ...(state.loop
           ? // Balloon loop: A is the entry. A standard endplate B on the balloon
@@ -421,6 +461,8 @@ export function stateToDoc(
         })),
       ],
       state.poseOverrides,
+    ),
+      state.endplateWidths,
     ),
     tracks: [
       state.loop
@@ -576,6 +618,13 @@ export function docToState(
     (e) => e.id !== "A" && e.id !== "B" && e.at,
   );
   const poseOverrides = poseOverridesFromDoc(d!);
+  // Authored endplate face widths by id (unscaled — a cross-track dimension,
+  // not a position along the module).
+  const endplateWidths: Record<string, number> = {};
+  for (const e of d!.endplates ?? []) {
+    if (typeof e.widthInches === "number" && e.widthInches > 0)
+      endplateWidths[e.id] = e.widthInches;
+  }
   return {
     lengthInches: len,
     loop,
@@ -590,6 +639,7 @@ export function docToState(
       config: ep.tracks?.[0]?.config === "double" ? "double" : "single",
     })),
     poseOverrides,
+    endplateWidths,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
       name: x.name ?? "",
