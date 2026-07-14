@@ -158,8 +158,32 @@ export interface ModuleSchematicDoc {
   /** Grade crossings / diamonds (#170). */
   crossings?: SchematicCrossing[];
   controlPoints?: SchematicControlPoint[];
+  /** Benchwork FOOTPRINT outline — the module's physical board shape as a
+   * polygon in module-local inches, in the same frame as the endplate poses
+   * (endplate A's track point at the origin, the mainline along +x, perpendicular
+   * +y up). Stored as an open ring; renderers close it. Absent = derive an
+   * approximate band from the endplate widths. */
+  outline?: BenchworkPoint[];
   /** @deprecated pre-grouping flat signals; read for back-compat. */
   signals?: SchematicSignal[];
+}
+
+/** A benchwork-outline vertex, module-local inches. */
+export interface BenchworkPoint {
+  x: number;
+  y: number;
+}
+
+/** The authored benchwork outline, or null when a module hasn't drawn one
+ * (renderers then fall back to a band derived from the endplate widths). A
+ * valid outline needs at least 3 points. */
+export function benchworkOutline(
+  doc: { outline?: BenchworkPoint[] | null } | null | undefined,
+): BenchworkPoint[] | null {
+  const pts = (doc?.outline ?? []).filter(
+    (p) => p && Number.isFinite(p.x) && Number.isFinite(p.y),
+  );
+  return pts.length >= 3 ? pts : null;
 }
 
 /** Whether a doc is a single-endplate turnback (explicit flag or one endplate). */
@@ -283,6 +307,10 @@ export interface EditorState {
   /** Authored endplate face widths by endplate id, inches (Free-moN 12″ min,
    * 24″ recommended). Absent id = the recommended default. */
   endplateWidths: Record<string, number>;
+  /** Benchwork footprint outline — polygon vertices in module-local inches
+   * (endplate A's track point at the origin, mainline +x, perpendicular +y up).
+   * Empty = no authored outline (fall back to the endplate-width band). */
+  outline: BenchworkPoint[];
   controlPoints: EditorControlPoint[];
 }
 
@@ -300,6 +328,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     branches: [],
     poseOverrides: {},
     endplateWidths: {},
+    outline: [],
     controlPoints: [],
   };
 }
@@ -526,6 +555,9 @@ export function stateToDoc(
         side: s.side,
       })),
     })),
+    // Benchwork footprint outline (module-local inches); only when it's a real
+    // ring (≥ 3 vertices).
+    ...(state.outline.length >= 3 ? { outline: state.outline } : {}),
   };
 }
 
@@ -625,6 +657,11 @@ export function docToState(
     if (typeof e.widthInches === "number" && e.widthInches > 0)
       endplateWidths[e.id] = e.widthInches;
   }
+  // Benchwork outline — module-local inches, kept as authored (a physical board
+  // shape, not rescaled with the mainline length).
+  const outline = (d!.outline ?? []).filter(
+    (p) => p && Number.isFinite(p.x) && Number.isFinite(p.y),
+  );
   return {
     lengthInches: len,
     loop,
@@ -640,6 +677,7 @@ export function docToState(
     })),
     poseOverrides,
     endplateWidths,
+    outline,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
       name: x.name ?? "",

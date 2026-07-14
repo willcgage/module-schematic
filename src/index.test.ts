@@ -15,6 +15,7 @@ import {
   isTransitionTurnout,
   endplateWidthInches,
   FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+  benchworkOutline,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
   deriveEndplatePoses,
@@ -182,6 +183,38 @@ describe("endplate face width (#per-endplate authoring)", () => {
     // must NOT rescale the way positions do.
     const state = docToState(doc, 48);
     expect(state.endplateWidths).toEqual({ A: 18 });
+  });
+});
+
+describe("benchwork outline (#benchwork authoring)", () => {
+  const ring = [
+    { x: 0, y: -12 },
+    { x: 96, y: -12 },
+    { x: 96, y: 12 },
+    { x: 0, y: 12 },
+  ];
+
+  it("benchworkOutline needs ≥3 valid points, else null", () => {
+    expect(benchworkOutline(null)).toBeNull();
+    expect(benchworkOutline({})).toBeNull();
+    expect(benchworkOutline({ outline: [{ x: 0, y: 0 }, { x: 1, y: 1 }] })).toBeNull();
+    expect(benchworkOutline({ outline: ring })).toEqual(ring);
+    // junk points are dropped
+    expect(
+      benchworkOutline({ outline: [...ring, { x: NaN, y: 0 }] as never }),
+    ).toEqual(ring);
+  });
+
+  it("stateToDoc emits the outline only for a real ring; docToState reads it back unscaled", () => {
+    const doc = stateToDoc({ ...emptyEditorState(96), outline: ring }, "M");
+    expect(doc.outline).toEqual(ring);
+    // reopen at a different module length — the physical board must NOT rescale.
+    expect(docToState(doc, 48).outline).toEqual(ring);
+
+    // fewer than 3 points → no outline key
+    const bare = stateToDoc({ ...emptyEditorState(96), outline: ring.slice(0, 2) }, "M");
+    expect(bare.outline).toBeUndefined();
+    expect(docToState(bare, 96).outline).toEqual([]);
   });
 });
 
