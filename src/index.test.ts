@@ -13,6 +13,8 @@ import {
   buildCrossover,
   divergeSideForHand,
   isTransitionTurnout,
+  endplateWidthInches,
+  FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
   deriveEndplatePoses,
@@ -148,6 +150,38 @@ describe("moduleFeatures", () => {
       turnouts: [{ id: "x", pos: 999, onTrack: "main", divergeTrack: "sid1" }],
     });
     expect(f.turnouts[0].posFrac).toBe(1);
+  });
+});
+
+describe("endplate face width (#per-endplate authoring)", () => {
+  it("defaults to the recommended width when unauthored", () => {
+    expect(endplateWidthInches(undefined)).toBe(FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES);
+    expect(endplateWidthInches({})).toBe(FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES);
+    expect(endplateWidthInches({ widthInches: 0 })).toBe(FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES);
+    expect(endplateWidthInches({ widthInches: null })).toBe(FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES);
+    expect(endplateWidthInches({ widthInches: 12 })).toBe(12);
+  });
+
+  it("stateToDoc emits authored widths per endplate; absent ends stay bare", () => {
+    const s = { ...emptyEditorState(96), endplateWidths: { A: 12, B: 24 } };
+    const doc = stateToDoc(s, "M");
+    const byId = Object.fromEntries(doc.endplates.map((e) => [e.id, e]));
+    expect(byId.A.widthInches).toBe(12);
+    expect(byId.B.widthInches).toBe(24);
+
+    const bare = stateToDoc(emptyEditorState(96), "M");
+    expect(bare.endplates.every((e) => e.widthInches === undefined)).toBe(true);
+  });
+
+  it("round-trips authored widths through docToState (unscaled by length)", () => {
+    const doc = stateToDoc(
+      { ...emptyEditorState(96), endplateWidths: { A: 18 } },
+      "M",
+    );
+    // Reopen at a different module length — width is a cross-track size, so it
+    // must NOT rescale the way positions do.
+    const state = docToState(doc, 48);
+    expect(state.endplateWidths).toEqual({ A: 18 });
   });
 });
 
