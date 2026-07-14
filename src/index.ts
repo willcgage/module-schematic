@@ -168,22 +168,102 @@ export interface ModuleSchematicDoc {
   signals?: SchematicSignal[];
 }
 
-/** A benchwork-outline vertex, module-local inches. */
+/** A benchwork-outline vertex, module-local inches. The edge from this vertex
+ * to the NEXT one is a straight line, unless `bulge` is set — then it's a
+ * circular arc whose midpoint is offset `bulge` inches (signed: + bows to the
+ * left of the P→next direction) perpendicular from the chord. */
 export interface BenchworkPoint {
   x: number;
   y: number;
+  bulge?: number;
 }
 
 /** The authored benchwork outline, or null when a module hasn't drawn one
  * (renderers then fall back to a band derived from the endplate widths). A
- * valid outline needs at least 3 points. */
+ * valid outline needs at least 3 points. Normalises each vertex to {x, y, bulge?}. */
 export function benchworkOutline(
   doc: { outline?: BenchworkPoint[] | null } | null | undefined,
 ): BenchworkPoint[] | null {
-  const pts = (doc?.outline ?? []).filter(
-    (p) => p && Number.isFinite(p.x) && Number.isFinite(p.y),
-  );
+  const pts = (doc?.outline ?? [])
+    .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+    .map((p) => ({
+      x: p.x,
+      y: p.y,
+      ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
+    }));
   return pts.length >= 3 ? pts : null;
+}
+
+/**
+ * Expand a benchwork outline (whose edges may be arcs) into a dense closed
+ * polyline for rendering — the SAME sampling both the Repository preview and
+ * Free-Dispatcher use, so a curve looks identical in both. Straight edges emit
+ * just their start vertex; a bulged edge emits `segsPerArc` points along the
+ * circular arc through the two endpoints and the bulged midpoint.
+ */
+export function sampleBenchworkOutline(
+  pts: BenchworkPoint[],
+  segsPerArc = 20,
+): { x: number; y: number }[] {
+  const n = pts.length;
+  if (n < 2) return pts.map((p) => ({ x: p.x, y: p.y }));
+  const out: { x: number; y: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[i];
+    const p1 = pts[(i + 1) % n];
+    out.push({ x: p0.x, y: p0.y });
+    const bulge = p0.bulge ?? 0;
+    if (!bulge) continue; // straight edge
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    const c = Math.hypot(dx, dy);
+    if (c < 1e-6) continue;
+    // Arc midpoint = chord midpoint + left-normal * sagitta.
+    const nx = -dy / c;
+    const ny = dx / c;
+    const mid = { x: (p0.x + p1.x) / 2 + nx * bulge, y: (p0.y + p1.y) / 2 + ny * bulge };
+    const circ = circleThrough(p0, mid, p1);
+    if (!circ) continue; // colinear → treat as straight
+    const a0 = Math.atan2(p0.y - circ.cy, p0.x - circ.cx);
+    const am = Math.atan2(mid.y - circ.cy, mid.x - circ.cx);
+    const a1 = Math.atan2(p1.y - circ.cy, p1.x - circ.cx);
+    // Sweep from a0 to a1 the way that passes through the midpoint angle.
+    const sweep = arcSweep(a0, a1, am);
+    for (let s = 1; s < segsPerArc; s++) {
+      const a = a0 + (sweep * s) / segsPerArc;
+      out.push({ x: circ.cx + circ.r * Math.cos(a), y: circ.cy + circ.r * Math.sin(a) });
+    }
+  }
+  return out;
+}
+
+/** Circle through three points, or null if (near-)colinear. */
+function circleThrough(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number },
+): { cx: number; cy: number; r: number } | null {
+  const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+  if (Math.abs(d) < 1e-9) return null;
+  const a2 = a.x * a.x + a.y * a.y;
+  const b2 = b.x * b.x + b.y * b.y;
+  const c2 = c.x * c.x + c.y * c.y;
+  const cx = (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d;
+  const cy = (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d;
+  return { cx, cy, r: Math.hypot(a.x - cx, a.y - cy) };
+}
+
+/** Signed sweep from a0 to a1 that goes through the midpoint angle am. */
+function arcSweep(a0: number, a1: number, am: number): number {
+  const norm = (x: number) => {
+    let v = (x - a0) % (2 * Math.PI);
+    if (v < 0) v += 2 * Math.PI;
+    return v; // 0..2π, measured CCW from a0
+  };
+  const m = norm(am);
+  const one = norm(a1);
+  // If the midpoint is reached before a1 going CCW, sweep CCW (+); else CW (−).
+  return m <= one ? one : one - 2 * Math.PI;
 }
 
 /** Whether a doc is a single-endplate turnback (explicit flag or one endplate). */
@@ -658,10 +738,14 @@ export function docToState(
       endplateWidths[e.id] = e.widthInches;
   }
   // Benchwork outline — module-local inches, kept as authored (a physical board
-  // shape, not rescaled with the mainline length).
-  const outline = (d!.outline ?? []).filter(
-    (p) => p && Number.isFinite(p.x) && Number.isFinite(p.y),
-  );
+  // shape, not rescaled with the mainline length); per-edge bulge preserved.
+  const outline = (d!.outline ?? [])
+    .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+    .map((p) => ({
+      x: p.x,
+      y: p.y,
+      ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
+    }));
   return {
     lengthInches: len,
     loop,
