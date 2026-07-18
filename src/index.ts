@@ -134,6 +134,37 @@ export interface SchematicControlPoint {
   crossings?: string[];
   signals?: SchematicSignal[];
 }
+/** What a rendered industry shows beside its name: a car count, a length in
+ * inches, or nothing (name only). Authored per industry. */
+export type IndustryLabelMode = "none" | "cars" | "inches";
+
+/**
+ * An industry — a rail-served customer that spots cars, authored as a SPAN on a
+ * track (a spur/siding, or the main). Positional like everything else: it lives
+ * in the same module-local inch frame and is rendered into the shared 2-D view,
+ * offset to `side`. The span length gives its car capacity; the dispatcher and
+ * crews read where cars set out. Mirrors a `freemon_industries` row.
+ */
+export interface SchematicIndustry {
+  id: string;
+  name: string;
+  /** Industry type value from the lookup (e.g. "team_track", "grain"). */
+  type?: string | null;
+  /** The track this industry spots cars on (a spur/siding id, or the main). */
+  track: string;
+  /** The car-spot span along that track, inches from endplate A. */
+  fromPos: number;
+  toPos: number;
+  /** Which side of the track the building + label sit on. */
+  side?: SignalSide;
+  /** Secondary readout at the label — a car count, a length, or none. */
+  labelMode?: IndustryLabelMode;
+  /** Car types this industry receives (car-type value strings). */
+  carTypes?: string[];
+  /** The `freemon_industries` row this is (single source of truth); null = new. */
+  moduleIndustryId?: number | null;
+}
+
 export interface ModuleSchematicDoc {
   version: number;
   module?: string;
@@ -158,6 +189,8 @@ export interface ModuleSchematicDoc {
   /** Grade crossings / diamonds (#170). */
   crossings?: SchematicCrossing[];
   controlPoints?: SchematicControlPoint[];
+  /** Rail-served industries — car-spot spans on a track (#industries). */
+  industries?: SchematicIndustry[];
   /** Benchwork FOOTPRINT outline — the module's physical board shape as a
    * polygon in module-local inches, in the same frame as the endplate poses
    * (endplate A's track point at the origin, the mainline along +x, perpendicular
@@ -427,6 +460,22 @@ export function scaleFeetToInches(feet: number, ratio = N_SCALE_RATIO): number {
   return (feet * 12) / ratio;
 }
 
+/** Length a spotted car occupies on N-scale track, inches. A 40-ft car body is
+ * ~3.0″; ~3.3″ over the couplers — the real spacing a cut of cars takes. The
+ * single constant every repo reads so a track's car count matches everywhere. */
+export const N_CAR_LENGTH_INCHES = 3.3;
+
+/** How many cars fit in a span, from its drawn length — the derived capacity a
+ * siding or an industry spot holds (never typed). */
+export function carCapacity(
+  fromPos: number,
+  toPos: number,
+  carLengthInches = N_CAR_LENGTH_INCHES,
+): number {
+  if (!(carLengthInches > 0)) return 0;
+  return Math.max(0, Math.floor(Math.abs(toPos - fromPos) / carLengthInches));
+}
+
 /** Parse a jsonb value into a schematic doc, or null if it isn't one. */
 export function asModuleSchematic(x: unknown): ModuleSchematicDoc | null {
   if (!x || typeof x !== "object") return null;
@@ -488,6 +537,20 @@ export interface EditorCrossing {
   trackA: string;
   trackB: string;
 }
+/** An industry as the authoring form binds it — a car-spot span on a track. */
+export interface EditorIndustry {
+  id: string;
+  name: string;
+  type: string;
+  track: string;
+  fromPos: number;
+  toPos: number;
+  side: SignalSide;
+  labelMode: IndustryLabelMode;
+  carTypes: string[];
+  /** freemon_industries row (single source of truth), or null for a new one. */
+  moduleIndustryId: number | null;
+}
 /** A 3rd+ endplate — a branch/junction connection off the module (#170).
  * A module may have several (e.g. a set carrying a second railroad through:
  * MoPac enters at one branch endplate and leaves at another). */
@@ -530,6 +593,8 @@ export interface EditorState {
    * Empty = no authored outline (fall back to the endplate-width band). */
   outline: BenchworkPoint[];
   controlPoints: EditorControlPoint[];
+  /** Rail-served industries — car-spot spans on a track (#industries). */
+  industries: EditorIndustry[];
 }
 
 /** Build the empty editor state for a module of the given length. */
@@ -548,6 +613,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     endplateWidths: {},
     outline: [],
     controlPoints: [],
+    industries: [],
   };
 }
 
@@ -773,6 +839,25 @@ export function stateToDoc(
         side: s.side,
       })),
     })),
+    // Industries — car-spot spans on a track; only when any are authored.
+    ...(state.industries.length > 0
+      ? {
+          industries: state.industries.map((ind) => ({
+            id: ind.id,
+            name: ind.name,
+            ...(ind.type ? { type: ind.type } : {}),
+            track: ind.track,
+            fromPos: ind.fromPos,
+            toPos: ind.toPos,
+            side: ind.side,
+            ...(ind.labelMode && ind.labelMode !== "none"
+              ? { labelMode: ind.labelMode }
+              : {}),
+            ...(ind.carTypes.length ? { carTypes: ind.carTypes } : {}),
+            moduleIndustryId: ind.moduleIndustryId,
+          })),
+        }
+      : {}),
     // Benchwork footprint outline (module-local inches); only when it's a real
     // ring (≥ 3 vertices).
     ...(state.outline.length >= 3 ? { outline: state.outline } : {}),
@@ -917,6 +1002,18 @@ export function docToState(
       kind: (t.kind as TurnoutKind) ?? "right",
     })),
     controlPoints: readControlPoints(d!, sc),
+    industries: (d!.industries ?? []).map((ind) => ({
+      id: ind.id,
+      name: ind.name ?? "",
+      type: ind.type ?? "",
+      track: ind.track,
+      fromPos: sc(ind.fromPos ?? 0),
+      toPos: ind.toPos != null ? sc(ind.toPos) : len,
+      side: (ind.side as SignalSide) ?? "above",
+      labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
+      carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
+      moduleIndustryId: ind.moduleIndustryId ?? null,
+    })),
   };
 }
 
@@ -1145,6 +1242,23 @@ export interface BranchConnector {
   posFrac: number;
   side: "up" | "down";
 }
+/** An industry — draw a car-spot span beside its track's lane, on `side`, with
+ * a name label + an optional car/length readout (#industries). */
+export interface DrawIndustry {
+  id: string;
+  name: string;
+  type: string | null;
+  /** Span as fractions of module length (sorted West→East). */
+  fromFrac: number;
+  toFrac: number;
+  /** Lane of the track it spots on, so it draws beside the right track. */
+  lane: number;
+  side: SignalSide;
+  labelMode: IndustryLabelMode;
+  /** Cars that spot here, derived from the drawn span length. */
+  cars: number;
+  carTypes: string[];
+}
 export interface ModuleFeatures {
   /** Whether either endplate declares a double-track main. */
   doubleMain: boolean;
@@ -1169,6 +1283,8 @@ export interface ModuleFeatures {
   crossovers: DrawCrossover[];
   /** Branch endplates — junction connectors off the module (#170). */
   branchConnectors: BranchConnector[];
+  /** Rail-served industries — car-spot spans beside their track (#industries). */
+  industries: DrawIndustry[];
   /** Main 2's extent when it doesn't run the full module — a single↔double
    * transition (Main 2 starts/ends at the mainline turnout). Null = full
    * length (or no Main 2). Renderers draw the partial line + its diverge. */
@@ -1465,6 +1581,24 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       side: e.at!.side === "down" ? "down" : "up",
     }));
 
+  // Industries — car-spot spans beside the track they serve.
+  const industries: DrawIndustry[] = (doc.industries ?? []).map((ind) => {
+    const from = ind.fromPos ?? 0;
+    const to = ind.toPos ?? len;
+    return {
+      id: ind.id,
+      name: ind.name ?? "",
+      type: ind.type ?? null,
+      fromFrac: clampFrac(Math.min(from, to)),
+      toFrac: clampFrac(Math.max(from, to)),
+      lane: trackLane.get(ind.track) ?? 0,
+      side: (ind.side as SignalSide) ?? "above",
+      labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
+      cars: carCapacity(from, to),
+      carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
+    };
+  });
+
   const allLanes = [
     0,
     doubleMain ? 1 : 0,
@@ -1521,6 +1655,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     crossings,
     crossovers,
     branchConnectors,
+    industries,
     laneMin: Math.min(...allLanes),
     laneMax: Math.max(...allLanes),
   };
