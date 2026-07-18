@@ -17,6 +17,8 @@ import {
   FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   benchworkOutline,
   sampleBenchworkOutline,
+  carCapacity,
+  N_CAR_LENGTH_INCHES,
   moduleFootprint,
   moduleCenterline,
   MAIN_TRACK_ID,
@@ -934,5 +936,106 @@ describe("manual pose overrides (#175 phase 1b)", () => {
       poseOverrides: poseOverridesFromDoc(doc),
     });
     expect(poses.find((p) => p.id === "B")).toMatchObject({ x: 10, y: 90, heading: 90, manual: true });
+  });
+});
+
+describe("industries (#industries)", () => {
+  const withIndustry = () => {
+    const s = emptyEditorState(96);
+    s.extraTracks.push({
+      id: "sp1",
+      role: "spur",
+      lane: 1,
+      fromPos: 10,
+      toPos: 60,
+      moduleTrackId: 7,
+      trackName: "Team Track",
+    });
+    s.industries.push({
+      id: "ind1",
+      name: "Ace Feed",
+      type: "grain",
+      track: "sp1",
+      fromPos: 20,
+      toPos: 53, // 33" span → 10 cars at 3.3"/car
+      side: "below",
+      labelMode: "cars",
+      carTypes: ["covered_hopper", "boxcar"],
+      moduleIndustryId: 42,
+    });
+    return s;
+  };
+
+  it("carCapacity derives cars from a span length (never typed)", () => {
+    expect(carCapacity(20, 53)).toBe(10); // 33 / 3.3
+    expect(carCapacity(53, 20)).toBe(10); // order-independent
+    expect(carCapacity(0, 0)).toBe(0);
+    expect(N_CAR_LENGTH_INCHES).toBeGreaterThan(0);
+  });
+
+  it("emits an industries array only when some are authored", () => {
+    expect(stateToDoc(emptyEditorState(96), "M").industries).toBeUndefined();
+    const doc = stateToDoc(withIndustry(), "M");
+    expect(doc.industries).toHaveLength(1);
+    expect(doc.industries?.[0]).toMatchObject({
+      id: "ind1",
+      name: "Ace Feed",
+      type: "grain",
+      track: "sp1",
+      fromPos: 20,
+      toPos: 53,
+      side: "below",
+      labelMode: "cars",
+      carTypes: ["covered_hopper", "boxcar"],
+      moduleIndustryId: 42,
+    });
+  });
+
+  it("round-trips through docToState unchanged at the same length", () => {
+    const doc = stateToDoc(withIndustry(), "M");
+    const back = docToState(doc, 96, []);
+    expect(back.industries).toEqual(withIndustry().industries);
+  });
+
+  it("rescales span positions with the module length, like other features", () => {
+    const doc = stateToDoc(withIndustry(), "M"); // authored at len 96
+    const back = docToState(doc, 48, []); // half length
+    expect(back.industries[0].fromPos).toBe(10); // 20 → 10
+    expect(back.industries[0].toPos).toBe(27); // 53 → 26.5 → 27
+  });
+
+  it("moduleFeatures resolves an industry to a DrawIndustry beside its track lane", () => {
+    const f = moduleFeatures(stateToDoc(withIndustry(), "M"));
+    expect(f.industries).toHaveLength(1);
+    expect(f.industries[0]).toMatchObject({
+      id: "ind1",
+      name: "Ace Feed",
+      lane: 1, // sits on spur sp1's lane
+      side: "below",
+      labelMode: "cars",
+      cars: 10,
+    });
+    expect(f.industries[0].fromFrac).toBeCloseTo(20 / 96, 5);
+    expect(f.industries[0].toFrac).toBeCloseTo(53 / 96, 5);
+  });
+
+  it("defaults labelMode to none and drops empty car-type lists", () => {
+    const s = emptyEditorState(96);
+    s.industries.push({
+      id: "i2",
+      name: "Interchange",
+      type: "",
+      track: "main",
+      fromPos: 0,
+      toPos: 24,
+      side: "above",
+      labelMode: "none",
+      carTypes: [],
+      moduleIndustryId: null,
+    });
+    const doc = stateToDoc(s, "M");
+    expect(doc.industries?.[0].labelMode).toBeUndefined();
+    expect(doc.industries?.[0].carTypes).toBeUndefined();
+    expect(docToState(doc, 96, []).industries[0].labelMode).toBe("none");
   });
 });
