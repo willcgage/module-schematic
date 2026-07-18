@@ -80,6 +80,11 @@ export interface SchematicTrack {
    * endplate A (past the throat = in the loop), lane is the ladder/arc index —
    * one record drives both the unrolled fan and a geometric render. */
   inLoop?: boolean;
+  /** Authored 2-D path for this track (module-local inches, open path with
+   * arcs) — the PHYSICAL shape a bent/rotated spur draws. Absent = derive from
+   * the main centre-line + lane, as before. Physical view only; the operations
+   * view stays positional (#2d-track). */
+  path?: BenchworkPoint[] | null;
 }
 export interface SchematicTurnout {
   id: string;
@@ -199,6 +204,10 @@ export interface ModuleSchematicDoc {
   outline?: BenchworkPoint[];
   /** @deprecated pre-grouping flat signals; read for back-compat. */
   signals?: SchematicSignal[];
+  /** Authored mainline centre-line (module-local inches, open path with arcs).
+   * Present = the owner drew the real shape; absent = derive from geometry.
+   * Physical view only — the operations view stays derived (#2d-track). */
+  mainPath?: BenchworkPoint[] | null;
 }
 
 /** A benchwork-outline vertex, module-local inches. The edge from this vertex
@@ -270,6 +279,62 @@ export function sampleBenchworkOutline(
   return out;
 }
 
+/**
+ * Expand an OPEN track path (whose edges may be arcs) into a dense polyline —
+ * the open-ended sibling of sampleBenchworkOutline (which closes the ring).
+ * Used for authored track centre-lines (a drawn mainline or spur). The final
+ * vertex is always emitted so the path reaches its end.
+ */
+export function samplePath(
+  pts: BenchworkPoint[],
+  segsPerArc = 20,
+): { x: number; y: number }[] {
+  const n = pts.length;
+  if (n < 2) return pts.map((p) => ({ x: p.x, y: p.y }));
+  const out: { x: number; y: number }[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = pts[i];
+    const p1 = pts[i + 1];
+    out.push({ x: p0.x, y: p0.y });
+    const bulge = p0.bulge ?? 0;
+    if (!bulge) continue; // straight edge
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    const c = Math.hypot(dx, dy);
+    if (c < 1e-6) continue;
+    const nx = -dy / c;
+    const ny = dx / c;
+    const mid = { x: (p0.x + p1.x) / 2 + nx * bulge, y: (p0.y + p1.y) / 2 + ny * bulge };
+    const circ = circleThrough(p0, mid, p1);
+    if (!circ) continue;
+    const a0 = Math.atan2(p0.y - circ.cy, p0.x - circ.cx);
+    const am = Math.atan2(mid.y - circ.cy, mid.x - circ.cx);
+    const a1 = Math.atan2(p1.y - circ.cy, p1.x - circ.cx);
+    const sweep = arcSweep(a0, a1, am);
+    for (let s = 1; s < segsPerArc; s++) {
+      const a = a0 + (sweep * s) / segsPerArc;
+      out.push({ x: circ.cx + circ.r * Math.cos(a), y: circ.cy + circ.r * Math.sin(a) });
+    }
+  }
+  out.push({ x: pts[n - 1].x, y: pts[n - 1].y });
+  return out;
+}
+
+/** Normalise an authored track path from a doc, or null if it isn't a real path
+ * (needs ≥ 2 valid points). Keeps per-vertex bulge. */
+export function trackPath(
+  path: BenchworkPoint[] | null | undefined,
+): BenchworkPoint[] | null {
+  const pts = (path ?? [])
+    .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+    .map((p) => ({
+      x: p.x,
+      y: p.y,
+      ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
+    }));
+  return pts.length >= 2 ? pts : null;
+}
+
 /** Circle through three points, or null if (near-)colinear. */
 function circleThrough(
   a: { x: number; y: number },
@@ -320,6 +385,10 @@ export interface ModuleFootprintInput {
   endplateWidths?: Record<string, number>;
   /** Authored benchwork outline (module-local inches), or absent for the band. */
   outline?: BenchworkPoint[] | null;
+  /** Authored mainline centre-line (module-local inches, open path with arcs).
+   * When present it wins over the geometry-derived centre-line — the owner drew
+   * the real shape (#2d-track, physical view only). */
+  mainPath?: BenchworkPoint[] | null;
 }
 
 export interface OutlineFace {
@@ -340,8 +409,12 @@ export interface ModuleFootprint {
   outline: BenchworkPoint[] | null;
 }
 
-/** Module-local main track centre-line (A→B), sampling arcs for curves/corners. */
+/** Module-local main track centre-line (A→B), sampling arcs for curves/corners.
+ * An authored `mainPath` wins — the owner drew the real shape; otherwise the
+ * centre-line is derived from the geometry fields (length + type/degrees/offset). */
 export function moduleCenterline(input: ModuleFootprintInput): BenchworkPoint[] {
+  const drawn = trackPath(input.mainPath);
+  if (drawn) return samplePath(drawn);
   const L = input.lengthInches > 0 ? input.lengthInches : 24;
   const gt = input.geometryType;
   if (gt === "dead_end") return [{ x: 0, y: 0 }];
@@ -499,6 +572,9 @@ export interface EditorTrack {
   trackName: string;
   /** Inside the balloon of a loop module (#165). */
   inLoop?: boolean;
+  /** Authored 2-D path (module-local inches) — a bent/rotated spur's real
+   * shape. Absent = derive from the main + lane (#2d-track). */
+  path?: BenchworkPoint[];
 }
 
 /** A module_tracks row as loaded for the editor. */
@@ -595,6 +671,9 @@ export interface EditorState {
   controlPoints: EditorControlPoint[];
   /** Rail-served industries — car-spot spans on a track (#industries). */
   industries: EditorIndustry[];
+  /** Authored mainline centre-line (module-local inches) — empty = derive from
+   * geometry. The owner-drawn real shape (#2d-track, physical view only). */
+  mainPath: BenchworkPoint[];
 }
 
 /** Build the empty editor state for a module of the given length. */
@@ -614,6 +693,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     outline: [],
     controlPoints: [],
     industries: [],
+    mainPath: [],
   };
 }
 
@@ -805,6 +885,7 @@ export function stateToDoc(
         trackName: t.trackName || undefined,
         capacityFeet: Math.round(inchesToScaleFeet(Math.abs(t.toPos - t.fromPos))),
         ...(state.loop && t.inLoop ? { inLoop: true } : {}),
+        ...(t.path && t.path.length >= 2 ? { path: t.path } : {}),
       })),
     ],
     turnouts: state.turnouts.map((t) => ({
@@ -861,6 +942,8 @@ export function stateToDoc(
     // Benchwork footprint outline (module-local inches); only when it's a real
     // ring (≥ 3 vertices).
     ...(state.outline.length >= 3 ? { outline: state.outline } : {}),
+    // Authored mainline path (module-local inches); only when it's a real path.
+    ...(state.mainPath.length >= 2 ? { mainPath: state.mainPath } : {}),
   };
 }
 
@@ -909,6 +992,8 @@ export function docToState(
         moduleTrackId,
         trackName: t.trackName ?? nameOf(moduleTrackId),
         ...(t.inLoop ? { inLoop: true } : {}),
+        // Authored path kept as-drawn (a physical shape, not rescaled with length).
+        ...(trackPath(t.path) ? { path: trackPath(t.path)! } : {}),
       });
     }
   }
@@ -969,6 +1054,8 @@ export function docToState(
       y: p.y,
       ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
     }));
+  // Authored mainline path — kept as drawn (a physical shape, not rescaled).
+  const mainPath = trackPath(d!.mainPath) ?? [];
   return {
     lengthInches: len,
     loop,
@@ -985,6 +1072,7 @@ export function docToState(
     poseOverrides,
     endplateWidths,
     outline,
+    mainPath,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
       name: x.name ?? "",

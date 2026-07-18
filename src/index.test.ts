@@ -17,6 +17,8 @@ import {
   FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   benchworkOutline,
   sampleBenchworkOutline,
+  samplePath,
+  trackPath,
   carCapacity,
   N_CAR_LENGTH_INCHES,
   moduleFootprint,
@@ -1037,5 +1039,60 @@ describe("industries (#industries)", () => {
     expect(doc.industries?.[0].labelMode).toBeUndefined();
     expect(doc.industries?.[0].carTypes).toBeUndefined();
     expect(docToState(doc, 96, []).industries[0].labelMode).toBe("none");
+  });
+});
+
+describe("authored track paths (#2d-track)", () => {
+  it("samplePath expands an open path and always reaches the last vertex", () => {
+    const straight = samplePath([{ x: 0, y: 0 }, { x: 10, y: 0 }]);
+    expect(straight[0]).toEqual({ x: 0, y: 0 });
+    expect(straight[straight.length - 1]).toEqual({ x: 10, y: 0 });
+    // A bulged edge emits intermediate arc points (more than the 2 endpoints).
+    const curved = samplePath([{ x: 0, y: 0, bulge: 3 }, { x: 12, y: 0 }]);
+    expect(curved.length).toBeGreaterThan(2);
+    expect(curved[curved.length - 1]).toEqual({ x: 12, y: 0 });
+  });
+
+  it("trackPath needs >= 2 valid points, else null", () => {
+    expect(trackPath(null)).toBeNull();
+    expect(trackPath([{ x: 0, y: 0 }])).toBeNull();
+    expect(trackPath([{ x: 0, y: 0 }, { x: 5, y: 5 }])).toHaveLength(2);
+  });
+
+  it("moduleCenterline prefers an authored mainPath over the geometry fields", () => {
+    // Geometry says straight, but the owner drew an L — the drawing wins.
+    const c = moduleCenterline({
+      lengthInches: 48,
+      geometryType: "straight",
+      mainPath: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 20 }],
+    });
+    expect(c[0]).toEqual({ x: 0, y: 0 });
+    expect(c[c.length - 1]).toEqual({ x: 40, y: 20 });
+  });
+
+  it("moduleCenterline still derives when no mainPath is authored", () => {
+    const c = moduleCenterline({ lengthInches: 48, geometryType: "straight" });
+    expect(c).toEqual([{ x: 0, y: 0 }, { x: 48, y: 0 }]);
+  });
+
+  it("round-trips mainPath + a track path through the doc, unscaled by length", () => {
+    const s = emptyEditorState(96);
+    s.mainPath = [{ x: 0, y: 0 }, { x: 50, y: 0, bulge: 4 }, { x: 96, y: 0 }];
+    s.extraTracks.push({
+      id: "sp1", role: "spur", lane: 1, fromPos: 10, toPos: 60,
+      moduleTrackId: null, trackName: "Bent Spur",
+      path: [{ x: 10, y: 6 }, { x: 40, y: 18 }],
+    });
+    const doc = stateToDoc(s, "M");
+    expect(doc.mainPath).toHaveLength(3);
+    expect(doc.tracks.find((t) => t.id === "sp1")?.path).toHaveLength(2);
+    // Reopen at HALF length — the path is a physical shape, so it must NOT rescale.
+    const back = docToState(doc, 48, []);
+    expect(back.mainPath).toEqual(s.mainPath);
+    expect(back.extraTracks[0].path).toEqual([{ x: 10, y: 6 }, { x: 40, y: 18 }]);
+  });
+
+  it("emits no mainPath key when none is authored", () => {
+    expect(stateToDoc(emptyEditorState(48), "M").mainPath).toBeUndefined();
   });
 });
