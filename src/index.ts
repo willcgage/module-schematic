@@ -152,16 +152,28 @@ export type IndustryLabelMode = "none" | "cars" | "inches";
  * offset to `side`. The span length gives its car capacity; the dispatcher and
  * crews read where cars set out. Mirrors a `freemon_industries` row.
  */
+/** One car-spot span of an industry on a track — an industry may have several
+ * (a house track serving one customer across multiple spot tracks, #54). */
+export interface IndustrySpot {
+  track: string;
+  fromPos: number;
+  toPos: number;
+  side?: SignalSide;
+}
+
 export interface SchematicIndustry {
   id: string;
   name: string;
   /** Industry type value from the lookup (e.g. "team_track", "grain"). */
   type?: string | null;
-  /** The track this industry spots cars on (a spur/siding id, or the main). */
+  /** The primary track this industry spots cars on (a spur/siding id or main).
+   * Additional spots (other tracks) live in `spots`. */
   track: string;
-  /** The car-spot span along that track, inches from endplate A. */
+  /** The primary car-spot span along `track`, inches from endplate A. */
   fromPos: number;
   toPos: number;
+  /** Extra car-spot spans on other tracks — the industry's house-track spots. */
+  spots?: IndustrySpot[];
   /** Which side of the track the building + label sit on. */
   side?: SignalSide;
   /** Secondary readout at the label — a car count, a length, or none. */
@@ -625,6 +637,8 @@ export interface EditorIndustry {
   track: string;
   fromPos: number;
   toPos: number;
+  /** Extra car-spot spans on other tracks (house-track spots, #54). */
+  spots: IndustrySpot[];
   side: SignalSide;
   labelMode: IndustryLabelMode;
   carTypes: string[];
@@ -935,6 +949,7 @@ export function stateToDoc(
             track: ind.track,
             fromPos: ind.fromPos,
             toPos: ind.toPos,
+            ...(ind.spots?.length ? { spots: ind.spots } : {}),
             side: ind.side,
             ...(ind.labelMode && ind.labelMode !== "none"
               ? { labelMode: ind.labelMode }
@@ -1103,6 +1118,12 @@ export function docToState(
       track: ind.track,
       fromPos: sc(ind.fromPos ?? 0),
       toPos: ind.toPos != null ? sc(ind.toPos) : len,
+      spots: (ind.spots ?? []).map((s) => ({
+        track: s.track,
+        fromPos: sc(s.fromPos ?? 0),
+        toPos: s.toPos != null ? sc(s.toPos) : len,
+        ...(s.side ? { side: s.side as SignalSide } : {}),
+      })),
       side: (ind.side as SignalSide) ?? "above",
       labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
       carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
@@ -1676,21 +1697,29 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     }));
 
   // Industries — car-spot spans beside the track they serve.
-  const industries: DrawIndustry[] = (doc.industries ?? []).map((ind) => {
-    const from = ind.fromPos ?? 0;
-    const to = ind.toPos ?? len;
-    return {
-      id: ind.id,
-      name: ind.name ?? "",
-      type: ind.type ?? null,
-      fromFrac: clampFrac(Math.min(from, to)),
-      toFrac: clampFrac(Math.max(from, to)),
-      lane: trackLane.get(ind.track) ?? 0,
-      side: (ind.side as SignalSide) ?? "above",
-      labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
-      cars: carCapacity(from, to),
-      carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
-    };
+  const industries: DrawIndustry[] = (doc.industries ?? []).flatMap((ind) => {
+    // Each spot (the primary track + any house-track spots) draws beside its
+    // own track; they share the industry's name, type and car types (#54).
+    const spots = [
+      { track: ind.track, fromPos: ind.fromPos, toPos: ind.toPos, side: ind.side },
+      ...(ind.spots ?? []),
+    ];
+    return spots.map((sp, i) => {
+      const from = sp.fromPos ?? 0;
+      const to = sp.toPos ?? len;
+      return {
+        id: i === 0 ? ind.id : `${ind.id}-s${i}`,
+        name: ind.name ?? "",
+        type: ind.type ?? null,
+        fromFrac: clampFrac(Math.min(from, to)),
+        toFrac: clampFrac(Math.max(from, to)),
+        lane: trackLane.get(sp.track) ?? 0,
+        side: (sp.side as SignalSide) ?? "above",
+        labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
+        cars: carCapacity(from, to),
+        carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
+      };
+    });
   });
 
   const allLanes = [

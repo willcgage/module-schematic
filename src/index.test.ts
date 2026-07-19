@@ -960,6 +960,7 @@ describe("industries (#industries)", () => {
       track: "sp1",
       fromPos: 20,
       toPos: 53, // 33" span → 10 cars at 3.3"/car
+      spots: [],
       side: "below",
       labelMode: "cars",
       carTypes: ["covered_hopper", "boxcar"],
@@ -1019,6 +1020,32 @@ describe("industries (#industries)", () => {
     });
     expect(f.industries[0].fromFrac).toBeCloseTo(20 / 96, 5);
     expect(f.industries[0].toFrac).toBeCloseTo(53 / 96, 5);
+  });
+
+  it("emits one DrawIndustry per spot for a multi-track (house-track) industry", () => {
+    const s = withIndustry();
+    s.extraTracks.push({
+      id: "sp2",
+      role: "spur",
+      lane: 2,
+      fromPos: 15,
+      toPos: 55,
+      moduleTrackId: 8,
+      trackName: "House Track 2",
+    });
+    s.industries[0].spots = [{ track: "sp2", fromPos: 30, toPos: 40, side: "above" }];
+    const doc = stateToDoc(s, "M");
+    expect(doc.industries?.[0].spots).toHaveLength(1);
+    // Round-trips.
+    expect(docToState(doc, 96, []).industries[0].spots).toEqual([
+      { track: "sp2", fromPos: 30, toPos: 40, side: "above" },
+    ]);
+    // Two DrawIndustry entries, one per spot, sharing the name; each on its lane.
+    const f = moduleFeatures(doc);
+    expect(f.industries).toHaveLength(2);
+    expect(f.industries.map((i) => i.name)).toEqual(["Ace Feed", "Ace Feed"]);
+    expect(f.industries.map((i) => i.lane)).toEqual([1, 2]);
+    expect(f.industries[1].id).toBe("ind1-s1");
   });
 
   it("defaults labelMode to none and drops empty car-type lists", () => {
