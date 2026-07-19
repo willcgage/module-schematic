@@ -1069,6 +1069,22 @@ describe("industries (#industries)", () => {
   });
 });
 
+describe("section breaks (#48)", () => {
+  it("round-trips section joints and rescales them with the module length", () => {
+    const s = emptyEditorState(96);
+    s.sectionBreaks = [24, 48, 72];
+    const doc = stateToDoc(s, "M");
+    expect(doc.sectionBreaks).toEqual([24, 48, 72]);
+    expect(docToState(doc, 96, []).sectionBreaks).toEqual([24, 48, 72]);
+    // Half the authored length → joints scale with it.
+    expect(docToState(doc, 48, []).sectionBreaks).toEqual([12, 24, 36]);
+  });
+  it("omits section breaks for a single-section module", () => {
+    const doc = stateToDoc(emptyEditorState(48), "M");
+    expect(doc.sectionBreaks).toBeUndefined();
+  });
+});
+
 describe("authored track paths (#2d-track)", () => {
   it("samplePath expands an open path and always reaches the last vertex", () => {
     const straight = samplePath([{ x: 0, y: 0 }, { x: 10, y: 0 }]);

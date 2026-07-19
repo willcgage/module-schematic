@@ -216,6 +216,10 @@ export interface ModuleSchematicDoc {
    * +y up). Stored as an open ring; renderers close it. Absent = derive an
    * approximate band from the endplate widths. */
   outline?: BenchworkPoint[];
+  /** Internal section joints — inches from endplate A where the module's boards
+   * split into sections. Operationally one unit; these mark construction/transport
+   * seams (exempt from the end-interface standards). Empty/absent = one section. */
+  sectionBreaks?: number[];
   /** @deprecated pre-grouping flat signals; read for back-compat. */
   signals?: SchematicSignal[];
   /** Authored mainline centre-line (module-local inches, open path with arcs).
@@ -686,6 +690,9 @@ export interface EditorState {
    * (endplate A's track point at the origin, mainline +x, perpendicular +y up).
    * Empty = no authored outline (fall back to the endplate-width band). */
   outline: BenchworkPoint[];
+  /** Internal section joints — inches from endplate A where the boards split
+   * into sections. Empty = a single section (#48). */
+  sectionBreaks: number[];
   controlPoints: EditorControlPoint[];
   /** Rail-served industries — car-spot spans on a track (#industries). */
   industries: EditorIndustry[];
@@ -709,6 +716,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     poseOverrides: {},
     endplateWidths: {},
     outline: [],
+    sectionBreaks: [],
     controlPoints: [],
     industries: [],
     mainPath: [],
@@ -962,6 +970,8 @@ export function stateToDoc(
     // Benchwork footprint outline (module-local inches); only when it's a real
     // ring (≥ 3 vertices).
     ...(state.outline.length >= 3 ? { outline: state.outline } : {}),
+    // Internal section joints (inches from A), when the module has more than one.
+    ...(state.sectionBreaks.length ? { sectionBreaks: state.sectionBreaks } : {}),
     // Authored mainline path (module-local inches); only when it's a real path.
     ...(state.mainPath.length >= 2 ? { mainPath: state.mainPath } : {}),
   };
@@ -1092,6 +1102,9 @@ export function docToState(
     poseOverrides,
     endplateWidths,
     outline,
+    sectionBreaks: (d!.sectionBreaks ?? [])
+      .filter((n) => Number.isFinite(n))
+      .map((n) => sc(n)),
     mainPath,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
