@@ -442,6 +442,31 @@ describe("turnout hand drives the drawn side (#bug1)", () => {
   });
 });
 
+describe("curved turnout flag (#turnout-palette)", () => {
+  const withTurnout = (curved?: boolean) => {
+    const s = emptyEditorState(96);
+    return {
+      ...s,
+      extraTracks: [
+        { id: "spur", role: "spur" as const, lane: 1, fromPos: 30, toPos: 50, moduleTrackId: null, trackName: "" },
+      ],
+      turnouts: [
+        { id: "sw1", name: "", pos: 30, onTrack: "main", divergeTrack: "spur", kind: "right" as const, size: 6, ...(curved ? { curved: true } : {}) },
+      ],
+    };
+  };
+
+  it("stateToDoc emits curved only when set; docToState reads it back", () => {
+    const on = stateToDoc(withTurnout(true), "M");
+    expect(on.turnouts?.[0].curved).toBe(true);
+    const off = stateToDoc(withTurnout(false), "M");
+    expect(off.turnouts?.[0].curved).toBeUndefined();
+    // round-trip preserves the flag (and its absence)
+    expect(docToState(on).turnouts[0].curved).toBe(true);
+    expect(docToState(off).turnouts[0].curved).toBeUndefined();
+  });
+});
+
 describe("spur throat direction (#bug3)", () => {
   const spurDoc = (fromPos: number, toPos: number, swPos: number): ModuleSchematicDoc => ({
     version: 1,
