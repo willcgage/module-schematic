@@ -94,6 +94,8 @@ export interface SchematicTurnout {
   kind?: TurnoutKind;
   name?: string | null;
   address?: string | null;
+  /** Frog number ("size") — #4, #6, #8, etc. Governs the diverging angle. */
+  size?: number | null;
 }
 export interface SchematicSignal {
   id: string;
@@ -590,6 +592,8 @@ export interface EditorTurnout {
   onTrack: string;
   divergeTrack: string;
   kind: TurnoutKind;
+  /** Frog number ("size") — #4, #6, #8, etc. Governs the diverging angle. */
+  size?: number;
 }
 export interface EditorCpSignal {
   id: string;
@@ -895,6 +899,7 @@ export function stateToDoc(
       divergeTrack: t.divergeTrack,
       kind: t.kind,
       name: t.name || undefined,
+      ...(t.size ? { size: t.size } : {}),
     })),
     ...(state.crossings.length > 0
       ? {
@@ -1088,6 +1093,7 @@ export function docToState(
       onTrack: t.onTrack,
       divergeTrack: t.divergeTrack,
       kind: (t.kind as TurnoutKind) ?? "right",
+      ...(t.size ? { size: t.size } : {}),
     })),
     controlPoints: readControlPoints(d!, sc),
     industries: (d!.industries ?? []).map((ind) => ({
