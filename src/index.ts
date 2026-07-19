@@ -96,6 +96,10 @@ export interface SchematicTurnout {
   address?: string | null;
   /** Frog number ("size") — #4, #6, #8, etc. Governs the diverging angle. */
   size?: number | null;
+  /** A curved turnout — the diverging route bows into an arc (both routes curve
+   * the same way) instead of leaving as a straight diagonal. Physical-render
+   * only; the operations view stays topological. */
+  curved?: boolean | null;
 }
 export interface SchematicSignal {
   id: string;
@@ -614,6 +618,9 @@ export interface EditorTurnout {
   kind: TurnoutKind;
   /** Frog number ("size") — #4, #6, #8, etc. Governs the diverging angle. */
   size?: number;
+  /** A curved turnout — the diverging route bows into an arc rather than a
+   * straight diagonal. Physical-render only (the operations view is topological). */
+  curved?: boolean;
 }
 export interface EditorCpSignal {
   id: string;
@@ -926,6 +933,7 @@ export function stateToDoc(
       kind: t.kind,
       name: t.name || undefined,
       ...(t.size ? { size: t.size } : {}),
+      ...(t.curved ? { curved: true } : {}),
     })),
     ...(state.crossings.length > 0
       ? {
@@ -1126,6 +1134,7 @@ export function docToState(
       divergeTrack: t.divergeTrack,
       kind: (t.kind as TurnoutKind) ?? "right",
       ...(t.size ? { size: t.size } : {}),
+      ...(t.curved ? { curved: true } : {}),
     })),
     controlPoints: readControlPoints(d!, sc),
     industries: (d!.industries ?? []).map((ind) => ({
