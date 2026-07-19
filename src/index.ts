@@ -433,6 +433,10 @@ export interface ModuleFootprint {
 export function moduleCenterline(input: ModuleFootprintInput): BenchworkPoint[] {
   const drawn = trackPath(input.mainPath);
   if (drawn) return samplePath(drawn);
+  // No drawn main and no geometry → the owner hasn't established the mainline
+  // yet. A fresh module opens as a blank board; the main is drawn as a layer,
+  // not auto-derived. (Legacy modules carry a geometry, so they still derive.)
+  if (!input.geometryType) return [];
   const L = input.lengthInches > 0 ? input.lengthInches : 24;
   const gt = input.geometryType;
   if (gt === "dead_end") return [{ x: 0, y: 0 }];

@@ -1118,6 +1118,17 @@ describe("authored track paths (#2d-track)", () => {
     expect(c).toEqual([{ x: 0, y: 0 }, { x: 48, y: 0 }]);
   });
 
+  it("moduleCenterline is empty with no mainPath and no geometry (fresh module)", () => {
+    expect(moduleCenterline({ lengthInches: 48 })).toEqual([]);
+    expect(moduleCenterline({ lengthInches: 48, geometryType: "" })).toEqual([]);
+    // …but a drawn main still wins even without geometry.
+    const c = moduleCenterline({
+      lengthInches: 48,
+      mainPath: [{ x: 0, y: 0 }, { x: 48, y: 0 }],
+    });
+    expect(c[c.length - 1]).toEqual({ x: 48, y: 0 });
+  });
+
   it("round-trips mainPath + a track path through the doc, unscaled by length", () => {
     const s = emptyEditorState(96);
     s.mainPath = [{ x: 0, y: 0 }, { x: 50, y: 0, bulge: 4 }, { x: 96, y: 0 }];
