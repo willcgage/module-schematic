@@ -6,6 +6,8 @@ import {
   scaleFeetToInches,
   nextId,
   emptyEditorState,
+  moduleSections,
+  sectionFootprints,
   stateToDoc,
   docToState,
   buildPassingSiding,
@@ -1357,5 +1359,103 @@ describe("checkEndplateWidth reads the offset as MAIN 1's position", () => {
       trackOffsetInches: 3,
     });
     expect(tight.find((i) => i.code === "clearance")?.requiredInches).toBeCloseTo(14);
+  });
+});
+
+describe("sections as objects (#96 phase 2)", () => {
+  const peninsula = [
+    { x: 60, y: 12 },
+    { x: 72, y: 12 },
+    { x: 72, y: 48 },
+    { x: 60, y: 48 },
+  ];
+
+  it("round-trips named sections with their own outlines", () => {
+    const s = emptyEditorState(96);
+    const doc = stateToDoc(
+      {
+        ...s,
+        sections: [
+          { id: "s1", name: "west transition" },
+          { id: "s2", name: "peninsula", outline: peninsula },
+        ],
+      },
+      "M",
+    );
+    expect(doc.sections).toEqual([
+      { id: "s1", name: "west transition" },
+      { id: "s2", name: "peninsula", outline: peninsula },
+    ]);
+    expect(docToState(doc).sections).toEqual(doc.sections);
+  });
+
+  it("is purely additive — a doc without sections is unchanged", () => {
+    const doc = stateToDoc(emptyEditorState(96), "M");
+    expect(doc.sections).toBeUndefined();
+    expect(docToState(doc).sections).toEqual([]);
+  });
+
+  it("drops sections with no id and blank names", () => {
+    const secs = moduleSections({
+      sections: [
+        { id: "", name: "nameless" },
+        { id: "s1", name: "   " },
+      ] as never,
+    });
+    expect(secs).toEqual([{ id: "s1" }]);
+  });
+
+  it("keeps an outline only when it's a real polygon", () => {
+    expect(moduleSections({ sections: [{ id: "s", outline: [{ x: 0, y: 0 }] }] })).toEqual([
+      { id: "s" },
+    ]);
+    expect(sectionFootprints({ sections: [{ id: "s", outline: peninsula }] })).toHaveLength(1);
+  });
+
+  it("shaped sections become the footprint and retire the module outline", () => {
+    const withSections = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      outline: [
+        { x: 0, y: -12 },
+        { x: 96, y: -12 },
+        { x: 96, y: 12 },
+        { x: 0, y: 12 },
+      ],
+      sections: [{ id: "s2", name: "peninsula", outline: peninsula }],
+    });
+    expect(withSections.sectionOutlines).toHaveLength(1);
+    // Both would be ambiguous — a renderer shouldn't have to pick a winner.
+    expect(withSections.outline).toBeNull();
+
+    // Without sections nothing changes: the module outline still speaks.
+    const plain = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      outline: [
+        { x: 0, y: -12 },
+        { x: 96, y: -12 },
+        { x: 96, y: 12 },
+        { x: 0, y: 12 },
+      ],
+    });
+    expect(plain.sectionOutlines).toEqual([]);
+    expect(plain.outline).not.toBeNull();
+  });
+
+  it("a section with only a name doesn't claim to be a shape", () => {
+    const fp = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      outline: [
+        { x: 0, y: -12 },
+        { x: 96, y: -12 },
+        { x: 96, y: 12 },
+        { x: 0, y: 12 },
+      ],
+      sections: [{ id: "s1", name: "west transition" }],
+    });
+    expect(fp.sectionOutlines).toEqual([]);
+    expect(fp.outline).not.toBeNull();
   });
 });
