@@ -487,6 +487,43 @@ describe("transition module: whichever main ends is the partial one (#FMN-0043)"
   });
 });
 
+describe("swap Main 1 / Main 2 positions (#FMN-0043)", () => {
+  const lanes = (swapped: boolean) => {
+    const s = emptyEditorState(30);
+    const d = stateToDoc(
+      { ...s, configA: "double" as const, configB: "double" as const, mainsSwapped: swapped },
+      "M",
+    );
+    return {
+      main: d.tracks.find((t) => t.id === MAIN_TRACK_ID)!.lane,
+      main2: d.tracks.find((t) => t.id === MAIN2_TRACK_ID)!.lane,
+      doc: d,
+    };
+  };
+
+  it("defaults to Main 1 on the centre line, Main 2 above", () => {
+    const { main, main2, doc } = lanes(false);
+    expect(main).toBe(0);
+    expect(main2).toBe(1);
+    expect(doc.mainsSwapped).toBeUndefined(); // absent unless set
+  });
+
+  it("swapped puts Main 1 above and Main 2 on the centre line", () => {
+    const { main, main2, doc } = lanes(true);
+    expect(main).toBe(1);
+    expect(main2).toBe(0);
+    expect(doc.mainsSwapped).toBe(true);
+    expect(docToState(doc).mainsSwapped).toBe(true);
+  });
+
+  it("a single-track module is unaffected by the flag", () => {
+    const s = emptyEditorState(30);
+    const d = stateToDoc({ ...s, mainsSwapped: true }, "M");
+    expect(d.tracks.find((t) => t.id === MAIN_TRACK_ID)!.lane).toBe(0);
+    expect(d.tracks.find((t) => t.id === MAIN2_TRACK_ID)).toBeUndefined();
+  });
+});
+
 describe("curved turnout flag (#turnout-palette)", () => {
   const withTurnout = (curved?: boolean) => {
     const s = emptyEditorState(96);
