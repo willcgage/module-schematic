@@ -754,6 +754,27 @@ export function isTransitionTurnout(t: {
   );
 }
 
+/**
+ * Main 1's extent. Normally it's the through main, A→B. But on a transition
+ * module where MAIN 2 is the surviving through main (the turnout sits ON Main 2
+ * and diverges to Main 1, #FMN-0043), Main 1 is the one that ENDS — it must stop
+ * at the turnout, or both mains draw endplate-to-endplate and the single-track
+ * end shows two tracks reaching it.
+ */
+function main1Track(state: EditorState): SchematicTrack {
+  const bothDouble = state.configA === "double" && state.configB === "double";
+  const isDouble = state.configA === "double" || state.configB === "double";
+  const sw = state.turnouts.find(isTransitionTurnout);
+  if (!isDouble || bothDouble || !sw || sw.onTrack !== MAIN2_TRACK_ID) {
+    return { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" };
+  }
+  return state.configA === "double"
+    ? // Double at A: Main 1 runs from A and ends at the turnout.
+      { id: MAIN_TRACK_ID, role: "main", lane: 0, fromPos: 0, toPos: sw.pos }
+    : // Double at B: Main 1 begins at the turnout and runs to B.
+      { id: MAIN_TRACK_ID, role: "main", lane: 0, fromPos: sw.pos, toPos: state.lengthInches };
+}
+
 function main2Track(state: EditorState): SchematicTrack {
   const bothDouble = state.configA === "double" && state.configB === "double";
   const sw = state.turnouts.find(isTransitionTurnout);
@@ -898,7 +919,9 @@ export function stateToDoc(
       state.loop
         ? // The main runs the lead from A and turns back at the balloon.
           { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, fromPos: 0, toPos: state.lengthInches }
-        : { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, from: "A", to: "B" },
+        : // Normally A→B; partial when MAIN 2 is the through main and Main 1 is
+          // the one that ends at the transition turnout (#FMN-0043).
+          main1Track(state),
       // Double track: Main 2 is a real entity so turnouts/signals can attach.
       // On a loop it exists only for a Main 2 directional return (the U joins
       // the two lanes at the balloon); a same-main loop's parallel lead legs
