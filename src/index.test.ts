@@ -442,6 +442,51 @@ describe("turnout hand drives the drawn side (#bug1)", () => {
   });
 });
 
+describe("transition module: whichever main ends is the partial one (#FMN-0043)", () => {
+  /** Double at A, single at B, with the transition turnout on the given main. */
+  const transition = (onTrack: string, divergeTrack: string) => {
+    const s = emptyEditorState(30);
+    return stateToDoc(
+      {
+        ...s,
+        configA: "double" as const,
+        configB: "single" as const,
+        turnouts: [
+          { id: "sw1", name: "End of Double Track", pos: 18, onTrack, divergeTrack, kind: "left" as const },
+        ],
+      },
+      "M",
+    );
+  };
+  const track = (d: ReturnType<typeof stateToDoc>, id: string) =>
+    d.tracks.find((t) => t.id === id)!;
+
+  it("Main 2 ends when the turnout diverges TO it (Main 1 stays through)", () => {
+    const d = transition(MAIN_TRACK_ID, MAIN2_TRACK_ID);
+    expect(track(d, MAIN2_TRACK_ID).toPos).toBe(18);
+    expect(track(d, MAIN_TRACK_ID).from).toBe("A");
+    expect(track(d, MAIN_TRACK_ID).to).toBe("B");
+  });
+
+  it("Main 1 ends when the turnout sits ON Main 2 (Main 2 is the through main)", () => {
+    const d = transition(MAIN2_TRACK_ID, MAIN_TRACK_ID);
+    // Main 2 runs endplate to endplate…
+    expect(track(d, MAIN2_TRACK_ID).from).toBe("A");
+    expect(track(d, MAIN2_TRACK_ID).to).toBe("B");
+    // …and Main 1 is the one that stops at the turnout — it used to run the
+    // full length too, so the single-track end showed two tracks reaching it.
+    expect(track(d, MAIN_TRACK_ID).toPos).toBe(18);
+    expect(track(d, MAIN_TRACK_ID).fromPos).toBe(0);
+  });
+
+  it("a plain double-track module keeps both mains full length", () => {
+    const s = emptyEditorState(30);
+    const d = stateToDoc({ ...s, configA: "double", configB: "double" }, "M");
+    expect(track(d, MAIN_TRACK_ID).to).toBe("B");
+    expect(track(d, MAIN2_TRACK_ID).to).toBe("B");
+  });
+});
+
 describe("curved turnout flag (#turnout-palette)", () => {
   const withTurnout = (curved?: boolean) => {
     const s = emptyEditorState(96);
