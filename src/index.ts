@@ -43,6 +43,15 @@ export interface SchematicEndplate {
    * recommended. Absent = the recommended default (modules may differ end to
    * end, e.g. a transition). */
   widthInches?: number | null;
+  /** Where this end's PRIMARY track (Main 1) crosses, as a signed distance from
+   * the plate's CENTRE in inches — the standard's own framing ("each track
+   * 0.5625 inches from the center of the endplate"). §2.0 requires only that
+   * every track stay ≥4″ from either fascia; centring is a recommendation the
+   * 20220628 revision relaxed, so an offset is legal — a transition SECTION
+   * commonly offsets its single-track end so the through main lines up with one
+   * of the two tracks at its double end. Absent = the recommended default
+   * (single centred; double straddling at ∓ half the track spacing). */
+  trackOffsetInches?: number | null;
 }
 
 /** Free-moN endplate face width, inches — the connection interface size. */
@@ -575,8 +584,26 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
  * side of the plate centre (§2.0 RP), and Main 1 sits on the centre-line, so the
  * plate centre is half a track spacing up. A single track crosses at the centre.
  */
-export function endplateTrackOffsetFor(config: TrackConfig | "none" | undefined): number {
-  return config === "double" ? FREEMO_TRACK_SPACING_INCHES / 2 : 0;
+export function endplateTrackOffsetFor(
+  config: TrackConfig | "none" | undefined,
+  authoredTrackOffset?: number | null,
+): number {
+  const v = -endplateTrackOffsetInches(authoredTrackOffset, config);
+  return v === 0 ? 0 : v; // never hand back -0 (it leaks into JSON and compares oddly)
+}
+
+/**
+ * Where an endplate's PRIMARY track (Main 1) crosses, as a signed distance from
+ * the plate's CENTRE — the standard's own framing. Authored value wins; absent
+ * falls back to the §2.0 recommendations: a single track centred (0), a double
+ * straddling so its two tracks land ∓ half the track spacing (Main 1 low).
+ */
+export function endplateTrackOffsetInches(
+  authored: number | null | undefined,
+  config: TrackConfig | "none" | undefined,
+): number {
+  if (typeof authored === "number" && Number.isFinite(authored)) return authored;
+  return config === "double" ? -FREEMO_TRACK_SPACING_INCHES / 2 : 0;
 }
 
 /** A Free-moN conformance problem with an endplate's width/track placement. */
@@ -812,6 +839,9 @@ export interface EditorState {
   /** Authored endplate face widths by endplate id, inches (Free-moN 12″ min,
    * 24″ recommended). Absent id = the recommended default. */
   endplateWidths: Record<string, number>;
+  /** Authored per-endplate TRACK offsets by id — the primary track's signed
+   * distance from the plate centre, inches. Absent id = the §2.0 default. */
+  endplateTrackOffsets: Record<string, number>;
   /** Benchwork footprint outline — polygon vertices in module-local inches
    * (endplate A's track point at the origin, mainline +x, perpendicular +y up).
    * Empty = no authored outline (fall back to the endplate-width band). */
@@ -842,6 +872,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     branches: [],
     poseOverrides: {},
     endplateWidths: {},
+    endplateTrackOffsets: {},
     outline: [],
     sectionBreaks: [],
     controlPoints: [],
@@ -976,10 +1007,15 @@ function withPoses(
 function withWidths(
   endplates: SchematicEndplate[],
   widths: Record<string, number>,
+  offsets: Record<string, number> = {},
 ): SchematicEndplate[] {
   return endplates.map((e) => {
     const w = widths[e.id];
-    return typeof w === "number" && w > 0 ? { ...e, widthInches: w } : e;
+    const o = offsets[e.id];
+    let out = e;
+    if (typeof w === "number" && w > 0) out = { ...out, widthInches: w };
+    if (typeof o === "number" && Number.isFinite(o)) out = { ...out, trackOffsetInches: o };
+    return out;
   });
 }
 
@@ -1035,6 +1071,7 @@ export function stateToDoc(
       state.poseOverrides,
     ),
       state.endplateWidths,
+      state.endplateTrackOffsets,
     ),
     tracks: [
       state.loop
@@ -1227,9 +1264,13 @@ export function docToState(
   // Authored endplate face widths by id (unscaled — a cross-track dimension,
   // not a position along the module).
   const endplateWidths: Record<string, number> = {};
+  const endplateTrackOffsets: Record<string, number> = {};
   for (const e of d!.endplates ?? []) {
     if (typeof e.widthInches === "number" && e.widthInches > 0)
       endplateWidths[e.id] = e.widthInches;
+    // Signed, and 0 is meaningful (explicitly centred) — keep any finite value.
+    if (typeof e.trackOffsetInches === "number" && Number.isFinite(e.trackOffsetInches))
+      endplateTrackOffsets[e.id] = e.trackOffsetInches;
   }
   // Benchwork outline — module-local inches, kept as authored (a physical board
   // shape, not rescaled with the mainline length); per-edge bulge preserved.
@@ -1258,6 +1299,7 @@ export function docToState(
     })),
     poseOverrides,
     endplateWidths,
+    endplateTrackOffsets,
     outline,
     sectionBreaks: (d!.sectionBreaks ?? [])
       .filter((n) => Number.isFinite(n))
