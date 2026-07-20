@@ -280,6 +280,16 @@ export interface BenchworkPoint {
 }
 
 /** One bench-work section of a module (#96 phase 2). */
+export interface SectionFootprint {
+  id: string;
+  name?: string;
+  outline: { x: number; y: number }[];
+  /** True when this shape is DERIVED from the section's span rather than
+   * authored — a derived outline follows the board when it's resized, an
+   * authored one stays exactly as drawn (#96 phase 2b). */
+  derived: boolean;
+}
+
 export interface SchematicSection {
   id: string;
   /** What the owner calls this board — "west transition", "double #3". */
@@ -354,14 +364,39 @@ export function moduleSections(
  * bring in real clipping. */
 export function sectionFootprints(
   doc: { sections?: SchematicSection[] | null } | null | undefined,
-): { id: string; name?: string; outline: { x: number; y: number }[] }[] {
+  /** The module's spine and dimensions. Given these, a section with no
+   * authored polygon gets a band derived from its own span, so every section
+   * has a shape and a resized board reshapes with it (#96 phase 2b). Omit to
+   * get authored outlines only. */
+  derive?: {
+    centerline: BenchworkPoint[];
+    widthA: number;
+    widthB: number;
+    offsetA: number;
+    offsetB: number;
+  },
+): SectionFootprint[] {
+  const spans = derive ? sectionSpans(doc) : [];
+  const spanOf = new Map(spans.map((sp) => [sp.id, sp]));
   return moduleSections(doc)
-    .filter((sec) => sec.outline)
-    .map((sec) => ({
-      id: sec.id,
-      ...(sec.name ? { name: sec.name } : {}),
-      outline: sampleBenchworkOutline(sec.outline!),
-    }));
+    .map((sec): SectionFootprint | null => {
+      const name = sec.name ? { name: sec.name } : {};
+      if (sec.outline)
+        return { id: sec.id, ...name, outline: sampleBenchworkOutline(sec.outline), derived: false };
+      const sp = spanOf.get(sec.id);
+      if (!sp || !derive) return null;
+      const band = sectionBand(
+        derive.centerline,
+        sp.fromPos,
+        sp.toPos,
+        derive.widthA,
+        derive.widthB,
+        derive.offsetA,
+        derive.offsetB,
+      );
+      return band.length >= 3 ? { id: sec.id, ...name, outline: band, derived: true } : null;
+    })
+    .filter((x): x is SectionFootprint => x !== null);
 }
 
 /**
@@ -546,10 +581,10 @@ export interface ModuleFootprint {
   /** Authored outline (arc-sampled closed ring) or null → render the band.
    * Null too when `sectionOutlines` is non-empty — the sections ARE the shape. */
   outline: BenchworkPoint[] | null;
-  /** Per-section footprints, arc-sampled (#96 phase 2). Draw every one: together
+  /** Per-section footprints, arc-sampled (#96 phase 2b). Draw every one: together
    * they are the module's footprint. Empty = this module doesn't use sections,
    * so fall back to `outline ?? band` exactly as before. */
-  sectionOutlines: { id: string; name?: string; outline: { x: number; y: number }[] }[];
+  sectionOutlines: SectionFootprint[];
 }
 
 /** Module-local main track centre-line (A→B), sampling arcs for curves/corners.
@@ -737,6 +772,89 @@ export function benchworkBand(
   return [...left, ...right.reverse()];
 }
 
+/** The sub-polyline of a centre-line between two arc-length positions, with
+ * the cut ends interpolated so a slice starts and finishes exactly on them. */
+export function sliceCenterline(
+  center: BenchworkPoint[],
+  fromPos: number,
+  toPos: number,
+): BenchworkPoint[] {
+  if (center.length < 2) return [];
+  const cum = [0];
+  for (let i = 1; i < center.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(center[i].x - center[i - 1].x, center[i].y - center[i - 1].y));
+  const total = cum[cum.length - 1];
+  const a = Math.max(0, Math.min(total, Math.min(fromPos, toPos)));
+  const b = Math.max(0, Math.min(total, Math.max(fromPos, toPos)));
+  if (b - a <= 0) return [];
+  const at = (d: number): BenchworkPoint => {
+    for (let i = 1; i < center.length; i++) {
+      if (d <= cum[i] || i === center.length - 1) {
+        const seg = cum[i] - cum[i - 1] || 1;
+        const t = Math.max(0, Math.min(1, (d - cum[i - 1]) / seg));
+        return {
+          x: center[i - 1].x + (center[i].x - center[i - 1].x) * t,
+          y: center[i - 1].y + (center[i].y - center[i - 1].y) * t,
+        };
+      }
+    }
+    return center[center.length - 1];
+  };
+  const out: BenchworkPoint[] = [at(a)];
+  for (let i = 0; i < center.length; i++) {
+    if (cum[i] > a && cum[i] < b) out.push({ x: center[i].x, y: center[i].y });
+  }
+  out.push(at(b));
+  return out;
+}
+
+/** One section's bench-work as a band over its own stretch of centre-line —
+ * the per-section equivalent of `benchworkBand` (#96 phase 2b). Width and
+ * plate offset are interpolated from the module's ends exactly as the whole
+ * band does, so a section's derived shape lines up with its neighbours.
+ *
+ * This is what makes an outline BELONG to the section: a section without an
+ * authored polygon gets one derived from its span, so resizing the board
+ * reshapes it instead of leaving a hand-drawn outline stranded. */
+export function sectionBand(
+  center: BenchworkPoint[],
+  fromPos: number,
+  toPos: number,
+  widthA = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+  widthB = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+  offsetA = 0,
+  offsetB = 0,
+): BenchworkPoint[] {
+  const slice = sliceCenterline(center, fromPos, toPos);
+  if (slice.length < 2) return [];
+  // Fractions must be taken along the WHOLE module, not the slice, or every
+  // section would taper from widthA to widthB over its own short length.
+  let total = 0;
+  for (let i = 1; i < center.length; i++)
+    total += Math.hypot(center[i].x - center[i - 1].x, center[i].y - center[i - 1].y);
+  total = total || 1;
+  const lo = Math.min(fromPos, toPos);
+  let acc = 0;
+  const fr: number[] = [0];
+  for (let i = 1; i < slice.length; i++) {
+    acc += Math.hypot(slice[i].x - slice[i - 1].x, slice[i].y - slice[i - 1].y);
+    fr.push(acc);
+  }
+  const f = fr.map((d) => Math.max(0, Math.min(1, (lo + d) / total)));
+  const n = centerlineNormals(slice);
+  const half = (i: number) => (widthA * (1 - f[i]) + widthB * f[i]) / 2;
+  const off = (i: number) => offsetA * (1 - f[i]) + offsetB * f[i];
+  const left = slice.map((p, i) => ({
+    x: p.x + n[i].x * (off(i) + half(i)),
+    y: p.y + n[i].y * (off(i) + half(i)),
+  }));
+  const right = slice.map((p, i) => ({
+    x: p.x + n[i].x * (off(i) - half(i)),
+    y: p.y + n[i].y * (off(i) - half(i)),
+  }));
+  return [...left, ...right.reverse()];
+}
+
 /** The two endplate faces (the band's flat ends): [A end at widthA, B end at widthB]. */
 export function endplateFaceSegments(
   center: BenchworkPoint[],
@@ -772,7 +890,13 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   // A module built from shaped sections IS its sections — the whole-module
   // outline stops speaking for it, so don't hand back both and leave renderers
   // to guess which wins (#96 phase 2).
-  const sectionOutlines = sectionFootprints(input);
+  const sectionOutlines = sectionFootprints(input, {
+    centerline,
+    widthA,
+    widthB,
+    offsetA: offA,
+    offsetB: offB,
+  });
   return {
     centerline,
     band: benchworkBand(centerline, widthA, widthB, offA, offB),

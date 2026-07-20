@@ -11,6 +11,8 @@ import {
   sectionSpans,
   sectionBreaksFromSections,
   sectionedCenterline,
+  sliceCenterline,
+  sectionBand,
   moduleLengthFromSections,
   moduleCenterline,
   stateToDoc,
@@ -1554,5 +1556,88 @@ describe("sections-first geometry (#108)", () => {
     const doc = stateToDoc({ ...s, sections: oneMile.sections }, "M");
     expect(doc.sections).toEqual(oneMile.sections);
     expect(docToState(doc).sections).toEqual(oneMile.sections);
+  });
+});
+
+describe("a section's outline belongs to the section (#96 phase 2b)", () => {
+  const input = {
+    lengthInches: 96,
+    geometryType: "straight",
+    endplateWidths: { A: 24, B: 24 },
+    sections: [
+      { id: "s1", lengthInches: 36 },
+      { id: "s2", name: "peninsula", lengthInches: 60 },
+    ],
+  };
+
+  it("derives a band per section when none is authored", () => {
+    const fp = moduleFootprint(input);
+    expect(fp.sectionOutlines).toHaveLength(2);
+    expect(fp.sectionOutlines.every((s) => s.derived)).toBe(true);
+    // Each band covers only its own stretch of the module.
+    const xs = (i: number) => fp.sectionOutlines[i].outline.map((p) => p.x);
+    expect(Math.min(...xs(0))).toBeCloseTo(0);
+    expect(Math.max(...xs(0))).toBeCloseTo(36);
+    expect(Math.min(...xs(1))).toBeCloseTo(36);
+    expect(Math.max(...xs(1))).toBeCloseTo(96);
+  });
+
+  it("a derived band follows the board when the section is resized", () => {
+    const wider = moduleFootprint({
+      ...input,
+      sections: [{ id: "s1", lengthInches: 50 }, { id: "s2", lengthInches: 60 }],
+    });
+    expect(Math.max(...wider.sectionOutlines[0].outline.map((p) => p.x))).toBeCloseTo(50);
+  });
+
+  it("an authored outline stays exactly as drawn", () => {
+    const drawn = [
+      { x: 40, y: 12 },
+      { x: 60, y: 12 },
+      { x: 60, y: 48 },
+      { x: 40, y: 48 },
+    ];
+    const fp = moduleFootprint({
+      ...input,
+      sections: [
+        { id: "s1", lengthInches: 36 },
+        { id: "s2", lengthInches: 60, outline: drawn },
+      ],
+    });
+    const s2 = fp.sectionOutlines.find((s) => s.id === "s2")!;
+    expect(s2.derived).toBe(false);
+    // It reaches to y=48 — well off the 24" band — because it was authored.
+    expect(Math.max(...s2.outline.map((p) => p.y))).toBeCloseTo(48);
+    // Its neighbour is still derived, so the two coexist.
+    expect(fp.sectionOutlines.find((s) => s.id === "s1")!.derived).toBe(true);
+  });
+
+  it("section widths interpolate across the MODULE, not each section", () => {
+    // A tapered module: 12" at A, 36" at B. The joint at 48" should be 24".
+    const fp = moduleFootprint({
+      ...input,
+      endplateWidths: { A: 12, B: 36 },
+      sections: [{ id: "s1", lengthInches: 48 }, { id: "s2", lengthInches: 48 }],
+    });
+    const ys = fp.sectionOutlines[0].outline.map((p) => p.y);
+    expect(Math.max(...ys)).toBeCloseTo(12); // half of 24 at the joint
+    expect(Math.min(...ys)).toBeCloseTo(-12);
+  });
+
+  it("sliceCenterline cuts exactly on the requested positions", () => {
+    const c = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ];
+    expect(sliceCenterline(c, 20, 60)).toEqual([
+      { x: 20, y: 0 },
+      { x: 60, y: 0 },
+    ]);
+    expect(sliceCenterline(c, 10, 10)).toEqual([]);
+    // Out-of-range is clamped, not an error.
+    expect(sliceCenterline(c, -50, 500)).toEqual([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ]);
   });
 });
