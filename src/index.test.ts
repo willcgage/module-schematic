@@ -1337,3 +1337,25 @@ describe("authored track paths (#2d-track)", () => {
     expect(stateToDoc(emptyEditorState(48), "M").mainPath).toBeUndefined();
   });
 });
+
+describe("checkEndplateWidth reads the offset as MAIN 1's position", () => {
+  it("an authored offset shifts BOTH tracks on a double end", () => {
+    // Main 1 at +2 -> Main 2 at +3.125; worst is 3.125 from centre, so the
+    // plate must be 2*(3.125+4) = 14.25" to keep 4" of fascia clearance.
+    const issues = checkEndplateWidth({ widthInches: 12, config: "double", trackOffsetInches: 2 });
+    const c = issues.find((i) => i.code === "clearance");
+    expect(c?.requiredInches).toBeCloseTo(14.25);
+  });
+
+  it("an offset single end is checked against its own track", () => {
+    expect(
+      checkEndplateWidth({ widthInches: 24, config: "single", trackOffsetInches: 0.5625 }),
+    ).toEqual([]);
+    const tight = checkEndplateWidth({
+      widthInches: 12,
+      config: "single",
+      trackOffsetInches: 3,
+    });
+    expect(tight.find((i) => i.code === "clearance")?.requiredInches).toBeCloseTo(14);
+  });
+});

@@ -643,13 +643,14 @@ export function checkEndplateWidth(input: {
       requiredInches: FREEMO_ENDPLATE_WIDTH_MIN_INCHES,
     });
   }
-  // Track centres relative to the plate centre: a double end carries a second
-  // track one spacing away, so check whichever sits nearest a fascia.
-  const off = input.trackOffsetInches ?? 0;
+  // Track centres relative to the plate centre. `trackOffsetInches` locates
+  // MAIN 1 (the same framing the authoring field and the renderer use); a
+  // double end carries Main 2 one spacing further out, so check whichever of
+  // the two sits nearest a fascia. Unauthored falls back to the §2.0 default,
+  // which straddles the centre — so a plain double end still measures ±9/16″.
+  const off = endplateTrackOffsetInches(input.trackOffsetInches, input.config ?? undefined);
   const centres =
-    input.config === "double"
-      ? [off - FREEMO_TRACK_SPACING_INCHES / 2, off + FREEMO_TRACK_SPACING_INCHES / 2]
-      : [off];
+    input.config === "double" ? [off, off + FREEMO_TRACK_SPACING_INCHES] : [off];
   const worst = Math.max(...centres.map((c) => Math.abs(c)));
   const clearance = width / 2 - worst;
   if (clearance < FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES) {
