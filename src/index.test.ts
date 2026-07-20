@@ -8,6 +8,11 @@ import {
   emptyEditorState,
   moduleSections,
   sectionFootprints,
+  sectionSpans,
+  sectionBreaksFromSections,
+  sectionedCenterline,
+  moduleLengthFromSections,
+  moduleCenterline,
   stateToDoc,
   docToState,
   buildPassingSiding,
@@ -1457,5 +1462,97 @@ describe("sections as objects (#96 phase 2)", () => {
     });
     expect(fp.sectionOutlines).toEqual([]);
     expect(fp.outline).not.toBeNull();
+  });
+});
+
+describe("sections-first geometry (#108)", () => {
+  // One Mile in miniature: straight boards with two curved ones in the middle.
+  const oneMile = {
+    sections: [
+      { id: "a", name: "west transition", lengthInches: 36 },
+      { id: "b", lengthInches: 60 },
+      { id: "c", lengthInches: 24, geometryType: "curve", geometryDegrees: 45 },
+      { id: "d", lengthInches: 24, geometryType: "curve", geometryDegrees: 45 },
+      { id: "e", lengthInches: 60 },
+      { id: "f", name: "east transition", lengthInches: 36 },
+    ],
+  };
+
+  it("derives the module length as the sum of its sections", () => {
+    expect(moduleLengthFromSections(oneMile)).toBe(240);
+    expect(moduleLengthFromSections({ sections: [] })).toBeNull();
+    // A named section with no length yet doesn't claim any of the module.
+    expect(moduleLengthFromSections({ sections: [{ id: "x", name: "unbuilt" }] })).toBeNull();
+  });
+
+  it("derives the joints instead of authoring them", () => {
+    expect(sectionBreaksFromSections(oneMile)).toEqual([36, 96, 120, 144, 204]);
+    expect(sectionSpans(oneMile)[2]).toEqual({ id: "c", fromPos: 96, toPos: 120 });
+  });
+
+  it("chains sections into one centre-line, turning where the boards turn", () => {
+    const c = sectionedCenterline(oneMile);
+    expect(c.length).toBeGreaterThan(2);
+    expect(c[0]).toEqual({ x: 0, y: 0 });
+    // 45° + 45° of curve means the far end runs due +y, having turned 90°.
+    const n = c.length;
+    const dx = c[n - 1].x - c[n - 2].x;
+    const dy = c[n - 1].y - c[n - 2].y;
+    expect(Math.atan2(dy, dx) * (180 / Math.PI)).toBeCloseTo(90, 4);
+    // Arc length is the sum of the section lengths (curves are sampled, so
+    // allow a little chord shortening).
+    let len = 0;
+    for (let i = 1; i < n; i++) len += Math.hypot(c[i].x - c[i - 1].x, c[i].y - c[i - 1].y);
+    expect(len).toBeGreaterThan(239);
+    expect(len).toBeLessThanOrEqual(240.001);
+  });
+
+  it("a straight-only set of sections is just a straight line", () => {
+    const c = sectionedCenterline({
+      sections: [
+        { id: "a", lengthInches: 24 },
+        { id: "b", lengthInches: 24 },
+      ],
+    });
+    expect(c[c.length - 1]).toEqual({ x: 48, y: 0 });
+    expect(c.every((p) => p.y === 0)).toBe(true);
+  });
+
+  it("moduleCenterline prefers sections over the module geometry", () => {
+    const c = moduleCenterline({
+      lengthInches: 999, // stale module-level length: the sections win
+      geometryType: "straight",
+      sections: oneMile.sections,
+    });
+    expect(c[0]).toEqual({ x: 0, y: 0 });
+    expect(c[c.length - 1].y).toBeGreaterThan(0); // it curved
+  });
+
+  it("still uses the module geometry when there are no sections", () => {
+    const c = moduleCenterline({ lengthInches: 96, geometryType: "straight" });
+    expect(c).toEqual([
+      { x: 0, y: 0 },
+      { x: 96, y: 0 },
+    ]);
+  });
+
+  it("an authored mainPath still wins over everything", () => {
+    const c = moduleCenterline({
+      lengthInches: 96,
+      geometryType: "straight",
+      sections: oneMile.sections,
+      mainPath: [
+        { x: 0, y: 5 },
+        { x: 10, y: 5 },
+      ],
+    });
+    expect(c[0]).toEqual({ x: 0, y: 5 });
+  });
+
+  it("round-trips section geometry", () => {
+    const s = emptyEditorState(240);
+    const doc = stateToDoc({ ...s, sections: oneMile.sections }, "M");
+    expect(doc.sections).toEqual(oneMile.sections);
+    expect(docToState(doc).sections).toEqual(oneMile.sections);
   });
 });

@@ -288,6 +288,19 @@ export interface SchematicSection {
    * the module outline. Absent = the section has no shape of its own yet (it's
    * described only by the joints in `sectionBreaks`). */
   outline?: BenchworkPoint[] | null;
+  /** How far this board runs along the main, inches. The module's length is the
+   * SUM of these — it isn't authored separately (#108). */
+  lengthInches?: number | null;
+  /** This board's own shape: straight | curve | corner_45 | corner_90 | offset |
+   * dead_end. Geometry belongs to the SECTION, not the module — a module like
+   * One Mile is 384″ of mostly-straight boards with two 24″ CURVED sections in
+   * the middle, which no single module-level geometry can describe (#108).
+   * Absent = straight. */
+  geometryType?: string | null;
+  /** Degrees turned, for curve/corner sections. */
+  geometryDegrees?: number | null;
+  /** Lateral jog, for offset sections. */
+  geometryOffsetInches?: number | null;
 }
 
 /** The authored benchwork outline, or null when a module hasn't drawn one
@@ -316,10 +329,19 @@ export function moduleSections(
     .map((sec) => {
       const outline = benchworkOutline({ outline: sec.outline });
       const name = typeof sec.name === "string" ? sec.name.trim() : "";
+      const len = sec.lengthInches;
+      const deg = sec.geometryDegrees;
+      const off = sec.geometryOffsetInches;
       return {
         id: sec.id,
         ...(name ? { name } : {}),
         ...(outline ? { outline } : {}),
+        ...(typeof len === "number" && Number.isFinite(len) && len > 0
+          ? { lengthInches: len }
+          : {}),
+        ...(sec.geometryType ? { geometryType: sec.geometryType } : {}),
+        ...(typeof deg === "number" && Number.isFinite(deg) ? { geometryDegrees: deg } : {}),
+        ...(typeof off === "number" && Number.isFinite(off) ? { geometryOffsetInches: off } : {}),
       };
     });
 }
@@ -536,6 +558,10 @@ export interface ModuleFootprint {
 export function moduleCenterline(input: ModuleFootprintInput): BenchworkPoint[] {
   const drawn = trackPath(input.mainPath);
   if (drawn) return samplePath(drawn);
+  // Sections own the shape when there are any (#108) — a multi-section module
+  // has no single geometry, so its spine is its boards chained end to end.
+  const chained = sectionedCenterline(input);
+  if (chained.length >= 2) return chained;
   // No drawn main and no geometry → the owner hasn't established the mainline
   // yet. A fresh module opens as a blank board; the main is drawn as a layer,
   // not auto-derived. (Legacy modules carry a geometry, so they still derive.)
@@ -556,6 +582,110 @@ export function moduleCenterline(input: ModuleFootprintInput): BenchworkPoint[] 
     pts.push({ x: r * Math.sin(a), y: r * (1 - Math.cos(a)) });
   }
   return pts;
+}
+
+/** One section's centre-line in ITS OWN frame — starting at the origin heading
+ * +x — plus where it leaves off. Same geometry vocabulary the module level has
+ * always used, just applied per board (#108). */
+function sectionCenterlineLocal(sec: SchematicSection): {
+  points: BenchworkPoint[];
+  endX: number;
+  endY: number;
+  endHeadingDeg: number;
+} {
+  const L = typeof sec.lengthInches === "number" && sec.lengthInches > 0 ? sec.lengthInches : 0;
+  const gt = sec.geometryType || "straight";
+  if (L <= 0) return { points: [{ x: 0, y: 0 }], endX: 0, endY: 0, endHeadingDeg: 0 };
+  if (gt === "offset") {
+    const dy = sec.geometryOffsetInches ?? 0;
+    // A jog returns to the original heading, so the next board carries on square.
+    return { points: [{ x: 0, y: 0 }, { x: L, y: dy }], endX: L, endY: dy, endHeadingDeg: 0 };
+  }
+  const turn =
+    gt === "corner_45" ? 45 : gt === "corner_90" ? 90 : gt === "curve" ? (sec.geometryDegrees ?? 0) : 0;
+  if (turn === 0) return { points: [{ x: 0, y: 0 }, { x: L, y: 0 }], endX: L, endY: 0, endHeadingDeg: 0 };
+  const t = turn * DEG_FP;
+  const r = L / t; // constant-radius arc of arc-length L
+  const steps = 12;
+  const points: BenchworkPoint[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = (t * i) / steps;
+    points.push({ x: r * Math.sin(a), y: r * (1 - Math.cos(a)) });
+  }
+  const last = points[points.length - 1];
+  return { points, endX: last.x, endY: last.y, endHeadingDeg: turn };
+}
+
+/** The module's length as the SUM of its sections, or null when it has none
+ * (then the authored module length still speaks). */
+export function moduleLengthFromSections(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+): number | null {
+  const secs = moduleSections(doc).filter(
+    (sec) => typeof sec.lengthInches === "number" && sec.lengthInches! > 0,
+  );
+  if (!secs.length) return null;
+  return secs.reduce((a, sec) => a + sec.lengthInches!, 0);
+}
+
+/** Where each section starts and ends along the main, inches from endplate A.
+ * This is what `sectionBreaks` used to author by hand — now derived, so a
+ * length is just a number you type and nothing steals from its neighbour. */
+export function sectionSpans(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+): { id: string; name?: string; fromPos: number; toPos: number }[] {
+  let acc = 0;
+  const out: { id: string; name?: string; fromPos: number; toPos: number }[] = [];
+  for (const sec of moduleSections(doc)) {
+    const L = typeof sec.lengthInches === "number" && sec.lengthInches > 0 ? sec.lengthInches : 0;
+    if (L <= 0) continue;
+    out.push({ id: sec.id, ...(sec.name ? { name: sec.name } : {}), fromPos: acc, toPos: acc + L });
+    acc += L;
+  }
+  return out;
+}
+
+/** The joints implied by the sections — the interior boundaries, in inches from
+ * endplate A. Replaces the authored `sectionBreaks` for a sectioned module. */
+export function sectionBreaksFromSections(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+): number[] {
+  const spans = sectionSpans(doc);
+  return spans.slice(0, -1).map((sp) => sp.toPos);
+}
+
+/** The module's centre-line built by CHAINING its sections — each board starts
+ * where the previous one ended, at the heading it ended on. This is what makes
+ * a module like One Mile expressible: straight boards with two 24″ curved ones
+ * in the middle, which no single module-level geometry can describe (#108).
+ * Returns [] when the module has no sections with lengths. */
+export function sectionedCenterline(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+): BenchworkPoint[] {
+  const secs = moduleSections(doc).filter(
+    (sec) => typeof sec.lengthInches === "number" && sec.lengthInches! > 0,
+  );
+  if (!secs.length) return [];
+  const out: BenchworkPoint[] = [];
+  let ox = 0;
+  let oy = 0;
+  let heading = 0; // degrees, +x at endplate A
+  for (const sec of secs) {
+    const local = sectionCenterlineLocal(sec);
+    const c = Math.cos(heading * DEG_FP);
+    const sn = Math.sin(heading * DEG_FP);
+    for (let i = 0; i < local.points.length; i++) {
+      // The first vertex of every board but the first repeats the previous
+      // board's end point — skip it so the spine has no duplicate vertices.
+      if (i === 0 && out.length) continue;
+      const p = local.points[i];
+      out.push({ x: ox + p.x * c - p.y * sn, y: oy + p.x * sn + p.y * c });
+    }
+    ox += local.endX * c - local.endY * sn;
+    oy += local.endX * sn + local.endY * c;
+    heading += local.endHeadingDeg;
+  }
+  return out;
 }
 
 /** Unit left normal of the local direction at each centre-line vertex. */
