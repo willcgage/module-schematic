@@ -206,6 +206,10 @@ export interface ModuleSchematicDoc {
    * tracks unrolled as a ladder past the throat — the default when inLoop
    * tracks exist), "geometric" (drawn balloon, AL&E-style). */
   loopRender?: "bulb" | "fan" | "geometric";
+  /** The two mains' positions are swapped: Main 1 draws above (lane 1), Main 2
+   * on the centre line (lane 0). Absent/false = the default (Main 1 below).
+   * Identities are unchanged — only which lane each is drawn in (#FMN-0043). */
+  mainsSwapped?: boolean;
   endplates: SchematicEndplate[];
   tracks: SchematicTrack[];
   turnouts?: SchematicTurnout[];
@@ -685,6 +689,11 @@ export interface EditorState {
   loopReturn: "same" | "main2";
   configA: TrackConfig;
   configB: EndplateBConfig;
+  /** Swap the two mains' POSITIONS: Main 1 draws above (lane 1) and Main 2 on
+   * the centre line (lane 0). The module decides which physical track is which
+   * main — on some modules the upper track is the through/primary main
+   * (#FMN-0043). Identities and references are unchanged; only the lanes swap. */
+  mainsSwapped: boolean;
   extraTracks: EditorTrack[]; // sidings/spurs/…; the main track is implicit
   turnouts: EditorTurnout[];
   /** Grade crossings / diamonds (#170). */
@@ -720,6 +729,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     loopReturn: "same",
     configA: "single",
     configB: "single",
+    mainsSwapped: false,
     extraTracks: [],
     turnouts: [],
     crossings: [],
@@ -765,14 +775,16 @@ function main1Track(state: EditorState): SchematicTrack {
   const bothDouble = state.configA === "double" && state.configB === "double";
   const isDouble = state.configA === "double" || state.configB === "double";
   const sw = state.turnouts.find(isTransitionTurnout);
+  // Swapped: Main 1 draws ABOVE (lane 1) and Main 2 on the centre line (#FMN-0043).
+  const lane = state.mainsSwapped && isDouble ? 1 : 0;
   if (!isDouble || bothDouble || !sw || sw.onTrack !== MAIN2_TRACK_ID) {
-    return { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" };
+    return { id: MAIN_TRACK_ID, role: "main", lane, from: "A", to: "B" };
   }
   return state.configA === "double"
     ? // Double at A: Main 1 runs from A and ends at the turnout.
-      { id: MAIN_TRACK_ID, role: "main", lane: 0, fromPos: 0, toPos: sw.pos }
+      { id: MAIN_TRACK_ID, role: "main", lane, fromPos: 0, toPos: sw.pos }
     : // Double at B: Main 1 begins at the turnout and runs to B.
-      { id: MAIN_TRACK_ID, role: "main", lane: 0, fromPos: sw.pos, toPos: state.lengthInches };
+      { id: MAIN_TRACK_ID, role: "main", lane, fromPos: sw.pos, toPos: state.lengthInches };
 }
 
 function main2Track(state: EditorState): SchematicTrack {
@@ -781,14 +793,16 @@ function main2Track(state: EditorState): SchematicTrack {
   // Main 2 runs partial only when IT is the branch that ends (turnout diverges
   // TO Main 2). If the turnout sits ON Main 2 (Main 2 is the surviving through
   // main, #FMN-0043), Main 2 runs full and Main 1 is the one that ends.
+  // Swapped: Main 2 takes the centre line and Main 1 draws above (#FMN-0043).
+  const lane = state.mainsSwapped ? 0 : 1;
   if (bothDouble || !sw || sw.divergeTrack !== MAIN2_TRACK_ID) {
-    return { id: MAIN2_TRACK_ID, role: "main", lane: 1, from: "A", to: "B" };
+    return { id: MAIN2_TRACK_ID, role: "main", lane, from: "A", to: "B" };
   }
   return state.configA === "double"
     ? // Double at A: Main 2 runs from A and ends at the turnout.
-      { id: MAIN2_TRACK_ID, role: "main", lane: 1, fromPos: 0, toPos: sw.pos }
+      { id: MAIN2_TRACK_ID, role: "main", lane, fromPos: 0, toPos: sw.pos }
     : // Double at B: Main 2 begins at the turnout and runs to B.
-      { id: MAIN2_TRACK_ID, role: "main", lane: 1, fromPos: sw.pos, toPos: state.lengthInches };
+      { id: MAIN2_TRACK_ID, role: "main", lane, fromPos: sw.pos, toPos: state.lengthInches };
 }
 
 /**
@@ -874,6 +888,7 @@ export function stateToDoc(
     lengthInches: state.lengthInches,
     ...(state.loop ? { loop: true } : {}),
     ...(state.loop && state.loopReturn === "main2" ? { loopReturn: "main2" as const } : {}),
+    ...(state.mainsSwapped ? { mainsSwapped: true } : {}),
     endplates: withWidths(
       withPoses(
       [
@@ -1125,6 +1140,7 @@ export function docToState(
     lengthInches: len,
     loop,
     loopReturn: loop && d!.loopReturn === "main2" ? "main2" : "same",
+    mainsSwapped: d!.mainsSwapped === true,
     configA: configOf("A"),
     // On a loop, a missing B means pure turnback; present = interchange loop.
     configB: loop && !hasB ? "none" : configOf("B"),
