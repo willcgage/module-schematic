@@ -47,7 +47,17 @@ export interface SchematicEndplate {
 
 /** Free-moN endplate face width, inches — the connection interface size. */
 export const FREEMO_ENDPLATE_WIDTH_MIN_INCHES = 12;
+/** NB: our own default, NOT from the standard — §1.1 states only the 12″ minimum
+ * ("Endplates shall be 6 inches high and a minimum 12 inches wide"). 24″ is
+ * simply a common real-world width. Don't present it as required. */
 export const FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES = 24;
+/** Free-moN §2.0 **standard**: "Double track endplates must have a track spacing
+ * of 1.125 inches (1 1/8 inches). Track spacing shall be measured along the
+ * track center line." The one definition both apps read. */
+export const FREEMO_TRACK_SPACING_INCHES = 1.125;
+/** Free-moN §2.0 **standard**: track crossing an endplate must be "not less than
+ * 4 inches from either fascia" (and perpendicular, straight and level for 4″). */
+export const FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES = 4;
 
 /**
  * The authored face width for an endplate, or the recommended default when a
@@ -409,6 +419,13 @@ export interface ModuleFootprintInput {
   geometryOffsetInches?: number | null;
   /** Authored endplate face widths by id ("A"/"B"…), inches; default recommended. */
   endplateWidths?: Record<string, number>;
+  /** Where each endplate's CENTRE sits relative to the main centre-line at that
+   * end, inches (signed, along the +normal). Free-moN puts a **double**-track
+   * plate's two tracks 9/16″ either side of its centre, so with Main 1 on the
+   * centre-line the plate centre is half a track spacing up — pass
+   * `FREEMO_TRACK_SPACING_INCHES / 2`. Single track crosses at the centre ⇒ 0
+   * (the default), and an off-centre track is a signed value. */
+  endplateTrackOffsets?: Record<string, number>;
   /** Authored benchwork outline (module-local inches), or absent for the band. */
   outline?: BenchworkPoint[] | null;
   /** Authored mainline centre-line (module-local inches, open path with arcs).
@@ -491,13 +508,24 @@ export function benchworkBand(
   center: BenchworkPoint[],
   widthA = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   widthB = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+  offsetA = 0,
+  offsetB = 0,
 ): BenchworkPoint[] {
   if (center.length < 2) return [];
   const n = centerlineNormals(center);
   const f = centerlineFractions(center);
   const half = (i: number) => (widthA * (1 - f[i]) + widthB * f[i]) / 2;
-  const left = center.map((p, i) => ({ x: p.x + n[i].x * half(i), y: p.y + n[i].y * half(i) }));
-  const right = center.map((p, i) => ({ x: p.x - n[i].x * half(i), y: p.y - n[i].y * half(i) }));
+  // The board is centred on the plate centre, which need not be the main
+  // centre-line — a double-track end sits half a track spacing up (#93).
+  const off = (i: number) => offsetA * (1 - f[i]) + offsetB * f[i];
+  const left = center.map((p, i) => ({
+    x: p.x + n[i].x * (off(i) + half(i)),
+    y: p.y + n[i].y * (off(i) + half(i)),
+  }));
+  const right = center.map((p, i) => ({
+    x: p.x + n[i].x * (off(i) - half(i)),
+    y: p.y + n[i].y * (off(i) - half(i)),
+  }));
   return [...left, ...right.reverse()];
 }
 
@@ -506,15 +534,19 @@ export function endplateFaceSegments(
   center: BenchworkPoint[],
   widthA = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   widthB = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+  offsetA = 0,
+  offsetB = 0,
 ): OutlineFace[] {
   if (center.length < 2) return [];
   const n = centerlineNormals(center);
-  const face = (i: number, w: number): OutlineFace => ({
-    p1: { x: center[i].x + n[i].x * (w / 2), y: center[i].y + n[i].y * (w / 2) },
-    p2: { x: center[i].x - n[i].x * (w / 2), y: center[i].y - n[i].y * (w / 2) },
+  // `mid` stays the TRACK point (what joints and drawn track key off); the face
+  // spans ±w/2 about the PLATE centre, which a double-track end offsets (#93).
+  const face = (i: number, w: number, o: number): OutlineFace => ({
+    p1: { x: center[i].x + n[i].x * (o + w / 2), y: center[i].y + n[i].y * (o + w / 2) },
+    p2: { x: center[i].x + n[i].x * (o - w / 2), y: center[i].y + n[i].y * (o - w / 2) },
     mid: { x: center[i].x, y: center[i].y },
   });
-  return [face(0, widthA), face(center.length - 1, widthB)];
+  return [face(0, widthA, offsetA), face(center.length - 1, widthB, offsetB)];
 }
 
 /**
@@ -527,13 +559,87 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   const widthA = endplateWidthFor(input.endplateWidths, "A");
   const widthB = endplateWidthFor(input.endplateWidths, "B");
   const authored = benchworkOutline(input);
+  const offA = input.endplateTrackOffsets?.["A"] ?? 0;
+  const offB = input.endplateTrackOffsets?.["B"] ?? 0;
   return {
     centerline,
-    band: benchworkBand(centerline, widthA, widthB),
-    endplateFaces: endplateFaceSegments(centerline, widthA, widthB),
+    band: benchworkBand(centerline, widthA, widthB, offA, offB),
+    endplateFaces: endplateFaceSegments(centerline, widthA, widthB, offA, offB),
     outline: authored ? sampleBenchworkOutline(authored) : null,
   };
 }
+
+/**
+ * The offset from the main centre-line to an endplate's CENTRE, inches — the
+ * Free-moN geometry. A **double**-track end carries its two tracks 9/16″ either
+ * side of the plate centre (§2.0 RP), and Main 1 sits on the centre-line, so the
+ * plate centre is half a track spacing up. A single track crosses at the centre.
+ */
+export function endplateTrackOffsetFor(config: TrackConfig | "none" | undefined): number {
+  return config === "double" ? FREEMO_TRACK_SPACING_INCHES / 2 : 0;
+}
+
+/** A Free-moN conformance problem with an endplate's width/track placement. */
+export interface EndplateWidthIssue {
+  /** "narrow" = below the 12″ minimum; "clearance" = a track too near a fascia. */
+  code: "narrow" | "clearance";
+  /** Plain-language problem, for the author. */
+  message: string;
+  /** The width that would satisfy this rule, inches. */
+  requiredInches: number;
+}
+
+/**
+ * Check an endplate against the two Free-moN **standards** that bound its width:
+ *
+ * - §1.1 "Endplates shall be 6 inches high and a **minimum 12 inches wide**."
+ * - §2.0 "At the endplate, track shall cross near center on the width, **not less
+ *   than 4 inches from either fascia**."
+ *
+ * With the tracks centred (the §2.0 recommendation) a double-track end needs
+ * 4 + 1.125 + 4 = 9.125″ for clearance alone, so the 12″ minimum governs — but an
+ * **off-centre** track can breach the 4″ rule on a plate that is otherwise wide
+ * enough, which is why both are checked. `trackOffsetInches` is the signed
+ * distance from the plate's centre to the main's crossing point (0 = centred).
+ */
+export function checkEndplateWidth(input: {
+  widthInches?: number | null;
+  config?: TrackConfig | "none" | null;
+  trackOffsetInches?: number | null;
+}): EndplateWidthIssue[] {
+  const width = endplateWidthInches(input as { widthInches?: number | null });
+  const issues: EndplateWidthIssue[] = [];
+  if (width < FREEMO_ENDPLATE_WIDTH_MIN_INCHES) {
+    issues.push({
+      code: "narrow",
+      message: `Endplate is ${round2(width)}″ wide — the standard requires at least ${FREEMO_ENDPLATE_WIDTH_MIN_INCHES}″.`,
+      requiredInches: FREEMO_ENDPLATE_WIDTH_MIN_INCHES,
+    });
+  }
+  // Track centres relative to the plate centre: a double end carries a second
+  // track one spacing away, so check whichever sits nearest a fascia.
+  const off = input.trackOffsetInches ?? 0;
+  const centres =
+    input.config === "double"
+      ? [off - FREEMO_TRACK_SPACING_INCHES / 2, off + FREEMO_TRACK_SPACING_INCHES / 2]
+      : [off];
+  const worst = Math.max(...centres.map((c) => Math.abs(c)));
+  const clearance = width / 2 - worst;
+  if (clearance < FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES) {
+    const required = 2 * (worst + FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES);
+    issues.push({
+      code: "clearance",
+      message:
+        `Track sits ${round2(clearance)}″ from the fascia — the standard requires at least ` +
+        `${FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES}″. Widen this end to ${round2(required)}″` +
+        (off !== 0 ? " or move the track back toward the centre." : "."),
+      requiredInches: required,
+    });
+  }
+  return issues;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 function endplateWidthFor(widths: Record<string, number> | undefined, id: string): number {
   const w = widths?.[id];
