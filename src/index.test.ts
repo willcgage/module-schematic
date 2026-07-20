@@ -24,6 +24,7 @@ import {
   moduleFootprint,
   checkEndplateWidth,
   endplateTrackOffsetFor,
+  endplateTrackOffsetInches,
   moduleCenterline,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
@@ -527,6 +528,25 @@ describe("endplate track offset (double ends centre on the pair, #93)", () => {
     expect(endplateTrackOffsetFor("double")).toBeCloseTo(0.5625);
     expect(endplateTrackOffsetFor("single")).toBe(0);
     expect(endplateTrackOffsetFor(undefined)).toBe(0);
+  });
+
+  it("an authored offset wins over the recommended default", () => {
+    // A transition section offsets its SINGLE end by +9/16 so the through main
+    // lines up with the upper track of its double end (One Mile).
+    expect(endplateTrackOffsetInches(0.5625, "single")).toBeCloseTo(0.5625);
+    // 0 is meaningful — explicitly centred, even on a double end.
+    expect(endplateTrackOffsetInches(0, "double")).toBe(0);
+    // Absent falls back to the §2.0 recommendation.
+    expect(endplateTrackOffsetInches(undefined, "double")).toBeCloseTo(-0.5625);
+    expect(endplateTrackOffsetInches(null, "single")).toBe(0);
+  });
+
+  it("round-trips an authored offset through the doc", () => {
+    const s = emptyEditorState(48);
+    const doc = stateToDoc({ ...s, endplateTrackOffsets: { A: 0.5625 } }, "M");
+    expect(doc.endplates.find((e) => e.id === "A")!.trackOffsetInches).toBeCloseTo(0.5625);
+    expect(doc.endplates.find((e) => e.id === "B")!.trackOffsetInches).toBeUndefined();
+    expect(docToState(doc).endplateTrackOffsets).toEqual({ A: 0.5625 });
   });
 
   it("shifts the endplate face and band without moving the track point", () => {
