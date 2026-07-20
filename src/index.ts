@@ -245,8 +245,22 @@ export interface ModuleSchematicDoc {
   outline?: BenchworkPoint[];
   /** Internal section joints — inches from endplate A where the module's boards
    * split into sections. Operationally one unit; these mark construction/transport
-   * seams (exempt from the end-interface standards). Empty/absent = one section. */
+   * seams (exempt from the end-interface standards). Empty/absent = one section.
+   * Describes only sections that are full-depth SLICES; a section with a shape
+   * of its own lives in `sections` below. */
   sectionBreaks?: number[];
+  /** The module's sections as real objects — named, each with a bench-work
+   * outline of its own (#96 phase 2). A module is a kit: the same sections can
+   * be set up in different combinations, so its footprint is the UNION of the
+   * sections present rather than an independently authored shape.
+   *
+   * Needed because sections are not slices. Real modules hang a deep section
+   * off the BACK of a shallow main band — a peninsula carrying an industry —
+   * which no single position along the main can describe.
+   *
+   * Absent = the module keeps using its own `outline` exactly as before; this
+   * is purely additive and nothing migrates on read. */
+  sections?: SchematicSection[];
   /** @deprecated pre-grouping flat signals; read for back-compat. */
   signals?: SchematicSignal[];
   /** Authored mainline centre-line (module-local inches, open path with arcs).
@@ -265,6 +279,17 @@ export interface BenchworkPoint {
   bulge?: number;
 }
 
+/** One bench-work section of a module (#96 phase 2). */
+export interface SchematicSection {
+  id: string;
+  /** What the owner calls this board — "west transition", "double #3". */
+  name?: string | null;
+  /** This section's own footprint polygon, module-local inches, same frame as
+   * the module outline. Absent = the section has no shape of its own yet (it's
+   * described only by the joints in `sectionBreaks`). */
+  outline?: BenchworkPoint[] | null;
+}
+
 /** The authored benchwork outline, or null when a module hasn't drawn one
  * (renderers then fall back to a band derived from the endplate widths). A
  * valid outline needs at least 3 points. Normalises each vertex to {x, y, bulge?}. */
@@ -279,6 +304,42 @@ export function benchworkOutline(
       ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
     }));
   return pts.length >= 3 ? pts : null;
+}
+
+/** The module's sections, normalised — id required, name trimmed away when
+ * blank, outline kept only when it's a usable polygon (#96 phase 2). */
+export function moduleSections(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+): SchematicSection[] {
+  return (doc?.sections ?? [])
+    .filter((sec) => sec && typeof sec.id === "string" && sec.id !== "")
+    .map((sec) => {
+      const outline = benchworkOutline({ outline: sec.outline });
+      const name = typeof sec.name === "string" ? sec.name.trim() : "";
+      return {
+        id: sec.id,
+        ...(name ? { name } : {}),
+        ...(outline ? { outline } : {}),
+      };
+    });
+}
+
+/** Every section outline that's actually a shape, arc-sampled for drawing.
+ * Drawing all of them IS the module's footprint — the union of its sections.
+ * No polygon boolean is computed: a renderer painting each ring gives the same
+ * picture, and an approximate union would be worse than none. If something
+ * ever needs a single ring (an export, a collision test), that's the point to
+ * bring in real clipping. */
+export function sectionFootprints(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+): { id: string; name?: string; outline: { x: number; y: number }[] }[] {
+  return moduleSections(doc)
+    .filter((sec) => sec.outline)
+    .map((sec) => ({
+      id: sec.id,
+      ...(sec.name ? { name: sec.name } : {}),
+      outline: sampleBenchworkOutline(sec.outline!),
+    }));
 }
 
 /**
@@ -437,6 +498,9 @@ export interface ModuleFootprintInput {
   endplateTrackOffsets?: Record<string, number>;
   /** Authored benchwork outline (module-local inches), or absent for the band. */
   outline?: BenchworkPoint[] | null;
+  /** The module's sections (#96 phase 2). When any carries an outline, the
+   * module's footprint is the union of those — `outline` is then ignored. */
+  sections?: SchematicSection[] | null;
   /** Authored mainline centre-line (module-local inches, open path with arcs).
    * When present it wins over the geometry-derived centre-line — the owner drew
    * the real shape (#2d-track, physical view only). */
@@ -457,8 +521,13 @@ export interface ModuleFootprint {
   band: BenchworkPoint[];
   /** Endplate faces: [A end, B end]. */
   endplateFaces: OutlineFace[];
-  /** Authored outline (arc-sampled closed ring) or null → render the band. */
+  /** Authored outline (arc-sampled closed ring) or null → render the band.
+   * Null too when `sectionOutlines` is non-empty — the sections ARE the shape. */
   outline: BenchworkPoint[] | null;
+  /** Per-section footprints, arc-sampled (#96 phase 2). Draw every one: together
+   * they are the module's footprint. Empty = this module doesn't use sections,
+   * so fall back to `outline ?? band` exactly as before. */
+  sectionOutlines: { id: string; name?: string; outline: { x: number; y: number }[] }[];
 }
 
 /** Module-local main track centre-line (A→B), sampling arcs for curves/corners.
@@ -570,11 +639,16 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   const authored = benchworkOutline(input);
   const offA = input.endplateTrackOffsets?.["A"] ?? 0;
   const offB = input.endplateTrackOffsets?.["B"] ?? 0;
+  // A module built from shaped sections IS its sections — the whole-module
+  // outline stops speaking for it, so don't hand back both and leave renderers
+  // to guess which wins (#96 phase 2).
+  const sectionOutlines = sectionFootprints(input);
   return {
     centerline,
     band: benchworkBand(centerline, widthA, widthB, offA, offB),
     endplateFaces: endplateFaceSegments(centerline, widthA, widthB, offA, offB),
-    outline: authored ? sampleBenchworkOutline(authored) : null,
+    outline: sectionOutlines.length || !authored ? null : sampleBenchworkOutline(authored),
+    sectionOutlines,
   };
 }
 
@@ -850,6 +924,9 @@ export interface EditorState {
   /** Internal section joints — inches from endplate A where the boards split
    * into sections. Empty = a single section (#48). */
   sectionBreaks: number[];
+  /** The module's sections as named objects, each optionally carrying its own
+   * outline (#96 phase 2). Empty = fall back to `outline` + `sectionBreaks`. */
+  sections: SchematicSection[];
   controlPoints: EditorControlPoint[];
   /** Rail-served industries — car-spot spans on a track (#industries). */
   industries: EditorIndustry[];
@@ -876,6 +953,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     endplateTrackOffsets: {},
     outline: [],
     sectionBreaks: [],
+    sections: [],
     controlPoints: [],
     industries: [],
     mainPath: [],
@@ -1166,6 +1244,9 @@ export function stateToDoc(
     ...(state.outline.length >= 3 ? { outline: state.outline } : {}),
     // Internal section joints (inches from A), when the module has more than one.
     ...(state.sectionBreaks.length ? { sectionBreaks: state.sectionBreaks } : {}),
+    // Sections as objects — emitted only once the owner has some, so a module
+    // that never used them keeps exactly the doc it had before (#96 phase 2).
+    ...(state.sections.length ? { sections: moduleSections({ sections: state.sections }) } : {}),
     // Authored mainline path (module-local inches); only when it's a real path.
     ...(state.mainPath.length >= 2 ? { mainPath: state.mainPath } : {}),
   };
@@ -1305,6 +1386,7 @@ export function docToState(
     sectionBreaks: (d!.sectionBreaks ?? [])
       .filter((n) => Number.isFinite(n))
       .map((n) => sc(n)),
+    sections: moduleSections(d),
     mainPath,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
