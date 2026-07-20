@@ -22,6 +22,8 @@ import {
   carCapacity,
   N_CAR_LENGTH_INCHES,
   moduleFootprint,
+  checkEndplateWidth,
+  endplateTrackOffsetFor,
   moduleCenterline,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
@@ -484,6 +486,64 @@ describe("transition module: whichever main ends is the partial one (#FMN-0043)"
     const d = stateToDoc({ ...s, configA: "double", configB: "double" }, "M");
     expect(track(d, MAIN_TRACK_ID).to).toBe("B");
     expect(track(d, MAIN2_TRACK_ID).to).toBe("B");
+  });
+});
+
+describe("endplate width conformance (Free-moN §1.1 + §2.0)", () => {
+  it("passes a 24in plate, single or double, tracks centred", () => {
+    expect(checkEndplateWidth({ widthInches: 24, config: "single" })).toEqual([]);
+    expect(checkEndplateWidth({ widthInches: 24, config: "double" })).toEqual([]);
+  });
+
+  it("passes the 12in minimum with tracks centred", () => {
+    // Double at 12″: outer track 0.5625 from centre ⇒ 5.4375″ of fascia clearance.
+    expect(checkEndplateWidth({ widthInches: 12, config: "double" })).toEqual([]);
+  });
+
+  it("flags a plate under the 12in minimum", () => {
+    const issues = checkEndplateWidth({ widthInches: 10, config: "single" });
+    expect(issues.map((i) => i.code)).toContain("narrow");
+    expect(issues.find((i) => i.code === "narrow")!.requiredInches).toBe(12);
+  });
+
+  it("flags too little fascia clearance even on a wide plate when the track is offset", () => {
+    // 24″ plate but the track is 9″ off centre ⇒ only 3″ to the near fascia.
+    const issues = checkEndplateWidth({ widthInches: 24, config: "single", trackOffsetInches: 9 });
+    expect(issues.map((i) => i.code)).toEqual(["clearance"]);
+    expect(issues[0].requiredInches).toBe(26); // 2 × (9 + 4)
+  });
+
+  it("accounts for the second track on a double end", () => {
+    // 9″ plate, centred double: outer track 0.5625 out ⇒ 3.9375″ < 4″.
+    const issues = checkEndplateWidth({ widthInches: 9, config: "double" });
+    expect(issues.map((i) => i.code)).toEqual(["narrow", "clearance"]);
+    // 2 × (0.5625 + 4) — exact; only the human message rounds.
+    expect(issues.find((i) => i.code === "clearance")!.requiredInches).toBeCloseTo(9.125);
+  });
+});
+
+describe("endplate track offset (double ends centre on the pair, #93)", () => {
+  it("is half a track spacing for double, zero for single", () => {
+    expect(endplateTrackOffsetFor("double")).toBeCloseTo(0.5625);
+    expect(endplateTrackOffsetFor("single")).toBe(0);
+    expect(endplateTrackOffsetFor(undefined)).toBe(0);
+  });
+
+  it("shifts the endplate face and band without moving the track point", () => {
+    const base = { lengthInches: 48, geometryType: "straight" };
+    const plain = moduleFootprint(base);
+    const shifted = moduleFootprint({
+      ...base,
+      endplateTrackOffsets: { A: 0.5625, B: 0.5625 },
+    });
+    // The track point (face mid) is unchanged — joints still key off it…
+    expect(shifted.endplateFaces[0].mid.y).toBeCloseTo(plain.endplateFaces[0].mid.y);
+    // …while the face itself moves up half a spacing.
+    expect(shifted.endplateFaces[0].p1.y - plain.endplateFaces[0].p1.y).toBeCloseTo(0.5625);
+    expect(shifted.endplateFaces[0].p2.y - plain.endplateFaces[0].p2.y).toBeCloseTo(0.5625);
+    // The face is still a full width across.
+    const w = Math.abs(shifted.endplateFaces[0].p1.y - shifted.endplateFaces[0].p2.y);
+    expect(w).toBeCloseTo(24);
   });
 });
 
