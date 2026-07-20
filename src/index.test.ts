@@ -13,6 +13,9 @@ import {
   sectionedCenterline,
   sliceCenterline,
   sectionBand,
+  sectionAdjacency,
+  sectionNeighbours,
+  sectionComponents,
   moduleLengthFromSections,
   moduleCenterline,
   stateToDoc,
@@ -1639,5 +1642,72 @@ describe("a section's outline belongs to the section (#96 phase 2b)", () => {
       { x: 0, y: 0 },
       { x: 100, y: 0 },
     ]);
+  });
+});
+
+describe("section adjacency from shared edges (#96 phase 2c)", () => {
+  const rect = (id: string, x0: number, x1: number, y0: number, y1: number) => ({
+    id,
+    outline: [
+      { x: x0, y: y0 },
+      { x: x1, y: y0 },
+      { x: x1, y: y1 },
+      { x: x0, y: y1 },
+    ],
+    derived: true,
+  });
+
+  it("finds a butt joint and measures the shared edge", () => {
+    const adj = sectionAdjacency([rect("a", 0, 36, -12, 12), rect("b", 36, 96, -12, 12)]);
+    expect(adj).toHaveLength(1);
+    expect(adj[0].lengthInches).toBeCloseTo(24);
+  });
+
+  it("finds a PENINSULA hanging off the back of a band", () => {
+    // The case list order can't express: the peninsula is section 3, but it
+    // meets the band (section 1) along part of its back edge, not section 2.
+    const band = rect("band", 0, 96, -12, 12);
+    const next = rect("next", 96, 140, -12, 12);
+    const peninsula = rect("peninsula", 40, 60, 12, 60);
+    const adj = sectionAdjacency([band, next, peninsula]);
+    expect(sectionNeighbours("peninsula", adj)).toEqual(["band"]);
+    expect(adj.find((x) => x.b === "peninsula")!.lengthInches).toBeCloseTo(20);
+    // …and it is NOT a neighbour of the board next to it in the list.
+    expect(sectionNeighbours("next", adj)).toEqual(["band"]);
+  });
+
+  it("ignores boards that only touch at a corner, or not at all", () => {
+    expect(sectionAdjacency([rect("a", 0, 36, -12, 12), rect("b", 36, 60, 12, 40)])).toEqual([]);
+    expect(sectionAdjacency([rect("a", 0, 36, -12, 12), rect("b", 60, 96, -12, 12)])).toEqual([]);
+  });
+
+  it("tolerates a hair of slop between hand-drawn boards", () => {
+    const adj = sectionAdjacency([rect("a", 0, 36, -12, 12), rect("b", 36.2, 96, -12, 12)]);
+    expect(adj).toHaveLength(1);
+  });
+
+  it("groups sections into connected pieces", () => {
+    const joined = sectionAdjacency([rect("a", 0, 36, -12, 12), rect("b", 36, 96, -12, 12)]);
+    expect(sectionComponents(["a", "b"], joined)).toEqual([["a", "b"]]);
+
+    // A floating board is its own piece — the check phase 3 needs before it
+    // can say whether dropping a section leaves the rest intact.
+    const split = sectionAdjacency([rect("a", 0, 36, -12, 12), rect("c", 200, 240, -12, 12)]);
+    expect(sectionComponents(["a", "c"], split)).toHaveLength(2);
+  });
+
+  it("reads adjacency off a real derived module", () => {
+    const fp = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      endplateWidths: { A: 24, B: 24 },
+      sections: [
+        { id: "s1", lengthInches: 36 },
+        { id: "s2", lengthInches: 60 },
+      ],
+    });
+    const adj = sectionAdjacency(fp.sectionOutlines);
+    expect(adj).toHaveLength(1);
+    expect(adj[0].lengthInches).toBeCloseTo(24);
   });
 });

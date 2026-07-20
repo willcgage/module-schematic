@@ -855,6 +855,128 @@ export function sectionBand(
   return [...left, ...right.reverse()];
 }
 
+/** Two sections that physically meet, and how much edge they share. */
+export interface SectionAdjacency {
+  a: string;
+  b: string;
+  /** Inches of shared edge — a butt joint across a 24″ board reads ~24. */
+  lengthInches: number;
+}
+
+/** Closed-ring edges of a polygon, including the wrap-around. */
+function ringEdges(pts: { x: number; y: number }[]): [
+  { x: number; y: number },
+  { x: number; y: number },
+][] {
+  const out: [{ x: number; y: number }, { x: number; y: number }][] = [];
+  for (let i = 0; i < pts.length; i++) out.push([pts[i], pts[(i + 1) % pts.length]]);
+  return out;
+}
+
+/** How much of two near-collinear segments actually overlap, in inches. 0 when
+ * they're skew, too far apart, or merely touching at a point. */
+function sharedEdgeLength(
+  e1: [{ x: number; y: number }, { x: number; y: number }],
+  e2: [{ x: number; y: number }, { x: number; y: number }],
+  gap: number,
+  angleDeg: number,
+): number {
+  const ux = e1[1].x - e1[0].x;
+  const uy = e1[1].y - e1[0].y;
+  const ul = Math.hypot(ux, uy);
+  const vx = e2[1].x - e2[0].x;
+  const vy = e2[1].y - e2[0].y;
+  const vl = Math.hypot(vx, vy);
+  if (ul < 1e-6 || vl < 1e-6) return 0;
+  const dx = ux / ul;
+  const dy = uy / ul;
+  // Parallel either way round — a shared joint has the two boards' edges
+  // running in OPPOSITE directions, since each ring winds around its own board.
+  const cross = Math.abs((dx * vy - dy * vx) / vl);
+  if (cross > Math.sin((angleDeg * Math.PI) / 180)) return 0;
+  // Both endpoints of e2 must lie within `gap` of e1's infinite line.
+  const perp = (q: { x: number; y: number }) =>
+    Math.abs((q.x - e1[0].x) * -dy + (q.y - e1[0].y) * dx);
+  if (perp(e2[0]) > gap || perp(e2[1]) > gap) return 0;
+  const proj = (q: { x: number; y: number }) => (q.x - e1[0].x) * dx + (q.y - e1[0].y) * dy;
+  const t1 = proj(e2[0]);
+  const t2 = proj(e2[1]);
+  return Math.max(0, Math.min(ul, Math.max(t1, t2)) - Math.max(0, Math.min(t1, t2)));
+}
+
+/**
+ * Which sections physically MEET, derived from shared polygon edges rather
+ * than list order (#96 phase 2c).
+ *
+ * Order is the wrong model as soon as a module stops being a row of boards: a
+ * peninsula hangs off the BACK of a shallow band over part of its length, so
+ * it neighbours a board it isn't next to in any list. Geometry is the only
+ * thing that knows.
+ */
+export function sectionAdjacency(
+  footprints: SectionFootprint[],
+  opts?: { gapInches?: number; angleDegrees?: number; minOverlapInches?: number },
+): SectionAdjacency[] {
+  const gap = opts?.gapInches ?? 0.5;
+  const angle = opts?.angleDegrees ?? 3;
+  const min = opts?.minOverlapInches ?? 1;
+  const edges = footprints.map((f) => ringEdges(f.outline));
+  const out: SectionAdjacency[] = [];
+  for (let i = 0; i < footprints.length; i++) {
+    for (let j = i + 1; j < footprints.length; j++) {
+      let total = 0;
+      for (const e1 of edges[i])
+        for (const e2 of edges[j]) total += sharedEdgeLength(e1, e2, gap, angle);
+      if (total >= min)
+        out.push({
+          a: footprints[i].id,
+          b: footprints[j].id,
+          lengthInches: Math.round(total * 1000) / 1000,
+        });
+    }
+  }
+  return out;
+}
+
+/** The sections each one touches. */
+export function sectionNeighbours(id: string, adj: SectionAdjacency[]): string[] {
+  return adj.filter((x) => x.a === id || x.b === id).map((x) => (x.a === id ? x.b : x.a));
+}
+
+/**
+ * Groups of sections that hang together, as connected components. One group
+ * means the module is a single piece of bench work; more than one means some
+ * board is floating free — an authoring mistake now, and the test #96 phase 3
+ * needs before it can say whether dropping a section leaves the rest intact.
+ */
+export function sectionComponents(ids: string[], adj: SectionAdjacency[]): string[][] {
+  const parent = new Map(ids.map((id) => [id, id]));
+  const find = (x: string): string => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r)!;
+    while (parent.get(x) !== r) {
+      const nx = parent.get(x)!;
+      parent.set(x, r);
+      x = nx;
+    }
+    return r;
+  };
+  for (const { a, b } of adj) {
+    if (!parent.has(a) || !parent.has(b)) continue;
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+  const groups = new Map<string, string[]>();
+  for (const id of ids) {
+    const r = find(id);
+    groups.set(r, [...(groups.get(r) ?? []), id]);
+  }
+  // Keep the caller's ordering so the first group is the one containing the
+  // first section — the piece with endplate A on it.
+  return [...groups.values()];
+}
+
 /** The two endplate faces (the band's flat ends): [A end at widthA, B end at widthB]. */
 export function endplateFaceSegments(
   center: BenchworkPoint[],
