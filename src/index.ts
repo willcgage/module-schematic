@@ -687,6 +687,88 @@ export function sectionSpans(
   return out;
 }
 
+/** A position expressed against the board it sits on, rather than as inches
+ * from endplate A (#109). */
+export interface SectionRelativePos {
+  sectionId: string;
+  /** Inches from that section's own west end. */
+  offsetInches: number;
+}
+
+/**
+ * Section spans that ALWAYS cover the whole module. The owner's insight is
+ * what makes #109 tractable: every module has at least one section, even if
+ * that one section IS the whole module. So a module with no authored sections
+ * gets a single implicit span 0→length, every position falls inside exactly
+ * one span, and absolute ↔ relative becomes a total, lossless mapping with no
+ * un-convertible module and no orphan positions.
+ *
+ * The last span is also stretched to the module length when the sections come
+ * up short, so a position past the end still lands somewhere real.
+ */
+export function sectionSpansOrWhole(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+  lengthInches: number,
+): { id: string; name?: string; fromPos: number; toPos: number }[] {
+  const L = lengthInches > 0 ? lengthInches : 0;
+  const spans = sectionSpans(doc);
+  if (!spans.length) return [{ id: WHOLE_MODULE_SECTION_ID, fromPos: 0, toPos: L }];
+  const out = spans.map((sp) => ({ ...sp }));
+  const last = out[out.length - 1];
+  if (L > last.toPos) last.toPos = L;
+  return out;
+}
+
+/** The id a module with no authored sections uses for its single implicit one. */
+export const WHOLE_MODULE_SECTION_ID = "module";
+
+/**
+ * Absolute inches → the board it sits on plus an offset along it (#109).
+ * Total: given spans from `sectionSpansOrWhole`, every position resolves.
+ *
+ * A position exactly ON a joint is assigned to the section that STARTS there,
+ * at offset 0 — a joint is the west end of the next board, and that keeps the
+ * mapping single-valued. The module's own east end is the exception: nothing
+ * starts there, so it belongs to the last board.
+ */
+export function toSectionRelative(
+  pos: number,
+  spans: { id: string; fromPos: number; toPos: number }[],
+): SectionRelativePos | null {
+  if (!spans.length) return null;
+  const p = Math.max(spans[0].fromPos, Math.min(spans[spans.length - 1].toPos, pos));
+  for (const sp of spans) {
+    if (p >= sp.fromPos && p < sp.toPos)
+      return { sectionId: sp.id, offsetInches: round3(p - sp.fromPos) };
+  }
+  const last = spans[spans.length - 1];
+  return { sectionId: last.id, offsetInches: round3(last.toPos - last.fromPos) };
+}
+
+/** …and back. Null when the section is gone — which is the caller's cue that
+ * the thing it positioned has lost its board (#96 phase 3). */
+export function fromSectionRelative(
+  rel: SectionRelativePos,
+  spans: { id: string; fromPos: number; toPos: number }[],
+): number | null {
+  const sp = spans.find((x) => x.id === rel.sectionId);
+  if (!sp) return null;
+  return round3(sp.fromPos + Math.max(0, Math.min(sp.toPos - sp.fromPos, rel.offsetInches)));
+}
+
+/** Re-derive an absolute position after the sections have moved: read it
+ * against the OLD spans, write it against the NEW ones. This is the whole
+ * point of #109 — reorder or resize a board and everything on it comes along
+ * instead of silently pointing at a different board. */
+export function remapPos(
+  pos: number,
+  before: { id: string; fromPos: number; toPos: number }[],
+  after: { id: string; fromPos: number; toPos: number }[],
+): number | null {
+  const rel = toSectionRelative(pos, before);
+  return rel ? fromSectionRelative(rel, after) : null;
+}
+
 /** The joints implied by the sections — the interior boundaries, in inches from
  * endplate A. Replaces the authored `sectionBreaks` for a sectioned module. */
 export function sectionBreaksFromSections(
@@ -1152,6 +1234,7 @@ export function checkEndplateWidth(input: {
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
 function endplateWidthFor(widths: Record<string, number> | undefined, id: string): number {
   const w = widths?.[id];

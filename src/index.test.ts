@@ -13,6 +13,11 @@ import {
   sectionedCenterline,
   sliceCenterline,
   sectionBand,
+  sectionSpansOrWhole,
+  toSectionRelative,
+  fromSectionRelative,
+  remapPos,
+  WHOLE_MODULE_SECTION_ID,
   sectionAdjacency,
   sectionNeighbours,
   sectionComponents,
@@ -1824,5 +1829,84 @@ describe("a turnout can be rotated 180° (#turnout-flip)", () => {
     expect(docToState(doc).turnouts[0].flipped).toBe(true);
     const plain = stateToDoc({ ...s, turnouts: [t] as never }, "M");
     expect(plain.turnouts![0].flipped).toBeUndefined();
+  });
+});
+
+describe("section-relative positions (#109)", () => {
+  const sections = [
+    { id: "a", lengthInches: 36 },
+    { id: "b", lengthInches: 60 },
+    { id: "c", lengthInches: 24 },
+  ];
+  const spans = sectionSpansOrWhole({ sections }, 120);
+
+  it("a module with no sections is one implicit section covering it all", () => {
+    const whole = sectionSpansOrWhole({ sections: [] }, 96);
+    expect(whole).toEqual([{ id: WHOLE_MODULE_SECTION_ID, fromPos: 0, toPos: 96 }]);
+    // …so its positions convert to offsets from 0 — the numbers don't change.
+    expect(toSectionRelative(40, whole)).toEqual({ sectionId: "module", offsetInches: 40 });
+    expect(fromSectionRelative({ sectionId: "module", offsetInches: 40 }, whole)).toBe(40);
+  });
+
+  it("round-trips every position — the mapping is total and lossless", () => {
+    for (const pos of [0, 1, 35.9, 36, 50, 95.999, 96, 110, 120])
+      expect(fromSectionRelative(toSectionRelative(pos, spans)!, spans)).toBeCloseTo(pos, 3);
+  });
+
+  it("a joint belongs to the board that STARTS there", () => {
+    expect(toSectionRelative(36, spans)).toEqual({ sectionId: "b", offsetInches: 0 });
+    expect(toSectionRelative(35.9, spans)!.sectionId).toBe("a");
+    // …except the module's east end, where nothing starts.
+    expect(toSectionRelative(120, spans)).toEqual({ sectionId: "c", offsetInches: 24 });
+  });
+
+  it("brings positions along when a board is resized", () => {
+    // Section a grows 36 → 50. Something 10" into section b was at 46; it's now
+    // at 60 — still 10" into b, which is the point.
+    const after = sectionSpansOrWhole(
+      { sections: [{ id: "a", lengthInches: 50 }, ...sections.slice(1)] },
+      134,
+    );
+    expect(remapPos(46, spans, after)).toBeCloseTo(60);
+    // Something on section a itself doesn't move.
+    expect(remapPos(10, spans, after)).toBeCloseTo(10);
+  });
+
+  it("brings positions along when boards are REORDERED", () => {
+    const after = sectionSpansOrWhole(
+      { sections: [sections[2], sections[0], sections[1]] },
+      120,
+    );
+    // 10" into c was at 106; c is now first, so it's at 10.
+    expect(remapPos(106, spans, after)).toBeCloseTo(10);
+    // 10" into a was at 10; a now follows c, so it's at 34.
+    expect(remapPos(10, spans, after)).toBeCloseTo(34);
+  });
+
+  it("reports a lost board rather than guessing", () => {
+    const after = sectionSpansOrWhole({ sections: [sections[0], sections[1]] }, 96);
+    expect(remapPos(106, spans, after)).toBeNull(); // was on c, which is gone
+    expect(remapPos(10, spans, after)).toBeCloseTo(10);
+  });
+
+  it("a span crossing a joint keeps BOTH ends on their own boards", () => {
+    // The owner's diagonal route crosses joints; each end converts on its own,
+    // so a reorder moves them independently and correctly.
+    const from = toSectionRelative(30, spans)!;
+    const to = toSectionRelative(50, spans)!;
+    expect(from.sectionId).toBe("a");
+    expect(to.sectionId).toBe("b");
+    const after = sectionSpansOrWhole(
+      { sections: [{ id: "a", lengthInches: 50 }, ...sections.slice(1)] },
+      134,
+    );
+    expect(fromSectionRelative(from, after)).toBeCloseTo(30);
+    expect(fromSectionRelative(to, after)).toBeCloseTo(64);
+  });
+
+  it("clamps rather than throwing when a position is off the end", () => {
+    expect(toSectionRelative(-5, spans)!.offsetInches).toBe(0);
+    expect(toSectionRelative(999, spans)!.sectionId).toBe("c");
+    expect(fromSectionRelative({ sectionId: "a", offsetInches: 999 }, spans)).toBe(36);
   });
 });
