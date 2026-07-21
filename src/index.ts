@@ -268,11 +268,6 @@ export interface ModuleSchematicDoc {
    * Absent = the module keeps using its own `outline` exactly as before; this
    * is purely additive and nothing migrates on read. */
   sections?: SchematicSection[];
-  /** Which compass axis the module actually runs along. The dispatcher panel
-   * always draws LEFT→RIGHT — that's what makes a layout of modules read as one
-   * strip — but a module built north/south should still be labelled N and S.
-   * Absent = east/west. */
-  orientation?: ModuleOrientation;
   /** @deprecated pre-grouping flat signals; read for back-compat. */
   signals?: SchematicSignal[];
   /** Authored mainline centre-line (module-local inches, open path with arcs).
@@ -291,24 +286,12 @@ export interface BenchworkPoint {
   bulge?: number;
 }
 
-/** The compass axis a module runs along. Endplate A is the first label,
- * endplate B the second, so A→B reads left→right in the dispatcher panel
- * whichever axis it is. */
-export type ModuleOrientation = "east-west" | "north-south";
-
-/** The compass letters for a module's two ends, A first. */
-export function endLabels(o: ModuleOrientation | null | undefined): { a: string; b: string } {
-  return o === "north-south" ? { a: "S", b: "N" } : { a: "W", b: "E" };
-}
-
-/** …spelled out, for a caption like "derived, South → North". */
-export function endLabelsLong(
-  o: ModuleOrientation | null | undefined,
-): { a: string; b: string } {
-  return o === "north-south"
-    ? { a: "South", b: "North" }
-    : { a: "West", b: "East" };
-}
+/** NB: a module has NO compass direction of its own, deliberately. It has ends
+ * A and B. Direction is a property of the LAYOUT — the same board can be
+ * installed running either way round, or on either axis, so a compass label
+ * stored here could only ever contradict the layout that placed it. Railroads
+ * do the same thing with timetable direction: the railroad declares which way
+ * is "east", not any one piece of track. Free-Dispatcher owns direction. */
 
 /** One bench-work section of a module (#96 phase 2). */
 export interface SectionFootprint {
@@ -1446,8 +1429,6 @@ export interface EditorState {
   /** The module's sections as named objects, each optionally carrying its own
    * outline (#96 phase 2). Empty = fall back to `outline` + `sectionBreaks`. */
   sections: SchematicSection[];
-  /** Compass axis the module runs along; the panel still draws left→right. */
-  orientation: ModuleOrientation;
   controlPoints: EditorControlPoint[];
   /** Rail-served industries — car-spot spans on a track (#industries). */
   industries: EditorIndustry[];
@@ -1475,7 +1456,6 @@ export function emptyEditorState(lengthInches: number): EditorState {
     outline: [],
     sectionBreaks: [],
     sections: [],
-    orientation: "east-west",
     controlPoints: [],
     industries: [],
     mainPath: [],
@@ -1797,9 +1777,6 @@ export function stateToDoc(
     // Sections as objects — emitted only once the owner has some, so a module
     // that never used them keeps exactly the doc it had before (#96 phase 2).
     ...(state.sections.length ? { sections: moduleSections({ sections: state.sections }) } : {}),
-    // Emitted only when it isn't the east/west default, so existing docs are
-    // byte-identical.
-    ...(state.orientation === "north-south" ? { orientation: state.orientation } : {}),
     // Authored mainline path (module-local inches); only when it's a real path.
     ...(state.mainPath.length >= 2 ? { mainPath: state.mainPath } : {}),
   };
@@ -1940,7 +1917,6 @@ export function docToState(
       .filter((n) => Number.isFinite(n))
       .map((n) => sc(n)),
     sections: moduleSections(d),
-    orientation: d!.orientation === "north-south" ? "north-south" : "east-west",
     mainPath,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
