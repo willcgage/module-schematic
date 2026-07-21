@@ -17,6 +17,8 @@ import {
   toSectionRelative,
   fromSectionRelative,
   remapPos,
+  endLabels,
+  endLabelsLong,
   WHOLE_MODULE_SECTION_ID,
   sectionAdjacency,
   sectionNeighbours,
@@ -1908,5 +1910,23 @@ describe("section-relative positions (#109)", () => {
     expect(toSectionRelative(-5, spans)!.offsetInches).toBe(0);
     expect(toSectionRelative(999, spans)!.sectionId).toBe("c");
     expect(fromSectionRelative({ sectionId: "a", offsetInches: 999 }, spans)).toBe(36);
+  });
+});
+
+describe("module orientation (compass labels)", () => {
+  it("labels the ends by axis, A first", () => {
+    expect(endLabels("east-west")).toEqual({ a: "W", b: "E" });
+    expect(endLabels("north-south")).toEqual({ a: "S", b: "N" });
+    expect(endLabels(undefined)).toEqual({ a: "W", b: "E" });
+    expect(endLabelsLong("north-south")).toEqual({ a: "South", b: "North" });
+  });
+
+  it("round-trips, and stays absent for the east/west default", () => {
+    const s = emptyEditorState(96);
+    expect(stateToDoc(s, "M").orientation).toBeUndefined();
+    expect(docToState(stateToDoc(s, "M")).orientation).toBe("east-west");
+    const ns = stateToDoc({ ...s, orientation: "north-south" }, "M");
+    expect(ns.orientation).toBe("north-south");
+    expect(docToState(ns).orientation).toBe("north-south");
   });
 });
