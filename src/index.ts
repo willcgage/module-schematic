@@ -694,6 +694,33 @@ export function sectionBreaksFromSections(
  * a module like One Mile expressible: straight boards with two 24″ curved ones
  * in the middle, which no single module-level geometry can describe (#108).
  * Returns [] when the module has no sections with lengths. */
+/** Where the chained boards finish, and on what heading — computed from the
+ * section geometry itself rather than read off the sampled polyline. A curve
+ * is sampled in steps, so the last chord lags the true tangent by half a step
+ * (a 90° board sampled 12 ways reads 86.25°). That error would land straight
+ * in endplate B's heading and throw off face-to-face snapping, so the exact
+ * value is accumulated here instead. Null when there are no sections. */
+export function sectionedEndPose(
+  doc: { sections?: SchematicSection[] | null } | null | undefined,
+): { x: number; y: number; heading: number } | null {
+  const secs = moduleSections(doc).filter(
+    (sec) => typeof sec.lengthInches === "number" && sec.lengthInches! > 0,
+  );
+  if (!secs.length) return null;
+  let ox = 0;
+  let oy = 0;
+  let heading = 0;
+  for (const sec of secs) {
+    const local = sectionCenterlineLocal(sec);
+    const c = Math.cos(heading * DEG_FP);
+    const sn = Math.sin(heading * DEG_FP);
+    ox += local.endX * c - local.endY * sn;
+    oy += local.endX * sn + local.endY * c;
+    heading += local.endHeadingDeg;
+  }
+  return { x: ox, y: oy, heading };
+}
+
 export function sectionedCenterline(
   doc: { sections?: SchematicSection[] | null } | null | undefined,
 ): BenchworkPoint[] {
@@ -2516,6 +2543,10 @@ export interface ModuleGeometryInput {
   /** Half the spacing between the two tracks of a double endplate (Free-mo ≈ 1",
    * Free-moN ≈ 9/16"). */
   trackHalfSpacingInches?: number;
+  /** The module's sections. When present they define the module's real shape,
+   * so endplate B lands at the end of the CHAINED boards rather than where a
+   * single module-level geometry would have put it (#108). */
+  sections?: SchematicSection[] | null;
 }
 
 /** Signed turn a module applies to the through track (CCW/left positive). */
@@ -2578,7 +2609,22 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
 
   // Endplate B — unless the module is a dead end / turnback (single endplate).
   const noB = geo.geometryType === "dead_end";
-  if (!noB) {
+  // A sectioned module's real end is where its boards finish, which no single
+  // module-level geometry can predict — chain them and read the last point and
+  // its closing tangent (#108).
+  const end = sectionedEndPose({ sections: geo.sections });
+  if (!noB && end) {
+    poses.push(
+      withOverride({
+        id: "B",
+        x: end.x,
+        y: end.y,
+        heading: norm360(end.heading),
+        trackConfig: cfg(1),
+        trackOffsets: offsetsFor(cfg(1), half),
+      }),
+    );
+  } else if (!noB) {
     const turn = geometryTurnDegrees(geo.geometryType, geo.geometryDegrees);
     let bx: number;
     let by: number;

@@ -16,6 +16,7 @@ import {
   sectionAdjacency,
   sectionNeighbours,
   sectionComponents,
+  sectionedEndPose,
   moduleLengthFromSections,
   moduleCenterline,
   stateToDoc,
@@ -1709,5 +1710,42 @@ describe("section adjacency from shared edges (#96 phase 2c)", () => {
     const adj = sectionAdjacency(fp.sectionOutlines);
     expect(adj).toHaveLength(1);
     expect(adj[0].lengthInches).toBeCloseTo(24);
+  });
+});
+
+describe("endplate B follows the sections (#108)", () => {
+  it("lands at the end of the chained boards, not the straight-module end", () => {
+    // 240" straight then a 90° corner: B is up and round, facing north — NOT
+    // at (264, 0) where a single module-level geometry would put it.
+    const poses = deriveEndplatePoses({
+      lengthInches: 264,
+      geometryType: "straight",
+      sections: [
+        { id: "a", lengthInches: 240 },
+        { id: "b", lengthInches: 24, geometryType: "corner_90" },
+      ],
+    });
+    const b = poses.find((p) => p.id === "B")!;
+    expect(b.x).toBeGreaterThan(240);
+    expect(b.y).toBeGreaterThan(10); // it turned
+    expect(b.heading).toBeCloseTo(90, 0);
+  });
+
+  it("is unchanged for a module with no sections", () => {
+    const b = deriveEndplatePoses({ lengthInches: 96, geometryType: "straight" }).find(
+      (p) => p.id === "B",
+    )!;
+    expect(b.x).toBeCloseTo(96);
+    expect(b.y).toBeCloseTo(0);
+    expect(b.heading).toBeCloseTo(0);
+  });
+
+  it("still honours a manual pose override", () => {
+    const b = deriveEndplatePoses({
+      lengthInches: 264,
+      sections: [{ id: "a", lengthInches: 240 }],
+      poseOverrides: { B: { x: 5, y: 6, heading: 7 } },
+    }).find((p) => p.id === "B")!;
+    expect(b).toMatchObject({ x: 5, y: 6, heading: 7, manual: true });
   });
 });
