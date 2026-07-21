@@ -17,6 +17,9 @@ import {
   sectionNeighbours,
   sectionComponents,
   sectionedEndPose,
+  moduleFeatures,
+  MAIN_TRACK_ID,
+  MAIN2_TRACK_ID,
   moduleLengthFromSections,
   moduleCenterline,
   stateToDoc,
@@ -1747,5 +1750,49 @@ describe("endplate B follows the sections (#108)", () => {
       poseOverrides: { B: { x: 5, y: 6, heading: 7 } },
     }).find((p) => p.id === "B")!;
     expect(b).toMatchObject({ x: 5, y: 6, heading: 7, manual: true });
+  });
+});
+
+describe("a double stretch bounded at BOTH ends (#118)", () => {
+  const siding = (): EditorState => ({
+    ...emptyEditorState(384),
+    configA: "single",
+    configB: "single",
+    turnouts: [
+      { id: "sw1", pos: 13, onTrack: MAIN_TRACK_ID, divergeTrack: MAIN2_TRACK_ID, hand: "left" },
+      { id: "sw2", pos: 367, onTrack: MAIN_TRACK_ID, divergeTrack: MAIN2_TRACK_ID, hand: "right" },
+    ] as never,
+  });
+
+  it("Main 2 lives between the two turnouts, not out to the endplate", () => {
+    const doc = stateToDoc(siding(), "M");
+    const m2 = doc.tracks.find((t) => t.id === MAIN2_TRACK_ID)!;
+    expect(m2.fromPos).toBe(13);
+    expect(m2.toPos).toBe(367);
+    // Main 1 still runs the whole module — it's the through main.
+    const m1 = doc.tracks.find((t) => t.id === MAIN_TRACK_ID)!;
+    expect(m1.from).toBe("A");
+    expect(m1.to).toBe("B");
+  });
+
+  it("moduleFeatures reports the bounded extent", () => {
+    const f = moduleFeatures(stateToDoc(siding(), "M"));
+    expect(f.main2Extent!.fromFrac).toBeCloseTo(13 / 384);
+    expect(f.main2Extent!.toFrac).toBeCloseTo(367 / 384);
+  });
+
+  it("still ends at the endplate when that end IS double", () => {
+    const s = { ...siding(), configB: "double" as const };
+    const m2 = stateToDoc(s, "M").tracks.find((t) => t.id === MAIN2_TRACK_ID)!;
+    expect(m2.fromPos).toBe(13);
+    expect(m2.toPos).toBe(384);
+  });
+
+  it("a half-drawn siding (one turnout, both ends single) still runs out", () => {
+    const s = siding();
+    s.turnouts = [s.turnouts[0]];
+    const m2 = stateToDoc(s, "M").tracks.find((t) => t.id === MAIN2_TRACK_ID)!;
+    expect(m2.fromPos).toBe(13);
+    expect(m2.toPos).toBe(384);
   });
 });

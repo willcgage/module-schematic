@@ -1408,20 +1408,39 @@ function main1Track(state: EditorState): SchematicTrack {
 
 function main2Track(state: EditorState): SchematicTrack {
   const bothDouble = state.configA === "double" && state.configB === "double";
-  const sw = state.turnouts.find(isTransitionTurnout);
+  // EVERY turnout that opens Main 2, west to east — not just the first. A module
+  // that's single at both ends with a double stretch in the middle (the ordinary
+  // passing-siding module) has TWO, and Main 2 lives between them. Taking only
+  // the first ran Main 2 on to the far endplate, so a single-track end drew two
+  // tracks reaching it (#118).
+  const sws = state.turnouts
+    .filter((t) => isTransitionTurnout(t) && t.divergeTrack === MAIN2_TRACK_ID)
+    .sort((a, b) => a.pos - b.pos);
   // Main 2 runs partial only when IT is the branch that ends (turnout diverges
   // TO Main 2). If the turnout sits ON Main 2 (Main 2 is the surviving through
   // main, #FMN-0043), Main 2 runs full and Main 1 is the one that ends.
   // Swapped: Main 2 takes the centre line and Main 1 draws above (#FMN-0043).
   const lane = state.mainsSwapped ? 0 : 1;
-  if (bothDouble || !sw || sw.divergeTrack !== MAIN2_TRACK_ID) {
+  if (bothDouble || !sws.length) {
     return { id: MAIN2_TRACK_ID, role: "main", lane, from: "A", to: "B" };
   }
-  return state.configA === "double"
-    ? // Double at A: Main 2 runs from A and ends at the turnout.
-      { id: MAIN2_TRACK_ID, role: "main", lane, fromPos: 0, toPos: sw.pos }
-    : // Double at B: Main 2 begins at the turnout and runs to B.
-      { id: MAIN2_TRACK_ID, role: "main", lane, fromPos: sw.pos, toPos: state.lengthInches };
+  const track = (fromPos: number, toPos: number): SchematicTrack => ({
+    id: MAIN2_TRACK_ID,
+    role: "main",
+    lane,
+    fromPos,
+    toPos,
+  });
+  // Double at A: Main 2 runs from A and ends at the turnout that closes it.
+  if (state.configA === "double") return track(0, sws[0].pos);
+  // Double at B: it begins where it FIRST appears and runs through to B.
+  if (state.configB === "double") return track(sws[0].pos, state.lengthInches);
+  // Single at both ends — the ordinary passing-siding module. Main 2 lives
+  // between the outermost turnouts.
+  if (sws.length >= 2) return track(sws[0].pos, sws[sws.length - 1].pos);
+  // One turnout and neither end double: a half-drawn siding. Nothing says
+  // where it ends, so let it run out rather than collapsing it to nothing.
+  return track(sws[0].pos, state.lengthInches);
 }
 
 /**
@@ -1569,7 +1588,15 @@ export function stateToDoc(
       // double) Main 2 only runs from the mainline turnout to the double end —
       // the turnout that diverges to main2 is the single source of truth for
       // where the transition sits (fd#175 / FMN-0038).
-      ...(!state.loop && (state.configA === "double" || state.configB === "double")
+      // …and on a module that's SINGLE at both ends but goes double in the
+      // middle to form a siding: the turnouts are what make Main 2 exist, so a
+      // pair of them is reason enough to emit it (#118). Without this the
+      // second main simply wasn't in the doc, and neither the board nor the
+      // dispatcher panel could draw it.
+      ...(!state.loop &&
+      (state.configA === "double" ||
+        state.configB === "double" ||
+        state.turnouts.some((t) => isTransitionTurnout(t) && t.divergeTrack === MAIN2_TRACK_ID))
         ? [main2Track(state)]
         : []),
       ...(state.loop && state.loopReturn === "main2"
