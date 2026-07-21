@@ -119,6 +119,13 @@ export interface SchematicTurnout {
    * the same way) instead of leaving as a straight diagonal. Physical-render
    * only; the operations view stays topological. */
   curved?: boolean | null;
+  /** Rotate the turnout 180° — the points face the other way along the track.
+   * HAND is which turnout you own; how it's INSTALLED is a separate choice, and
+   * the drawn orientation can't always be inferred from where the diverging
+   * track happens to run. A siding at the far end of a module is the case that
+   * forces it: the body has nowhere to go but back toward the module, so the
+   * derived facing comes out backwards. */
+  flipped?: boolean | null;
 }
 export interface SchematicSignal {
   id: string;
@@ -1233,6 +1240,8 @@ export interface EditorTurnout {
   kind: TurnoutKind;
   /** Frog number ("size") — #4, #6, #8, etc. Governs the diverging angle. */
   size?: number;
+  /** Rotate the turnout 180° — the points face the other way (#turnout-flip). */
+  flipped?: boolean;
   /** A curved turnout — the diverging route bows into an arc rather than a
    * straight diagonal. Physical-render only (the operations view is topological). */
   curved?: boolean;
@@ -1624,6 +1633,7 @@ export function stateToDoc(
       name: t.name || undefined,
       ...(t.size ? { size: t.size } : {}),
       ...(t.curved ? { curved: true } : {}),
+      ...(t.flipped ? { flipped: true } : {}),
     })),
     ...(state.crossings.length > 0
       ? {
@@ -1835,6 +1845,7 @@ export function docToState(
       kind: (t.kind as TurnoutKind) ?? "right",
       ...(t.size ? { size: t.size } : {}),
       ...(t.curved ? { curved: true } : {}),
+      ...(t.flipped ? { flipped: true } : {}),
     })),
     controlPoints: readControlPoints(d!, sc),
     industries: (d!.industries ?? []).map((ind) => ({
@@ -2160,9 +2171,12 @@ export interface ModuleFeatures {
 export function divergeSideForHand(
   kind: TurnoutKind | undefined,
   stubDir: number,
+  /** The turnout is installed the other way round — the points face the far
+   * direction, which swaps the side the diverging route leaves on. */
+  flipped?: boolean | null,
 ): -1 | 0 | 1 {
   if (kind !== "left" && kind !== "right") return 0; // wye / unset → no change
-  const s = stubDir >= 0 ? 1 : -1;
+  const s = (stubDir >= 0 ? 1 : -1) * (flipped ? -1 : 1);
   return kind === "left" ? (s as 1 | -1) : ((-s) as 1 | -1);
 }
 
