@@ -1796,3 +1796,33 @@ describe("a double stretch bounded at BOTH ends (#118)", () => {
     expect(m2.toPos).toBe(384);
   });
 });
+
+describe("a turnout can be rotated 180° (#turnout-flip)", () => {
+  it("flipping swaps the side the diverging route leaves on", () => {
+    expect(divergeSideForHand("left", 1)).toBe(1);
+    expect(divergeSideForHand("left", 1, true)).toBe(-1);
+    expect(divergeSideForHand("right", 1)).toBe(-1);
+    expect(divergeSideForHand("right", 1, true)).toBe(1);
+  });
+
+  it("flipping twice is the same as not flipping — it's a 180° rotation", () => {
+    for (const kind of ["left", "right"] as const)
+      for (const dir of [1, -1])
+        expect(divergeSideForHand(kind, dir, true)).toBe(divergeSideForHand(kind, -dir, false));
+  });
+
+  it("leaves a wye alone — it has no hand to swap", () => {
+    expect(divergeSideForHand("wye", 1, true)).toBe(0);
+    expect(divergeSideForHand(undefined, 1, true)).toBe(0);
+  });
+
+  it("round-trips, and stays absent when not flipped", () => {
+    const s = emptyEditorState(96);
+    const t = { id: "sw1", pos: 10, onTrack: MAIN_TRACK_ID, divergeTrack: "spur1", kind: "left" };
+    const doc = stateToDoc({ ...s, turnouts: [{ ...t, flipped: true }] as never }, "M");
+    expect(doc.turnouts![0].flipped).toBe(true);
+    expect(docToState(doc).turnouts[0].flipped).toBe(true);
+    const plain = stateToDoc({ ...s, turnouts: [t] as never }, "M");
+    expect(plain.turnouts![0].flipped).toBeUndefined();
+  });
+});
