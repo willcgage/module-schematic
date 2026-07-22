@@ -1910,3 +1910,38 @@ describe("section-relative positions (#109)", () => {
     expect(fromSectionRelative({ sectionId: "a", offsetInches: 999 }, spans)).toBe(36);
   });
 });
+
+describe("Main 2 authored path (#131)", () => {
+  const dbl = (): EditorState => ({
+    ...emptyEditorState(96),
+    configA: "double",
+    configB: "double",
+  });
+  const path = [
+    { x: 0, y: 1.125 },
+    { x: 48, y: 3 },
+    { x: 96, y: 1.125 },
+  ];
+
+  it("puts the authored path on the Main 2 track and round-trips", () => {
+    const doc = stateToDoc({ ...dbl(), main2Path: path }, "M");
+    const m2 = doc.tracks.find((t) => t.id === MAIN2_TRACK_ID)!;
+    expect(m2.path).toEqual(path);
+    expect(doc.main2Path).toEqual(path);
+    expect(docToState(doc).main2Path).toEqual(path);
+  });
+
+  it("is absent when Main 2 isn't bent — derives as a lane offset", () => {
+    const doc = stateToDoc(dbl(), "M");
+    expect(doc.tracks.find((t) => t.id === MAIN2_TRACK_ID)!.path).toBeUndefined();
+    expect(doc.main2Path).toBeUndefined();
+    expect(docToState(doc).main2Path).toEqual([]);
+  });
+
+  it("reads a legacy path stored only on the track record", () => {
+    const doc = stateToDoc(dbl(), "M");
+    (doc.tracks.find((t) => t.id === MAIN2_TRACK_ID) as { path?: unknown }).path = path;
+    delete (doc as { main2Path?: unknown }).main2Path;
+    expect(docToState(doc).main2Path).toEqual(path);
+  });
+})

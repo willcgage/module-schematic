@@ -274,6 +274,11 @@ export interface ModuleSchematicDoc {
    * Present = the owner drew the real shape; absent = derive from geometry.
    * Physical view only — the operations view stays derived (#2d-track). */
   mainPath?: BenchworkPoint[] | null;
+  /** Authored centre-line for MAIN 2 on a double-track module (module-local
+   * inches, open path with arcs). Present = the owner bent Main 2 to its real
+   * shape; absent = derive it as a lane offset from Main 1. Physical view only
+   * (#131). */
+  main2Path?: BenchworkPoint[] | null;
 }
 
 /** A benchwork-outline vertex, module-local inches. The edge from this vertex
@@ -1435,6 +1440,8 @@ export interface EditorState {
   /** Authored mainline centre-line (module-local inches) — empty = derive from
    * geometry. The owner-drawn real shape (#2d-track, physical view only). */
   mainPath: BenchworkPoint[];
+  /** Authored Main 2 centre-line (double-track only) — empty = lane offset (#131). */
+  main2Path: BenchworkPoint[];
 }
 
 /** Build the empty editor state for a module of the given length. */
@@ -1459,6 +1466,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     controlPoints: [],
     industries: [],
     mainPath: [],
+    main2Path: [],
   };
 }
 
@@ -1520,8 +1528,10 @@ function main2Track(state: EditorState): SchematicTrack {
   // main, #FMN-0043), Main 2 runs full and Main 1 is the one that ends.
   // Swapped: Main 2 takes the centre line and Main 1 draws above (#FMN-0043).
   const lane = state.mainsSwapped ? 0 : 1;
+  // A bent Main 2 draws along its authored path instead of a lane offset (#131).
+  const authored = state.main2Path.length >= 2 ? { path: state.main2Path } : {};
   if (bothDouble || !sws.length) {
-    return { id: MAIN2_TRACK_ID, role: "main", lane, from: "A", to: "B" };
+    return { id: MAIN2_TRACK_ID, role: "main", lane, from: "A", to: "B", ...authored };
   }
   const track = (fromPos: number, toPos: number): SchematicTrack => ({
     id: MAIN2_TRACK_ID,
@@ -1529,6 +1539,7 @@ function main2Track(state: EditorState): SchematicTrack {
     lane,
     fromPos,
     toPos,
+    ...authored,
   });
   // Double at A: Main 2 runs from A and ends at the turnout that closes it.
   if (state.configA === "double") return track(0, sws[0].pos);
@@ -1779,6 +1790,7 @@ export function stateToDoc(
     ...(state.sections.length ? { sections: moduleSections({ sections: state.sections }) } : {}),
     // Authored mainline path (module-local inches); only when it's a real path.
     ...(state.mainPath.length >= 2 ? { mainPath: state.mainPath } : {}),
+    ...(state.main2Path.length >= 2 ? { main2Path: state.main2Path } : {}),
   };
 }
 
@@ -1895,6 +1907,9 @@ export function docToState(
     }));
   // Authored mainline path — kept as drawn (a physical shape, not rescaled).
   const mainPath = trackPath(d!.mainPath) ?? [];
+  // Main 2's authored path may sit on the doc top-level or on its track record.
+  const main2Track_ = (d!.tracks ?? []).find((t) => t.id === MAIN2_TRACK_ID);
+  const main2Path = trackPath(d!.main2Path ?? main2Track_?.path) ?? [];
   return {
     lengthInches: len,
     loop,
@@ -1918,6 +1933,7 @@ export function docToState(
       .map((n) => sc(n)),
     sections: moduleSections(d),
     mainPath,
+    main2Path,
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
       name: x.name ?? "",
