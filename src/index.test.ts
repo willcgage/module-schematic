@@ -609,10 +609,10 @@ describe("swap Main 1 / Main 2 positions (#FMN-0043)", () => {
     expect(doc.mainsSwapped).toBeUndefined(); // absent unless set
   });
 
-  it("swapped puts Main 1 above and Main 2 on the centre line", () => {
+  it("swapped keeps Main 1 on the centre line and moves Main 2 below (#131)", () => {
     const { main, main2, doc } = lanes(true);
-    expect(main).toBe(1);
-    expect(main2).toBe(0);
+    expect(main).toBe(0); // Main 1 never moves
+    expect(main2).toBe(-1); // Main 2 drops to the lower side
     expect(doc.mainsSwapped).toBe(true);
     expect(docToState(doc).mainsSwapped).toBe(true);
   });
@@ -851,8 +851,8 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
     const s = { ...emptyEditorState(96), configB: "double" as const };
     const built = buildTransition(s)!;
     expect(built.turnout).toMatchObject({
-      onTrack: "main2",
-      divergeTrack: "main",
+      onTrack: "main", // sits ON the through mainline (Main 1)…
+      divergeTrack: "main2", // …and diverges TO the second main (#131)
       name: "End of Double Track",
       kind: "right", // double at B (east) → right; west-double → left
     });
@@ -866,19 +866,23 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
     expect(buildTransition({ ...emptyEditorState(96), configA: "double" as const, configB: "double" as const })).toBeNull();
   });
 
-  it("buildTransition makes Main 2 the surviving through main; Main 1 ends", () => {
-    // Single at A, double at B (east double): turnout ON Main 2 → Main 2 runs
-    // full length, Main 1 is the branch that ends at the junction.
+  it("Main 1 is the through main; Main 2 is the branch that ends (#131)", () => {
+    // Single at A, double at B (east double): turnout ON Main 1 → Main 1 runs
+    // full length, Main 2 is the branch that starts at the junction and runs
+    // to the double (east) end.
     const s = { ...emptyEditorState(96), configB: "double" as const };
     const built = buildTransition(s)!;
     s.turnouts.push(built.turnout);
     s.controlPoints.push(built.controlPoint);
     const doc = stateToDoc(s, "FMN-0038");
-    expect(doc.tracks.find((t) => t.id === "main2")).toMatchObject({ from: "A", to: "B" }); // full
+    expect(doc.tracks.find((t) => t.id === "main")).toMatchObject({ from: "A", to: "B" }); // Main 1 full
+    const m2 = doc.tracks.find((t) => t.id === "main2")!;
+    expect(m2.fromPos).toBe(built.turnout.pos); // Main 2 begins at the junction
+    expect(m2.toPos).toBe(96); // …and runs to the double end
     const f = moduleFeatures(doc);
-    expect(f.main2Extent).toBeNull();
+    expect(f.main2Extent!.fromFrac).toBeCloseTo(built.turnout.pos / 96);
     expect(f.transition).toEqual({
-      throughLane: 1, branchLane: 0, atFrac: built.turnout.pos / 96, doubleSide: "east",
+      throughLane: 0, branchLane: 1, atFrac: built.turnout.pos / 96, doubleSide: "east",
     });
     // Round-trips: the turnout comes back.
     const back = docToState(doc, 96);
@@ -889,7 +893,7 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
     const b2 = buildTransition(s2)!;
     s2.turnouts.push(b2.turnout);
     expect(moduleFeatures(stateToDoc(s2, "M")).transition).toEqual({
-      throughLane: 1, branchLane: 0, atFrac: b2.turnout.pos / 96, doubleSide: "west",
+      throughLane: 0, branchLane: 1, atFrac: b2.turnout.pos / 96, doubleSide: "west",
     });
   });
 
