@@ -1586,7 +1586,12 @@ export function buildTransition(state: EditorState): {
     // Branton, #131). Main 1 runs the full module; Main 2 is the branch.
     onTrack: MAIN_TRACK_ID,
     divergeTrack: MAIN2_TRACK_ID,
-    kind: aDouble ? "left" : "right",
+    // Hand so the diverging leg lands on Main 2's side. Main 2 extends toward
+    // the double end (sign −1 west / +1 east) and sits above (+1) or, when the
+    // mains are swapped, below (−1). divergeSideForHand(left)=sign(toward),
+    // (right)=−sign(toward), so pick the hand whose side matches Main 2's (#131).
+    kind:
+      (aDouble ? -1 : 1) === (state.mainsSwapped ? -1 : 1) ? "left" : "right",
   };
 
   const cpId = nextId("cp", state.controlPoints.map((c) => c.id));

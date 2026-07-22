@@ -854,13 +854,20 @@ describe("transition modules — one single + one double endplate (FMN-0038)", (
       onTrack: "main", // sits ON the through mainline (Main 1)…
       divergeTrack: "main2", // …and diverges TO the second main (#131)
       name: "End of Double Track",
-      kind: "right", // double at B (east) → right; west-double → left
+      // Hand lands the leg on Main 2's side: east-double + Main 2 above → left
+      // (a left-hand turnout facing east throws up); west-double → right.
+      kind: "left",
     });
     expect(built.controlPoint.turnouts).toEqual([built.turnout.id]);
     expect(built.controlPoint.signals.map((x) => `${x.facing}:${x.side}`)).toEqual([
       "AtoB:above",
       "BtoA:below",
     ]);
+    // Swapping Main 2 below flips the hand (leg must follow Main 2's side).
+    expect(buildTransition({ ...s, mainsSwapped: true })!.turnout.kind).toBe("right");
+    // West-double, Main 2 above → right; swapped → left.
+    expect(buildTransition({ ...emptyEditorState(96), configA: "double" as const })!.turnout.kind).toBe("right");
+    expect(buildTransition({ ...emptyEditorState(96), configA: "double" as const, mainsSwapped: true })!.turnout.kind).toBe("left");
     // Not a transition → null
     expect(buildTransition(emptyEditorState(96))).toBeNull();
     expect(buildTransition({ ...emptyEditorState(96), configA: "double" as const, configB: "double" as const })).toBeNull();
