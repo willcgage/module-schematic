@@ -1498,19 +1498,21 @@ export function isTransitionTurnout(t: {
  * end shows two tracks reaching it.
  */
 function main1Track(state: EditorState): SchematicTrack {
-  const bothDouble = state.configA === "double" && state.configB === "double";
-  const isDouble = state.configA === "double" || state.configB === "double";
+  // Main 1 is the through mainline: always the full module, always on the
+  // centre line. The swap moves MAIN 2 to the other side; Main 1 never moves
+  // (Steve Branton, #131). A legacy doc where the turnout sits ON Main 2 (Main 2
+  // was the through main) still truncates Main 1 so old modules don't break.
   const sw = state.turnouts.find(isTransitionTurnout);
-  // Swapped: Main 1 draws ABOVE (lane 1) and Main 2 on the centre line (#FMN-0043).
-  const lane = state.mainsSwapped && isDouble ? 1 : 0;
-  if (!isDouble || bothDouble || !sw || sw.onTrack !== MAIN2_TRACK_ID) {
-    return { id: MAIN_TRACK_ID, role: "main", lane, from: "A", to: "B" };
+  const legacyThroughMain2 =
+    !!sw && sw.onTrack === MAIN2_TRACK_ID && sw.divergeTrack === MAIN_TRACK_ID;
+  const isDouble = state.configA === "double" || state.configB === "double";
+  const bothDouble = state.configA === "double" && state.configB === "double";
+  if (!isDouble || bothDouble || !legacyThroughMain2) {
+    return { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" };
   }
   return state.configA === "double"
-    ? // Double at A: Main 1 runs from A and ends at the turnout.
-      { id: MAIN_TRACK_ID, role: "main", lane, fromPos: 0, toPos: sw.pos }
-    : // Double at B: Main 1 begins at the turnout and runs to B.
-      { id: MAIN_TRACK_ID, role: "main", lane, fromPos: sw.pos, toPos: state.lengthInches };
+    ? { id: MAIN_TRACK_ID, role: "main", lane: 0, fromPos: 0, toPos: sw!.pos }
+    : { id: MAIN_TRACK_ID, role: "main", lane: 0, fromPos: sw!.pos, toPos: state.lengthInches };
 }
 
 function main2Track(state: EditorState): SchematicTrack {
@@ -1526,8 +1528,9 @@ function main2Track(state: EditorState): SchematicTrack {
   // Main 2 runs partial only when IT is the branch that ends (turnout diverges
   // TO Main 2). If the turnout sits ON Main 2 (Main 2 is the surviving through
   // main, #FMN-0043), Main 2 runs full and Main 1 is the one that ends.
-  // Swapped: Main 2 takes the centre line and Main 1 draws above (#FMN-0043).
-  const lane = state.mainsSwapped ? 0 : 1;
+  // Main 2's side: above Main 1 by default, below when swapped (Steve, #131).
+  // Main 1 stays on the centre line; only Main 2 changes side.
+  const lane = state.mainsSwapped ? -1 : 1;
   // A bent Main 2 draws along its authored path instead of a lane offset (#131).
   const authored = state.main2Path.length >= 2 ? { path: state.main2Path } : {};
   if (bothDouble || !sws.length) {
@@ -1577,12 +1580,12 @@ export function buildTransition(state: EditorState): {
     id: swId,
     name: "End of Double Track",
     pos,
-    // The turnout sits ON the ending main (Main 2, the upper track) and diverges
-    // down to the continuous Main 1 — the modeller's view of the junction. Left
-    // hand when the double end is west (Main 2 comes down going east), right
-    // when it's east (mirror).
-    onTrack: MAIN2_TRACK_ID,
-    divergeTrack: MAIN_TRACK_ID,
+    // The turnout sits ON the through mainline (Main 1) and diverges TO Main 2,
+    // the second main being added to start the double track — the modeller's
+    // view of the junction, and the direction an owner authors it (Steve
+    // Branton, #131). Main 1 runs the full module; Main 2 is the branch.
+    onTrack: MAIN_TRACK_ID,
+    divergeTrack: MAIN2_TRACK_ID,
     kind: aDouble ? "left" : "right",
   };
 
