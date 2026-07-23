@@ -52,6 +52,9 @@ import {
   deriveEndplatePoses,
   poseNeedsManual,
   poseOverridesFromDoc,
+  endplateLead,
+  trackMeetsEndplateIssues,
+  ENDPLATE_LEAD_INCHES,
   type ModuleSchematicDoc,
 } from "./index";
 
@@ -995,8 +998,8 @@ describe("crossings and branch endplates (#170)", () => {
 
     const back = docToState(doc, 120);
     expect(back.branches).toEqual([
-      { label: "MoPac West", pos: 20, side: "down", config: "single" },
-      { label: "MoPac East", pos: 110, side: "up", config: "single" },
+      { label: "MoPac West", pos: 20, side: "down", config: "single", kind: "branch", trackId: null },
+      { label: "MoPac East", pos: 110, side: "up", config: "single", kind: "branch", trackId: null },
     ]);
   });
 
@@ -1954,5 +1957,88 @@ describe("Main 2 authored path (#131)", () => {
     (doc.tracks.find((t) => t.id === MAIN2_TRACK_ID) as { path?: unknown }).path = path;
     delete (doc as { main2Path?: unknown }).main2Path;
     expect(docToState(doc).main2Path).toEqual(path);
+  });
+})
+
+describe("junction / 3rd-endplate authoring (place-an-endplate + §2.0)", () => {
+  it("round-trips a placed branch endplate C with kind + trackId + pose", () => {
+    const s = {
+      ...emptyEditorState(96),
+      branches: [
+        { label: "To Staging", pos: 40, side: "up" as const, config: "single" as const, kind: "main" as const, trackId: "branch-1" },
+      ],
+      poseOverrides: { C: { x: 40, y: 12, heading: 90 } },
+    };
+    const doc = stateToDoc(s, "M");
+    const ep = doc.endplates.find((e) => e.id === "C");
+    expect(ep?.kind).toBe("main");
+    expect(ep?.trackId).toBe("branch-1");
+    expect(ep?.at).toEqual({ pos: 40, side: "up" });
+    expect(ep?.pose).toEqual({ x: 40, y: 12, heading: 90 });
+
+    const back = docToState(doc, 96);
+    expect(back.branches).toEqual([
+      { label: "To Staging", pos: 40, side: "up", config: "single", kind: "main", trackId: "branch-1" },
+    ]);
+    expect(back.poseOverrides.C).toEqual({ x: 40, y: 12, heading: 90 });
+  });
+
+  it("defaults kind to 'branch' and omits trackId until connected", () => {
+    const doc = stateToDoc(
+      { ...emptyEditorState(96), branches: [{ label: "B1", pos: 20, side: "down", config: "single" }] },
+      "M",
+    );
+    const ep = doc.endplates.find((e) => e.id === "C");
+    expect(ep?.kind).toBe("branch");
+    expect(ep?.trackId).toBeUndefined();
+    expect(docToState(doc, 96).branches[0]).toMatchObject({ kind: "branch", trackId: null });
+  });
+
+  it("endplateLead returns a 4″ perpendicular lead inboard of the face", () => {
+    // Endplate facing north (outward heading 90°): lead runs south (inboard).
+    const lead = endplateLead({ x: 40, y: 12, heading: 90 });
+    expect(lead.face).toEqual({ x: 40, y: 12 });
+    expect(lead.inboard.x).toBeCloseTo(40, 6);
+    expect(lead.inboard.y).toBeCloseTo(12 - ENDPLATE_LEAD_INCHES, 6);
+    expect(lead.inwardHeading).toBeCloseTo(270, 6);
+  });
+
+  it("passes a straight perpendicular approach and flags a skew / early bend", () => {
+    const pose = { x: 40, y: 12, heading: 90 }; // faces north
+    // Straight south run into the plate (last point = the plate): compliant.
+    const good = [
+      { x: 40, y: 0 },
+      { x: 40, y: 6 },
+      { x: 40, y: 12 },
+    ];
+    expect(trackMeetsEndplateIssues(good, pose)).toEqual([]);
+    // Approaches at 45° → not perpendicular.
+    const skew = [
+      { x: 28, y: 0 },
+      { x: 40, y: 12 },
+    ];
+    expect(trackMeetsEndplateIssues(skew, pose).map((i) => i.code)).toContain("not-perpendicular");
+    // Bends within the first 4″ (a vertex 2″ off the lead line at y=10).
+    const kinked = [
+      { x: 40, y: 0 },
+      { x: 38, y: 10 },
+      { x: 40, y: 12 },
+    ];
+    expect(trackMeetsEndplateIssues(kinked, pose).map((i) => i.code)).toContain("short-lead");
+  });
+
+  it("flags a crossing closer than 4″ to a fascia", () => {
+    const pose = { x: 40, y: 12, heading: 90 };
+    const path = [
+      { x: 40, y: 0 },
+      { x: 40, y: 12 },
+    ];
+    // 12″ face, track 3″ off centre → 6−3 = 3″ clear < 4″.
+    const issues = trackMeetsEndplateIssues(path, pose, { faceWidthInches: 12, trackOffsetInches: 3 });
+    expect(issues.map((i) => i.code)).toContain("fascia-clearance");
+    // Centred on a 12″ face → 6″ clear, fine.
+    expect(
+      trackMeetsEndplateIssues(path, pose, { faceWidthInches: 12, trackOffsetInches: 0 }).map((i) => i.code),
+    ).not.toContain("fascia-clearance");
   });
 })
