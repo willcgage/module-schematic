@@ -589,6 +589,9 @@ export interface ModuleFootprintInput {
    * When present it wins over the geometry-derived centre-line — the owner drew
    * the real shape (#2d-track, physical view only). */
   mainPath?: BenchworkPoint[] | null;
+  /** A balloon / return loop — the centre-line turns back on itself, so its far
+   * end is the THROAT, not an endplate; only endplate A's face is emitted (#loop). */
+  loop?: boolean;
 }
 
 export interface OutlineFace {
@@ -1158,7 +1161,11 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   return {
     centerline,
     band: benchworkBand(centerline, widthA, widthB, offA, offB),
-    endplateFaces: endplateFaceSegments(centerline, widthA, widthB, offA, offB),
+    // A loop's centre-line ends at the throat, not a far endplate — keep only
+    // endplate A's face (the far face would be a spurious plate at the throat).
+    endplateFaces: input.loop
+      ? endplateFaceSegments(centerline, widthA, widthB, offA, offB).slice(0, 1)
+      : endplateFaceSegments(centerline, widthA, widthB, offA, offB),
     outline: sectionOutlines.length || !authored ? null : sampleBenchworkOutline(authored),
     sectionOutlines,
   };
