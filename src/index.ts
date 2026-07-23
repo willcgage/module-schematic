@@ -2563,9 +2563,20 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     laneB: trackLane.get(x.tracks?.[1] ?? "") ?? 1,
   }));
 
-  // Branch endplates (any beyond A/B with a placement) → connector arrows.
+  // Branch endplates → connector arrows in the operating view — but ONLY once a
+  // route actually reaches one. Placing a bare 3rd+ endplate must not conjure a
+  // junction arrow; the arrow follows the drawn branch track that links to it
+  // (its trackId), so it appears when you connect track, not when you add the
+  // endplate (#170).
   const branchConnectors: BranchConnector[] = doc.endplates
-    .filter((e) => e.id !== "A" && e.id !== "B" && e.at)
+    .filter(
+      (e) =>
+        e.id !== "A" &&
+        e.id !== "B" &&
+        e.at &&
+        !!e.trackId &&
+        (doc.tracks ?? []).some((t) => t.id === e.trackId),
+    )
     .map((e) => ({
       id: e.id,
       label: e.label ?? e.id,

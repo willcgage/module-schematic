@@ -976,13 +976,18 @@ describe("crossings and branch endplates (#170)", () => {
     expect(back.controlPoints[0].crossings).toEqual(["x1"]);
   });
 
-  it("branch endplates C, D round-trip and become connector arrows", () => {
+  it("branch endplates C, D round-trip and become connector arrows once connected", () => {
     // The Frisco/MoPac case: a second railroad enters at one branch endplate
-    // and leaves at another.
+    // and leaves at another. The connector arrow follows the route drawn to each
+    // (its trackId) — placing a bare endplate must not conjure one (#170).
     const s = emptyEditorState(120);
     s.branches.push(
-      { label: "MoPac West", pos: 20, side: "down", config: "single" },
-      { label: "MoPac East", pos: 110, side: "up", config: "single" },
+      { label: "MoPac West", pos: 20, side: "down", config: "single", kind: "branch", trackId: "bw" },
+      { label: "MoPac East", pos: 110, side: "up", config: "single", kind: "branch", trackId: "be" },
+    );
+    s.extraTracks.push(
+      { id: "bw", role: "branch", lane: 2, fromPos: 20, toPos: 20, path: [{ x: 20, y: 0 }, { x: 20, y: -6 }], moduleTrackId: null, trackName: "MoPac West" },
+      { id: "be", role: "branch", lane: 3, fromPos: 110, toPos: 110, path: [{ x: 110, y: 0 }, { x: 110, y: 6 }], moduleTrackId: null, trackName: "MoPac East" },
     );
     const doc = stateToDoc(s, "M");
     expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B", "C", "D"]);
@@ -998,9 +1003,20 @@ describe("crossings and branch endplates (#170)", () => {
 
     const back = docToState(doc, 120);
     expect(back.branches).toEqual([
-      { label: "MoPac West", pos: 20, side: "down", config: "single", kind: "branch", trackId: null },
-      { label: "MoPac East", pos: 110, side: "up", config: "single", kind: "branch", trackId: null },
+      { label: "MoPac West", pos: 20, side: "down", config: "single", kind: "branch", trackId: "bw" },
+      { label: "MoPac East", pos: 110, side: "up", config: "single", kind: "branch", trackId: "be" },
     ]);
+  });
+
+  it("a placed-but-unconnected branch endplate draws NO connector arrow", () => {
+    // Adding a 3rd endplate alone must not put a junction arrow in the operating
+    // view — the arrow only appears once track is drawn to it (#170).
+    const doc = stateToDoc(
+      { ...emptyEditorState(96), branches: [{ label: "Jct", pos: 40, side: "up", config: "single" }] },
+      "M",
+    );
+    expect(doc.endplates.find((e) => e.id === "C")).toBeTruthy();
+    expect(moduleFeatures(doc).branchConnectors).toEqual([]);
   });
 
   it("docs without crossings or branches are unchanged", () => {
