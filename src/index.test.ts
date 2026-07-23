@@ -2027,6 +2027,36 @@ describe("junction / 3rd-endplate authoring (place-an-endplate + §2.0)", () => 
     expect(trackMeetsEndplateIssues(kinked, pose).map((i) => i.code)).toContain("short-lead");
   });
 
+  it("a branch-route track is kept out of the straightened extraTracks", () => {
+    const doc = stateToDoc(
+      {
+        ...emptyEditorState(96),
+        branches: [{ label: "Jct", pos: 48, side: "up", config: "single", kind: "branch", trackId: "branch1" }],
+        extraTracks: [
+          {
+            id: "branch1",
+            role: "branch",
+            lane: 2,
+            fromPos: 48,
+            toPos: 48,
+            path: [
+              { x: 48, y: 0 },
+              { x: 48, y: 8 },
+              { x: 48, y: 12 },
+            ],
+            moduleTrackId: null,
+            trackName: "To endplate C",
+          },
+        ],
+      },
+      "M",
+    );
+    const f = moduleFeatures(doc);
+    expect(f.extraTracks.find((t) => t.id === "branch1")).toBeUndefined();
+    // …but the endplate still shows as a connector arrow.
+    expect(f.branchConnectors.map((b) => b.id)).toContain("C");
+  });
+
   it("flags a crossing closer than 4″ to a fascia", () => {
     const pose = { x: 40, y: 12, heading: 90 };
     const path = [

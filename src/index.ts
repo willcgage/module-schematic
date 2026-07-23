@@ -2425,6 +2425,11 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   const extraTracks: DrawTrack[] = [];
   for (const t of doc.tracks) {
     if (t.role === "main") continue; // the spine draws mains
+    // A branch route to a placed endplate (#170) leaves the main at 90° — it
+    // can't be drawn in this straightened, positional view, and the endplate it
+    // reaches already shows as a labelled connector arrow. The physical view
+    // draws its real authored path; here it would only smear a degenerate stub.
+    if (t.role === "branch") continue;
     if (isCrossover(t.id)) continue; // crossovers draw as diagonals, below
     const ext = extentOf(t);
     if (!ext) continue; // can't place it
