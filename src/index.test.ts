@@ -1008,6 +1008,25 @@ describe("crossings and branch endplates (#170)", () => {
     ]);
   });
 
+  it("the branch connector sits at its feeding turnout, not the endplate's own spot", () => {
+    const s = emptyEditorState(96);
+    s.branches.push({ label: "Jct", pos: 12, side: "up", config: "single", kind: "branch", trackId: "br1" });
+    s.extraTracks.push({
+      id: "br1",
+      role: "branch",
+      lane: 2,
+      fromPos: 60,
+      toPos: 60,
+      path: [{ x: 60, y: 0 }, { x: 12, y: 10 }],
+      moduleTrackId: null,
+      trackName: "To C",
+    });
+    s.turnouts.push({ id: "sw1", pos: 60, onTrack: "main", divergeTrack: "br1", kind: "right" });
+    const f = moduleFeatures(stateToDoc(s, "M"));
+    // Endplate C sits at pos 12, but the branch diverges at the turnout (60).
+    expect(f.branchConnectors[0]?.posFrac).toBeCloseTo(60 / 96, 6);
+  });
+
   it("a placed-but-unconnected branch endplate draws NO connector arrow", () => {
     // Adding a 3rd endplate alone must not put a junction arrow in the operating
     // view — the arrow only appears once track is drawn to it (#170).

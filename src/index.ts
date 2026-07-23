@@ -2577,12 +2577,18 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         !!e.trackId &&
         (doc.tracks ?? []).some((t) => t.id === e.trackId),
     )
-    .map((e) => ({
-      id: e.id,
-      label: e.label ?? e.id,
-      posFrac: clampFrac(e.at!.pos),
-      side: e.at!.side === "down" ? "down" : "up",
-    }));
+    .map((e) => {
+      // The branch leaves the main at its FEEDING turnout, not the endplate's
+      // own along-axis spot — draw it there so it meets the main where it really
+      // diverges (the endplate can sit well off to one side, #170).
+      const sw = (doc.turnouts ?? []).find((t) => t.divergeTrack === e.trackId);
+      return {
+        id: e.id,
+        label: e.label ?? e.id,
+        posFrac: clampFrac(sw ? sw.pos : e.at!.pos),
+        side: e.at!.side === "down" ? "down" : "up",
+      };
+    });
 
   // Industries — car-spot spans beside the track they serve.
   const industries: DrawIndustry[] = (doc.industries ?? []).flatMap((ind) => {
