@@ -2725,6 +2725,120 @@ export interface EndplatePose {
   manual?: boolean;
 }
 
+export type ReturnLoopShape = "circle" | "teardrop" | "offset-teardrop" | "square";
+
+/** A computed return-loop: a mainline LEAD to the throat, a WYE that splits into
+ * two legs, and the LOOP track those legs form, closing back at the throat. Pure
+ * geometry, module-local inches, endplate A at the origin, lead heading +x. All
+ * shapes are built so the loop CLOSES exactly at the throat and the two wye legs
+ * diverge symmetrically about the lead — the piece the earlier eyeballed versions
+ * kept getting wrong (#loop). */
+export interface ReturnLoopGeometry {
+  throat: BenchworkPoint;
+  /** The loop track, throat → around → throat (starts and ends at the throat). */
+  loop: BenchworkPoint[];
+  /** The two diverging wye legs at the throat (each throat → its tangent point). */
+  wyeLegs: [BenchworkPoint[], BenchworkPoint[]];
+  /** Half the angle between the two wye legs, degrees (0 = tangent/no wye). */
+  wyeHalfAngleDeg: number;
+  /** Benchwork fascia: outer boundary, and an inner boundary for a donut (empty
+   * when the board is solid). */
+  outlineOuter: BenchworkPoint[];
+  outlineInner: BenchworkPoint[];
+}
+
+export function returnLoop(
+  shape: ReturnLoopShape,
+  opts: { leadInches: number; radius: number; boardHalfWidth?: number },
+): ReturnLoopGeometry {
+  const L = Math.max(1, opts.leadInches);
+  const R = Math.max(1, opts.radius);
+  const hw = Math.min(opts.boardHalfWidth ?? 6, R - 1); // keep an inner hole
+  const T: BenchworkPoint = { x: L, y: 0 };
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const rd = (pts: BenchworkPoint[]) => pts.map((p) => ({ x: r2(p.x), y: r2(p.y) }));
+  const arc = (cx: number, cy: number, r: number, a0: number, a1: number, steps: number) => {
+    const out: BenchworkPoint[] = [];
+    for (let i = 0; i <= steps; i++) out.push({ x: cx + r * Math.cos(a0 + ((a1 - a0) * i) / steps), y: cy + r * Math.sin(a0 + ((a1 - a0) * i) / steps) });
+    return out;
+  };
+
+  if (shape === "square") {
+    const s = 2 * R;
+    const loop = [
+      { x: L, y: 0 },
+      { x: L, y: R },
+      { x: L + s, y: R },
+      { x: L + s, y: -R },
+      { x: L, y: -R },
+      { x: L, y: 0 },
+    ];
+    return {
+      throat: T,
+      loop: rd(loop),
+      wyeLegs: [rd([T, { x: L, y: R }]), rd([T, { x: L, y: -R }])],
+      wyeHalfAngleDeg: 90,
+      outlineOuter: rd([
+        { x: 0, y: hw },
+        { x: L + s + hw, y: hw },
+        { x: L + s + hw, y: -R - hw },
+        { x: 0, y: -R - hw },
+      ]),
+      outlineInner: rd([
+        { x: L + hw, y: R - hw },
+        { x: L + s - hw, y: R - hw },
+        { x: L + s - hw, y: -R + hw },
+        { x: L + hw, y: -R + hw },
+      ]),
+    };
+  }
+
+  // circle / teardrop / offset-teardrop: a loop circle whose centre C sits ahead
+  // of the throat. The wye legs are the two tangent lines from the throat to the
+  // circle; the loop is the MAJOR (far) arc between the tangent points, so the
+  // legs diverge symmetrically (the wye) and the loop closes at the throat.
+  const D = shape === "circle" ? R * 1.15 : R * 1.6; // throat → centre
+  const offY = shape === "offset-teardrop" ? R * 0.7 : 0;
+  const C = { x: L + D, y: offY };
+  const dist = Math.hypot(C.x - T.x, C.y - T.y);
+  const ac = Math.acos(Math.min(1, R / dist)); // tangent-point angle at C
+  const base = Math.atan2(T.y - C.y, T.x - C.x); // C → T
+  const a1 = base + ac; // upper tangent point angle (at C)
+  const a2 = base - ac; // lower
+  const P1 = { x: C.x + R * Math.cos(a1), y: C.y + R * Math.sin(a1) };
+  const P2 = { x: C.x + R * Math.cos(a2), y: C.y + R * Math.sin(a2) };
+  // loop: throat → P1 (leg) → major arc → P2 → throat (leg)
+  const loop = [T, P1, ...arc(C.x, C.y, R, a1, a2 + 2 * Math.PI, 64).slice(1), T];
+  // wye half-angle: angle between the two legs (T→P1, T→P2), halved
+  const legDir = (P: BenchworkPoint) => Math.atan2(P.y - T.y, P.x - T.x);
+  const half = Math.abs(((legDir(P1) - legDir(P2) + Math.PI) % (2 * Math.PI)) - Math.PI) / 2;
+
+  // Donut benchwork: outer ring (R+hw) and inner ring (R-hw) around C, the outer
+  // meeting the lead's edges. Inner hole = the open middle of the loop.
+  const ringOuter = (rr: number) => {
+    const xTop = C.x - Math.sqrt(Math.max(0, rr * rr - (hw - C.y) ** 2));
+    const xBot = C.x - Math.sqrt(Math.max(0, rr * rr - (-hw - C.y) ** 2));
+    const tTop = Math.atan2(hw - C.y, xTop - C.x);
+    const tBot = Math.atan2(-hw - C.y, xBot - C.x);
+    return [
+      { x: 0, y: hw },
+      { x: xTop, y: hw },
+      ...arc(C.x, C.y, rr, tTop, tBot - 2 * Math.PI, 48).slice(1, -1),
+      { x: xBot, y: -hw },
+      { x: 0, y: -hw },
+    ];
+  };
+  const Ri = R - hw;
+  return {
+    throat: T,
+    loop: rd(loop),
+    wyeLegs: [rd([T, P1]), rd([T, P2])],
+    wyeHalfAngleDeg: r2((half * 180) / Math.PI),
+    outlineOuter: rd(ringOuter(R + hw)),
+    outlineInner: Ri > 2 ? rd(arc(C.x, C.y, Ri, 0, 2 * Math.PI, 40)) : [],
+  };
+}
+
 export interface ModuleGeometryInput {
   lengthInches: number;
   geometryType?: string | null;

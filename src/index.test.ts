@@ -55,6 +55,8 @@ import {
   endplateLead,
   trackMeetsEndplateIssues,
   ENDPLATE_LEAD_INCHES,
+  returnLoop,
+  type ReturnLoopShape,
   type ModuleSchematicDoc,
 } from "./index";
 
@@ -2142,5 +2144,59 @@ describe("junction / 3rd-endplate authoring (place-an-endplate + §2.0)", () => 
     expect(
       trackMeetsEndplateIssues(path, pose, { faceWidthInches: 12, trackOffsetInches: 0 }).map((i) => i.code),
     ).not.toContain("fascia-clearance");
+  });
+})
+
+describe("returnLoop geometry (wye-throated return loop)", () => {
+  const near = (a: { x: number; y: number }, b: { x: number; y: number }, tol = 0.5) =>
+    Math.hypot(a.x - b.x, a.y - b.y) <= tol;
+
+  for (const shape of ["circle", "teardrop", "offset-teardrop", "square"] as ReturnLoopShape[]) {
+    it(`${shape}: the loop closes exactly at the throat`, () => {
+      const g = returnLoop(shape, { leadInches: 48, radius: 24 });
+      expect(g.throat).toEqual({ x: 48, y: 0 });
+      expect(near(g.loop[0], g.throat, 0.01)).toBe(true); // starts at throat
+      expect(near(g.loop[g.loop.length - 1], g.throat, 0.01)).toBe(true); // ends at throat
+      expect(g.loop.length).toBeGreaterThanOrEqual(6);
+    });
+
+    it(`${shape}: the two wye legs start at the throat and diverge`, () => {
+      const g = returnLoop(shape, { leadInches: 48, radius: 24 });
+      expect(near(g.wyeLegs[0][0], g.throat, 0.01)).toBe(true);
+      expect(near(g.wyeLegs[1][0], g.throat, 0.01)).toBe(true);
+      // the two legs' far ends are on opposite sides of the lead axis (y=0)
+      const e0 = g.wyeLegs[0][g.wyeLegs[0].length - 1];
+      const e1 = g.wyeLegs[1][g.wyeLegs[1].length - 1];
+      expect(Math.sign(e0.y)).toBe(-Math.sign(e1.y));
+      expect(g.wyeHalfAngleDeg).toBeGreaterThan(0);
+    });
+  }
+
+  it("circle: the loop rides on the circle of radius R (tangent legs are exact)", () => {
+    const R = 24;
+    const g = returnLoop("circle", { leadInches: 48, radius: R });
+    // the wye legs' far ends (the tangent points) are exactly R from the centre
+    const D = R * 1.15;
+    const C = { x: 48 + D, y: 0 };
+    for (const leg of g.wyeLegs) {
+      const P = leg[leg.length - 1];
+      expect(Math.hypot(P.x - C.x, P.y - C.y)).toBeCloseTo(R, 1);
+      // tangent: leg ⊥ radius at P → (P−T)·(P−C) ≈ 0
+      const dot = (P.x - g.throat.x) * (P.x - C.x) + (P.y - g.throat.y) * (P.y - C.y);
+      expect(Math.abs(dot)).toBeLessThan(1);
+    }
+  });
+
+  it("offset-teardrop actually offsets the bulb off the lead axis", () => {
+    const g = returnLoop("offset-teardrop", { leadInches: 48, radius: 24 });
+    const ys = g.loop.map((p) => p.y);
+    const mid = (Math.max(...ys) + Math.min(...ys)) / 2;
+    expect(Math.abs(mid)).toBeGreaterThan(2); // bulb centre is off y=0
+  });
+
+  it("has a donut hole (inner outline) for a normal board width", () => {
+    const g = returnLoop("circle", { leadInches: 48, radius: 24, boardHalfWidth: 6 });
+    expect(g.outlineOuter.length).toBeGreaterThan(3);
+    expect(g.outlineInner.length).toBeGreaterThan(3); // the open middle
   });
 })
