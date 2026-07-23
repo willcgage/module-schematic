@@ -14,7 +14,7 @@
  */
 
 export type TrackConfig = "single" | "double";
-export type TrackRole = "main" | "siding" | "spur" | "yard" | "crossover";
+export type TrackRole = "main" | "siding" | "spur" | "yard" | "crossover" | "branch";
 export type TurnoutKind = "left" | "right" | "wye";
 export type SignalFacing = "AtoB" | "BtoA";
 export type SignalSide = "above" | "below";
@@ -52,6 +52,14 @@ export interface SchematicEndplate {
    * of the two tracks at its double end. Absent = the recommended default
    * (single centred; double straddling at ∓ half the track spacing). */
   trackOffsetInches?: number | null;
+  /** Branch endplates (#170) only — what the route reaching this endplate IS:
+   * a secondary "branch" line, or a "main" (a diverging / split main). Drives
+   * labels + drawn weight, not geometry. Absent = "branch". */
+  kind?: "branch" | "main" | null;
+  /** Branch endplates only — the id of the drawn diverging track that reaches
+   * this endplate (its authored path ends at the plate face). Lets remove/
+   * round-trip pair the endplate with its track. Absent = not yet connected. */
+  trackId?: string | null;
 }
 
 /** Free-moN endplate face width, inches — the connection interface size. */
@@ -1387,6 +1395,12 @@ export interface EditorBranch {
   pos: number;
   side: "up" | "down";
   config: TrackConfig;
+  /** What the route to this endplate is — a secondary "branch" or a diverging
+   * "main". Drives labels/weight, not geometry. Default "branch". */
+  kind?: "branch" | "main";
+  /** The drawn diverging track that reaches this endplate (set when the owner
+   * draws track to it; the plate is placed first, connected later). */
+  trackId?: string | null;
 }
 /** Endplate B on a loop module: a standard endplate makes the balloon an
  * INTERCHANGE (a second route connects at the loop, e.g. Seaford); "none"
@@ -1685,6 +1699,8 @@ export function stateToDoc(
           label: b.label || `Branch ${i + 1}`,
           tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: b.config }],
           at: { pos: b.pos, side: b.side },
+          kind: b.kind ?? "branch",
+          ...(b.trackId ? { trackId: b.trackId } : {}),
         })),
       ],
       state.poseOverrides,
@@ -1931,6 +1947,8 @@ export function docToState(
       pos: sc(ep.at!.pos),
       side: ep.at!.side === "down" ? "down" : "up",
       config: ep.tracks?.[0]?.config === "double" ? "double" : "single",
+      kind: ep.kind === "main" ? "main" : "branch",
+      trackId: ep.trackId ?? null,
     })),
     poseOverrides,
     endplateWidths,
@@ -2833,6 +2851,109 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
   }
 
   return poses;
+}
+
+/** Free-moN §2.0 — track crossing an endplate must be perpendicular, straight
+ * and level for at least this many inches from the outside face. */
+export const ENDPLATE_LEAD_INCHES = 4;
+/** Free-moN §2.0 — the crossing must stay at least this far from either fascia. */
+export const ENDPLATE_FASCIA_CLEAR_INCHES = 4;
+
+/** The mandated straight, perpendicular lead a connecting track must follow
+ * leaving an endplate (§2.0). Given the endplate's track point + outward-normal
+ * heading, returns the face point and the point `leadInches` inboard, plus the
+ * inward heading. A track meeting this plate must be collinear with face→inboard
+ * for its first `leadInches`. */
+export function endplateLead(
+  pose: { x: number; y: number; heading: number },
+  leadInches: number = ENDPLATE_LEAD_INCHES,
+): { face: BenchworkPoint; inboard: BenchworkPoint; inwardHeading: number } {
+  const inwardHeading = norm360(pose.heading + 180);
+  const r = inwardHeading * DEG;
+  return {
+    face: { x: pose.x, y: pose.y },
+    inboard: { x: pose.x + Math.cos(r) * leadInches, y: pose.y + Math.sin(r) * leadInches },
+    inwardHeading,
+  };
+}
+
+export interface EndplateTrackIssue {
+  /** "not-perpendicular" — the track doesn't cross square to the face;
+   *  "short-lead" — it curves/bends within the required lead;
+   *  "fascia-clearance" — the crossing is <4″ from a fascia. */
+  code: "not-perpendicular" | "short-lead" | "fascia-clearance";
+  message: string;
+}
+
+/**
+ * Validate a drawn path meeting an endplate against Free-moN §2.0: perpendicular
+ * crossing, straight + level for ≥4″ from the face, ≥4″ from either fascia.
+ * `end` says which end of the authored path touches the plate ("last" default).
+ * Fascia clearance is checked only when both the face width and the track's
+ * offset from the plate centre are supplied. Pure; empty array = compliant.
+ */
+export function trackMeetsEndplateIssues(
+  path: BenchworkPoint[],
+  pose: { x: number; y: number; heading: number },
+  opts?: {
+    end?: "first" | "last";
+    faceWidthInches?: number;
+    trackOffsetInches?: number;
+    leadInches?: number;
+    toleranceDeg?: number;
+  },
+): EndplateTrackIssue[] {
+  const issues: EndplateTrackIssue[] = [];
+  const lead = opts?.leadInches ?? ENDPLATE_LEAD_INCHES;
+  const tol = opts?.toleranceDeg ?? 5;
+  if (path && path.length >= 2) {
+    // Order the path plate→inboard so seq[0] is the endplate end.
+    const seq = (opts?.end ?? "last") === "last" ? [...path].reverse() : path.slice();
+    const p0 = seq[0];
+    const p1 = seq[1];
+    const wantIn = norm360(pose.heading + 180); // inboard = opposite the outward normal
+    const inHead = norm360(Math.atan2(p1.y - p0.y, p1.x - p0.x) / DEG);
+    const diff = Math.abs(((inHead - wantIn + 540) % 360) - 180);
+    if (diff > tol)
+      issues.push({
+        code: "not-perpendicular",
+        message: `Track must cross the endplate square (within ${tol}°); it is off by ${Math.round(diff)}°.`,
+      });
+    // Straight + level for the first `lead` inches: no arc, and the near
+    // vertices must lie on the lead line (little lateral drift).
+    const r = wantIn * DEG;
+    const ux = Math.cos(r);
+    const uy = Math.sin(r);
+    let curved = false;
+    let acc = 0;
+    for (let i = 1; i < seq.length && acc < lead; i++) {
+      const a = seq[i - 1];
+      const b = seq[i];
+      if (a.bulge) curved = true;
+      const rx = b.x - p0.x;
+      const ry = b.y - p0.y;
+      const along = rx * ux + ry * uy;
+      const lat = Math.abs(rx * -uy + ry * ux);
+      if (along <= lead + 0.01 && lat > 0.25) curved = true;
+      acc += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    if (curved)
+      issues.push({
+        code: "short-lead",
+        message: `The first ${lead}″ from the endplate must be straight and perpendicular.`,
+      });
+  }
+  const w = opts?.faceWidthInches;
+  const off = opts?.trackOffsetInches;
+  if (typeof w === "number" && w > 0 && typeof off === "number") {
+    const clear = w / 2 - Math.abs(off);
+    if (clear < ENDPLATE_FASCIA_CLEAR_INCHES)
+      issues.push({
+        code: "fascia-clearance",
+        message: `Track must stay ≥${ENDPLATE_FASCIA_CLEAR_INCHES}″ from either fascia; it is ${clear.toFixed(1)}″.`,
+      });
+  }
+  return issues;
 }
 
 /** Whether a module shape's poses are fully derivable, or need manual entry
