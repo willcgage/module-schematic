@@ -1134,6 +1134,35 @@ describe("endplate poses (#175)", () => {
     expect(poses.map((p) => p.id)).toEqual(["A"]);
   });
 
+  it("a balloon / return loop has a single endplate (no spurious B at the throat)", () => {
+    // A lead + curve sections summing to 360° chains back near the throat; the
+    // loop returns on itself, so there's one endplate (A), not a far B (#loop).
+    const balloon = (deg: number): SchematicSection => ({
+      id: `c${deg}`,
+      lengthInches: 20,
+      geometryType: "curve",
+      geometryDegrees: 90,
+    });
+    const poses = deriveEndplatePoses({
+      lengthInches: 116,
+      loop: true,
+      sections: [
+        { id: "lead", lengthInches: 36, geometryType: "straight" },
+        balloon(90),
+        balloon(90),
+        balloon(90),
+        balloon(90),
+      ],
+    });
+    expect(poses.map((p) => p.id)).toEqual(["A"]);
+    // Non-loop with the same chain still gets a B (at the chain's end).
+    const withB = deriveEndplatePoses({
+      lengthInches: 116,
+      sections: [{ id: "lead", lengthInches: 36, geometryType: "straight" }, balloon(90)],
+    });
+    expect(withB.map((p) => p.id)).toEqual(["A", "B"]);
+  });
+
   it("double endplate carries two track offsets (± half spacing)", () => {
     const [a, b] = deriveEndplatePoses({
       lengthInches: 96,

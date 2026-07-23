@@ -2742,6 +2742,11 @@ export interface ModuleGeometryInput {
    * so endplate B lands at the end of the CHAINED boards rather than where a
    * single module-level geometry would have put it (#108). */
   sections?: SchematicSection[] | null;
+  /** A balloon / return loop: the main runs out and turns back on itself, so the
+   * module has ONE endplate (A). No far endplate B is derived — the chain closes
+   * back near the throat, and a B there would just be a spurious plate on the
+   * loop. An interchange endplate on the balloon is placed separately (#loop). */
+  loop?: boolean;
 }
 
 /** Signed turn a module applies to the through track (CCW/left positive). */
@@ -2803,7 +2808,9 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
   );
 
   // Endplate B — unless the module is a dead end / turnback (single endplate).
-  const noB = geo.geometryType === "dead_end";
+  // A dead-end has one plate; a balloon/return loop likewise (it turns back on
+  // itself, so the chain's end lands near the throat, not a real far endplate).
+  const noB = geo.geometryType === "dead_end" || geo.loop === true;
   // A sectioned module's real end is where its boards finish, which no single
   // module-level geometry can predict — chain them and read the last point and
   // its closing tangent (#108).
