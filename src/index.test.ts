@@ -306,6 +306,14 @@ describe("moduleFootprint (physical single-module geometry)", () => {
     expect(fp.outline).toBeNull();
   });
 
+  it("a loop emits only endplate A's face (no spurious plate at the throat)", () => {
+    const straight = moduleFootprint({ lengthInches: 96, geometryType: "straight" });
+    expect(straight.endplateFaces).toHaveLength(2);
+    const loop = moduleFootprint({ lengthInches: 96, geometryType: "straight", loop: true });
+    expect(loop.endplateFaces).toHaveLength(1);
+    expect(loop.endplateFaces[0].mid).toEqual({ x: 0, y: 0 });
+  });
+
   it("per-end widths taper the band; a 90° corner curves the centre-line", () => {
     const fp = moduleFootprint({ lengthInches: 96, geometryType: "straight", endplateWidths: { A: 12, B: 24 } });
     const atA = fp.band.filter((p) => Math.abs(p.x) < 1e-6).map((p) => Math.abs(p.y));
