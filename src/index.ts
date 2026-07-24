@@ -2823,10 +2823,16 @@ export function returnLoop(
     const xBot = C.x - Math.sqrt(Math.max(0, rr * rr - (-hw - C.y) ** 2));
     const tTop = Math.atan2(hw - C.y, xTop - C.x);
     const tBot = Math.atan2(-hw - C.y, xBot - C.x);
+    // Sweep CLOCKWISE from tTop down to tBot (the FAR arc, away from the lead
+    // notch) as a SINGLE traversal. A fixed `tBot − 2π` double-wraps the circle
+    // when tTop/tBot straddle ±π (the symmetric shapes), which a solid fill hides
+    // but an even-odd donut fill inverts. Normalise instead so 0 > sweep > −2π.
+    let end = tBot;
+    while (end >= tTop) end -= 2 * Math.PI;
     return [
       { x: 0, y: hw },
       { x: xTop, y: hw },
-      ...arc(C.x, C.y, rr, tTop, tBot - 2 * Math.PI, 48).slice(1, -1),
+      ...arc(C.x, C.y, rr, tTop, end, 48).slice(1, -1),
       { x: xBot, y: -hw },
       { x: 0, y: -hw },
     ];

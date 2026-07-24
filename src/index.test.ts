@@ -2226,6 +2226,30 @@ describe("returnLoop geometry (wye-throated return loop)", () => {
     }
   });
 
+  it("curved shapes' outer outline winds around the loop centre exactly once (no double-wrap)", () => {
+    // A self-overlapping (double-wrapped) outer ring renders fine under a solid
+    // fill but INVERTS an even-odd donut (centre fills, board empties) (#loop).
+    for (const shape of ["circle", "teardrop", "offset-teardrop"] as ReturnLoopShape[]) {
+      const R = 24;
+      const g = returnLoop(shape, { leadInches: 48, radius: R });
+      const D = shape === "circle" ? R * 1.15 : R * 1.6;
+      const offY = shape === "offset-teardrop" ? R * 0.7 : 0;
+      const C = { x: 48 + D, y: offY };
+      let turn = 0;
+      for (let i = 0; i < g.outlineOuter.length; i++) {
+        const a = g.outlineOuter[i];
+        const b = g.outlineOuter[(i + 1) % g.outlineOuter.length];
+        let d =
+          Math.atan2(b.y - C.y, b.x - C.x) - Math.atan2(a.y - C.y, a.x - C.x);
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        turn += d;
+      }
+      // one full loop around C = ±2π; a double-wrap would be ±4π
+      expect(Math.abs(turn) / (2 * Math.PI)).toBeCloseTo(1, 1);
+    }
+  });
+
   it("outlineInner round-trips through stateToDoc / docToState", () => {
     const g = returnLoop("teardrop", { leadInches: 48, radius: 24 });
     const st = emptyEditorState(48);
