@@ -2070,6 +2070,36 @@ describe("turnout self-heals when it diverges into the track it sits on (#172)",
   });
 });
 
+describe("swapped transition draws Main 2 below in the schematic (#172)", () => {
+  const feats = (swapped: boolean) => {
+    const st = emptyEditorState(96);
+    st.configA = "double";
+    st.configB = "single";
+    st.mainsSwapped = swapped;
+    st.turnouts = [
+      { id: "sw1", name: "End of Double Track", pos: 72, onTrack: MAIN_TRACK_ID, divergeTrack: MAIN2_TRACK_ID, kind: "left" },
+    ];
+    return moduleFeatures(stateToDoc(st, "M"));
+  };
+
+  it("Main 2 is below (lane −1) and the transition branch follows it when swapped", () => {
+    const f = feats(true);
+    expect(f.main2Lane).toBe(-1);
+    expect(f.transition?.throughLane).toBe(0);
+    expect(f.transition?.branchLane).toBe(-1);
+  });
+
+  it("the canvas extent (laneMin) includes the swapped Main 2 so it isn't clipped", () => {
+    expect(feats(true).laneMin).toBeLessThanOrEqual(-1);
+  });
+
+  it("Main 2 is above (lane +1) when not swapped", () => {
+    const f = feats(false);
+    expect(f.main2Lane).toBe(1);
+    expect(f.transition?.branchLane).toBe(1);
+  });
+});
+
 describe("junction / 3rd-endplate authoring (place-an-endplate + §2.0)", () => {
   it("round-trips a placed branch endplate C with kind + trackId + pose", () => {
     const s = {

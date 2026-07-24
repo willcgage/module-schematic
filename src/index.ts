@@ -2322,6 +2322,10 @@ export interface ModuleFeatures {
    * transition (Main 2 starts/ends at the mainline turnout). Null = full
    * length (or no Main 2). Renderers draw the partial line + its diverge. */
   main2Extent: { fromFrac: number; toFrac: number } | null;
+  /** Main 2's drawn lane — +1 above Main 1 by default, −1 below when the mains
+   * are swapped (#131/#172). Null when there is no Main 2. Renderers must draw
+   * Main 2 (and its diverges) at THIS lane, never a hard-coded +1. */
+  main2Lane: number | null;
   /** Single↔double transition, fully described (#FMN-0043). The `through` main
    * runs the whole module; the `branch` main exists only on the double side and
    * merges at `atFrac`. EITHER main can be through/branch — the surviving single
@@ -2665,9 +2669,15 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     });
   });
 
+  // Main 2's actual drawn lane — −1 (below) when the mains are swapped, +1
+  // otherwise. Sizing the canvas off a hard-coded +1 clipped a swapped Main 2 at
+  // the bottom (#172); the renderer likewise must draw it here, not at +1.
+  const main2Lane = trackLane.has(MAIN2_TRACK_ID)
+    ? (trackLane.get(MAIN2_TRACK_ID) as number)
+    : null;
   const allLanes = [
     0,
-    doubleMain ? 1 : 0,
+    main2Lane ?? (doubleMain ? 1 : 0),
     ...extraTracks.map((t) => t.lane),
     ...signals.map((s) => s.lane),
     ...crossings.flatMap((x) => [x.laneA, x.laneB]),
@@ -2711,6 +2721,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     doubleMain,
     loop,
     main2Extent,
+    main2Lane,
     transition,
     loopInterchange: loop && doc.endplates.filter((e) => !e.at).length >= 2,
     loopReturn: loop && doc.loopReturn === "main2" ? "main2" : "same",
