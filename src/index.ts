@@ -2424,6 +2424,13 @@ export interface PartDimension {
   note?: string;
 }
 
+/** Same provenance discipline as {@link PartDimension}, for angles. */
+export interface PartAngle {
+  deg: number;
+  source: DimensionSource;
+  note?: string;
+}
+
 export interface TrackPart {
   /** Stable slug, e.g. "atlas-c55-n-7". */
   id: string;
@@ -2437,6 +2444,14 @@ export interface TrackPart {
   partNumbers?: { left?: string; right?: string; single?: string };
   /** Frog number N (the 1:N ratio). Definitional, so no provenance needed. */
   frogNumber?: number;
+  /** The angle the part ACTUALLY diverges at, where that's known to differ from
+   * the theoretical `atan(1/N)`. Atlas appear to build to SECTIONAL angles
+   * (multiples of 11.25° = 1/32 turn) rather than true frog ratios, so a "#5" is
+   * 11.25° not 11.31°. ⚠️ Currently below our drawing resolution — 0.06° over a
+   * 6″ turnout is 0.006″ — so nothing uses this yet. Recorded because it's a
+   * real property of the product and will matter if we ever check whether a part
+   * mates with sectional track. */
+  actualAngle?: PartAngle;
   /** Points → frog. The number that decides where a turnout's throat lands. */
   lead?: PartDimension;
   /** End-to-end length of the part. */
@@ -2477,6 +2492,14 @@ export const ATLAS_CODE55_N: TrackPart[] = [
       source: "derived",
       note: "scaled from the measured #7 by frog number — not measured",
     },
+    actualAngle: {
+      deg: 11.25,
+      source: "unverified",
+      note:
+        "CORROBORATED: XTrkCAD N-atlasn55.xtp gives 11.250152°, and AnyRail-forum " +
+        "trial-and-error (glakedylan, 2012) gives 11.25°. Theory atan(1/5) = 11.310°. " +
+        "11.25° is exactly 1/32 turn — Atlas appear to build to sectional angles.",
+    },
   },
   {
     id: "atlas-c55-n-7",
@@ -2492,6 +2515,13 @@ export const ATLAS_CODE55_N: TrackPart[] = [
       source: "measured",
       note: "Steve Branton, physical Atlas code 55 #7, 3⅜″ points→frog (#173)",
     },
+    actualAngle: {
+      deg: 8.13,
+      source: "unverified",
+      note:
+        "DISPUTED: XTrkCAD .xtp says 8.1818°, AnyRail forum says 8.125°, theory " +
+        "atan(1/7) = 8.130°. The sources disagree, so theory is used here.",
+    },
   },
   {
     id: "atlas-c55-n-10",
@@ -2506,6 +2536,13 @@ export const ATLAS_CODE55_N: TrackPart[] = [
       inches: 10 * TURNOUT_LEAD_INCHES_PER_FROG,
       source: "derived",
       note: "scaled from the measured #7 by frog number — not measured",
+    },
+    actualAngle: {
+      deg: 5.74,
+      source: "unverified",
+      note:
+        "CORROBORATED: XTrkCAD .xtp gives 5.739°, AnyRail forum 5.75° — they agree " +
+        "with each other and not with theory atan(1/10) = 5.711°.",
     },
   },
   {
