@@ -1905,7 +1905,14 @@ export function docToState(
   const len = fallbackLength > 0 ? fallbackLength : hasDoc ? d!.lengthInches! : 24;
   const docLen = hasDoc && d!.lengthInches! > 0 ? d!.lengthInches! : len;
   const scale = docLen > 0 ? len / docLen : 1;
-  const sc = (p: number) => Math.round(p * scale);
+  // Keep HUNDREDTHS, not whole inches. Rounding to 1″ silently flattened every
+  // authored position on load — Steve's 17.4″ frog read as 17″, Oxnard's 68.4″
+  // spur as 68″ — and since the editor autosaves, the rounded value was written
+  // back over the owner's measurement. #132 asks owners to type positions taken
+  // off XTrkCAD to the tenth, so this was destroying exactly the precision we
+  // requested (and left the editor disagreeing with every raw-doc renderer by up
+  // to half an inch). Hundredths still absorb float noise from a real rescale.
+  const sc = (p: number) => Math.round(p * scale * 100) / 100;
 
   const nameOf = (id: number | null | undefined): string => {
     const mt = id != null ? moduleTracks.find((m) => m.id === id) : undefined;

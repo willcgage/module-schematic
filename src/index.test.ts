@@ -1302,7 +1302,10 @@ describe("industries (#industries)", () => {
     const doc = stateToDoc(withIndustry(), "M"); // authored at len 96
     const back = docToState(doc, 48, []); // half length
     expect(back.industries[0].fromPos).toBe(10); // 20 → 10
-    expect(back.industries[0].toPos).toBe(27); // 53 → 26.5 → 27
+    // 53 → 26.5, KEPT. This used to assert 27: positions were rounded to whole
+    // inches on load, which silently flattened authored measurements (#132) and
+    // autosaved the rounded value back over them.
+    expect(back.industries[0].toPos).toBe(26.5);
   });
 
   it("moduleFeatures resolves an industry to a DrawIndustry beside its track lane", () => {
@@ -2109,6 +2112,40 @@ describe("turnout self-heals when it diverges into the track it sits on (#172)",
       turnouts: [{ id: "sw1", pos: 10, onTrack: MAIN_TRACK_ID, divergeTrack: "spur1", kind: "left" }],
     };
     expect(asModuleSchematic(raw)).toBe(raw as unknown);
+  });
+});
+
+describe("docToState keeps authored precision (#132 measurements)", () => {
+  const docWith = (pos: number, len = 30) => ({
+    version: 1,
+    module: "M",
+    lengthInches: len,
+    tracks: [{ id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" }],
+    endplates: [],
+    turnouts: [{ id: "sw1", pos, onTrack: MAIN_TRACK_ID, divergeTrack: "spur1", kind: "left" }],
+  });
+
+  it("does NOT flatten a measured position to a whole inch", () => {
+    // Steve's FMN-0067 frog: typed 17.4 off XTrkCAD, was read back as 17 and
+    // then autosaved over the original.
+    expect(docToState(docWith(17.4), 30).turnouts[0].pos).toBeCloseTo(17.4, 6);
+    // Oxnard's WestAutoPortSpur.
+    expect(docToState(docWith(68.4, 120), 120).turnouts[0].pos).toBeCloseTo(68.4, 6);
+  });
+
+  it("round-trips a fractional position unchanged", () => {
+    const st = docToState(docWith(17.4), 30);
+    expect(stateToDoc(st, "M").turnouts?.[0].pos).toBeCloseTo(17.4, 6);
+  });
+
+  it("still rescales when the module's length really differs", () => {
+    // doc authored at 30″, module is 60″ ⇒ everything doubles.
+    expect(docToState(docWith(17.4), 60).turnouts[0].pos).toBeCloseTo(34.8, 6);
+  });
+
+  it("absorbs float noise from a rescale rather than carrying 15 decimals", () => {
+    const p = docToState(docWith(10, 30), 100).turnouts[0].pos; // ×10/3
+    expect(p).toBe(Math.round(p * 100) / 100);
   });
 });
 
