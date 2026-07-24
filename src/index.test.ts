@@ -2034,6 +2034,42 @@ describe("Main 2 authored path (#131)", () => {
   });
 })
 
+describe("turnout self-heals when it diverges into the track it sits on (#172)", () => {
+  const loadTurnout = (onTrack: string, divergeTrack: string) => {
+    const doc = {
+      version: 1,
+      module: "M",
+      lengthInches: 96,
+      tracks: [
+        { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" },
+        { id: MAIN2_TRACK_ID, role: "main", lane: 1, from: "A", to: "B" },
+      ],
+      endplates: [],
+      turnouts: [{ id: "sw1", name: "End of Double Track", pos: 40, onTrack, divergeTrack, kind: "left" }],
+    };
+    return docToState(doc, 96).turnouts[0];
+  };
+
+  it("repoints Main 1→Main 1 onto Main 2", () => {
+    const t = loadTurnout(MAIN_TRACK_ID, MAIN_TRACK_ID);
+    expect(t.onTrack).toBe(MAIN_TRACK_ID);
+    expect(t.divergeTrack).toBe(MAIN2_TRACK_ID);
+    expect(isTransitionTurnout(t)).toBe(true);
+  });
+
+  it("repoints Main 2→Main 2 onto Main 1", () => {
+    const t = loadTurnout(MAIN2_TRACK_ID, MAIN2_TRACK_ID);
+    expect(t.divergeTrack).toBe(MAIN_TRACK_ID);
+    expect(isTransitionTurnout(t)).toBe(true);
+  });
+
+  it("leaves a valid transition untouched", () => {
+    const t = loadTurnout(MAIN_TRACK_ID, MAIN2_TRACK_ID);
+    expect(t.onTrack).toBe(MAIN_TRACK_ID);
+    expect(t.divergeTrack).toBe(MAIN2_TRACK_ID);
+  });
+});
+
 describe("junction / 3rd-endplate authoring (place-an-endplate + §2.0)", () => {
   it("round-trips a placed branch endplate C with kind + trackId + pose", () => {
     const s = {
