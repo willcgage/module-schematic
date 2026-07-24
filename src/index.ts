@@ -2396,6 +2396,296 @@ export const RAIL_GAUGE_INCHES = 0.354;
  * turnouts are compressed against that.) */
 export const TURNOUT_LEAD_INCHES_PER_FROG = 0.482;
 
+// ---- Track parts library (#179 stage 3) ------------------------------------
+//
+// Real commercial track parts, so a turnout drawn in MR is dimensionally the
+// part the owner will actually lay. Two sources, deliberately kept apart:
+//
+//   1. BUILT-IN parts below — our own data, from manufacturer specs and owner
+//      measurements. Dimensions are facts, so this is safe to publish.
+//   2. IMPORTED parts — `parseXtpLibrary()` reads an owner's OWN XTrkCAD .xtp.
+//      We deliberately DON'T redistribute those files: they ship with a GPL
+//      program, carry individual attribution ("Design by …") and no license of
+//      their own. Owners who have XTrkCAD already have the data.
+//
+// ⚠️ Every dimension records WHERE IT CAME FROM. Published specs for N-scale
+// turnout leads are scarce — most of what's out there is derived or measured —
+// and a derived number that looks like a spec is how bad geometry becomes
+// permanent. If you improve a value, update its `source` with it.
+
+/** Where a dimension came from. `derived` = we computed it from another part or
+ * a rule of thumb; `unverified` = plausible but unconfirmed — treat with care. */
+export type DimensionSource = "manufacturer" | "measured" | "derived" | "unverified";
+
+export interface PartDimension {
+  inches: number;
+  source: DimensionSource;
+  /** Who measured it / which spec, so it can be re-checked. */
+  note?: string;
+}
+
+export interface TrackPart {
+  /** Stable slug, e.g. "atlas-c55-n-7". */
+  id: string;
+  manufacturer: string;
+  /** Product line — "Code 55", "Code 80". */
+  line: string;
+  scale: "N";
+  name: string;
+  kind: "turnout" | "wye" | "curved-turnout" | "crossing";
+  /** Manufacturer part numbers by hand, where the part has a hand. */
+  partNumbers?: { left?: string; right?: string; single?: string };
+  /** Frog number N (the 1:N ratio). Definitional, so no provenance needed. */
+  frogNumber?: number;
+  /** Points → frog. The number that decides where a turnout's throat lands. */
+  lead?: PartDimension;
+  /** End-to-end length of the part. */
+  overallLength?: PartDimension;
+  /** Diverging route radius (straight turnouts). */
+  divergingRadius?: PartDimension;
+  /** Curved turnouts: the two concentric radii. */
+  outerRadius?: PartDimension;
+  innerRadius?: PartDimension;
+  /** Crossing angle, degrees. */
+  crossingAngleDeg?: number;
+}
+
+/** N-scale code 55 rail height, inches — Atlas publish .055″. */
+export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
+
+/**
+ * Atlas N-scale Code 55 — the Free-moN mainstay.
+ *
+ * ⚠️ Atlas do not publish leads or overall lengths for the straight turnouts.
+ * The only hard datum is Steve Branton's measurement of a #7 (3⅜″ points→frog,
+ * #173); the #5 and #10 leads are SCALED from it by frog number and are marked
+ * `derived` for exactly that reason — they should be replaced with real
+ * measurements when someone has the parts to hand.
+ */
+export const ATLAS_CODE55_N: TrackPart[] = [
+  {
+    id: "atlas-c55-n-5",
+    manufacturer: "Atlas",
+    line: "Code 55",
+    scale: "N",
+    name: "#5 Turnout",
+    kind: "turnout",
+    partNumbers: { left: "2050", right: "2051" },
+    frogNumber: 5,
+    lead: {
+      inches: 5 * TURNOUT_LEAD_INCHES_PER_FROG,
+      source: "derived",
+      note: "scaled from the measured #7 by frog number — not measured",
+    },
+  },
+  {
+    id: "atlas-c55-n-7",
+    manufacturer: "Atlas",
+    line: "Code 55",
+    scale: "N",
+    name: "#7 Turnout",
+    kind: "turnout",
+    partNumbers: { left: "2052", right: "2053" },
+    frogNumber: 7,
+    lead: {
+      inches: 3.375,
+      source: "measured",
+      note: "Steve Branton, physical Atlas code 55 #7, 3⅜″ points→frog (#173)",
+    },
+  },
+  {
+    id: "atlas-c55-n-10",
+    manufacturer: "Atlas",
+    line: "Code 55",
+    scale: "N",
+    name: "#10 Turnout",
+    kind: "turnout",
+    partNumbers: { left: "2054", right: "2055" },
+    frogNumber: 10,
+    lead: {
+      inches: 10 * TURNOUT_LEAD_INCHES_PER_FROG,
+      source: "derived",
+      note: "scaled from the measured #7 by frog number — not measured",
+    },
+  },
+  {
+    id: "atlas-c55-n-wye",
+    manufacturer: "Atlas",
+    line: "Code 55",
+    scale: "N",
+    name: "#2.5 Wye",
+    kind: "wye",
+    partNumbers: { single: "2056" },
+    frogNumber: 2.5,
+    lead: {
+      inches: 2.5 * TURNOUT_LEAD_INCHES_PER_FROG,
+      source: "derived",
+      note: "scaled from the measured #7 by frog number — not measured",
+    },
+  },
+  {
+    id: "atlas-c55-n-curved-21-15",
+    manufacturer: "Atlas",
+    line: "Code 55",
+    scale: "N",
+    name: 'Curved Turnout 21¼" / 15"',
+    kind: "curved-turnout",
+    partNumbers: { left: "2058", right: "2059" },
+    outerRadius: { inches: 21.25, source: "manufacturer", note: "Atlas product listing" },
+    innerRadius: { inches: 15, source: "manufacturer", note: "Atlas product listing" },
+  },
+];
+
+/** Every built-in part, across manufacturers. */
+export const BUILT_IN_TRACK_PARTS: TrackPart[] = [...ATLAS_CODE55_N];
+
+/** Look a part up by its slug. */
+export function trackPart(id: string, library = BUILT_IN_TRACK_PARTS): TrackPart | null {
+  return library.find((p) => p.id === id) ?? null;
+}
+
+/** The closest built-in turnout for a frog number — what a bare `size` maps to
+ * when a turnout names no part. Exact match wins; otherwise the nearest frog. */
+export function turnoutPartForSize(
+  size: number,
+  library = BUILT_IN_TRACK_PARTS,
+): TrackPart | null {
+  const turnouts = library.filter((p) => p.kind === "turnout" && p.frogNumber != null);
+  if (!turnouts.length) return null;
+  return turnouts.reduce((best, p) =>
+    Math.abs((p.frogNumber as number) - size) < Math.abs((best.frogNumber as number) - size)
+      ? p
+      : best,
+  );
+}
+
+/** The lead to draw a turnout of this size with — a real part's measurement when
+ * we have one, else the per-frog rule. Keeps `frogLegOf` honest without it
+ * needing to know the library exists. */
+export function leadInchesForSize(size: number, library = BUILT_IN_TRACK_PARTS): number {
+  const part = turnoutPartForSize(size, library);
+  // Only trust a part's lead when its frog number actually matches — a #7's
+  // measurement says nothing about a #4.
+  if (part?.lead && part.frogNumber === size) return part.lead.inches;
+  return size * TURNOUT_LEAD_INCHES_PER_FROG;
+}
+
+/** One drawn piece of a part's geometry, in the part's own local frame. */
+export type PartSegment =
+  | { kind: "straight"; x0: number; y0: number; x1: number; y1: number }
+  | {
+      kind: "curve";
+      radius: number;
+      cx: number;
+      cy: number;
+      startDeg: number;
+      extentDeg: number;
+    };
+
+/** A connection point on an imported part: position plus the tangent it faces. */
+export interface PartEnd {
+  x: number;
+  y: number;
+  angleDeg: number;
+}
+
+export interface ImportedPart {
+  /** Raw title, tab-separated in the file: manufacturer, name, part number. */
+  title: string;
+  manufacturer?: string;
+  name?: string;
+  partNumber?: string;
+  scale?: string;
+  ends: PartEnd[];
+  segments: PartSegment[];
+}
+
+/**
+ * Parse an XTrkCAD `.xtp` parameter file into parts.
+ *
+ * The format is plain text, record-per-line inside `TURNOUT … END` blocks:
+ *   `E x y angle`                         an endpoint
+ *   `S layer width x0 y0 x1 y1`           a straight segment
+ *   `C layer width radius cx cy a0 ext`   a curved segment (radius signed by hand)
+ *
+ * We parse an owner's OWN file — nothing from XTrkCAD is redistributed. Their
+ * geometry is taken as authoritative for part OUTLINES; ⚠️ don't infer frog
+ * positions from it, the shipped Atlas file is internally inconsistent (it puts
+ * the #5's frog further out than the #7's, which is physically impossible).
+ */
+export function parseXtpLibrary(text: string): ImportedPart[] {
+  const parts: ImportedPart[] = [];
+  let cur: ImportedPart | null = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("TURNOUT")) {
+      // TURNOUT <scale> "<manufacturer>\t<name>\t<part no.>"
+      const quoted = line.match(/"([^"]*)"/);
+      const scale = line.split(/\s+/)[1];
+      const title = quoted?.[1] ?? "";
+      const bits = title.split("\t").map((s) => s.trim()).filter(Boolean);
+      cur = {
+        title,
+        scale,
+        manufacturer: bits[0],
+        name: bits[1],
+        partNumber: bits[2],
+        ends: [],
+        segments: [],
+      };
+      continue;
+    }
+    if (!cur) continue;
+    if (line === "END") {
+      if (cur.ends.length || cur.segments.length) parts.push(cur);
+      cur = null;
+      continue;
+    }
+    const n = line.split(/\s+/);
+    const num = (i: number) => Number(n[i]);
+    if (n[0] === "E" && n.length >= 4) {
+      cur.ends.push({ x: num(1), y: num(2), angleDeg: num(3) });
+    } else if (n[0] === "S" && n.length >= 7) {
+      cur.segments.push({ kind: "straight", x0: num(3), y0: num(4), x1: num(5), y1: num(6) });
+    } else if (n[0] === "C" && n.length >= 8) {
+      cur.segments.push({
+        kind: "curve",
+        radius: num(3),
+        cx: num(4),
+        cy: num(5),
+        startDeg: num(6),
+        extentDeg: num(7),
+      });
+    }
+  }
+  return parts;
+}
+
+/** Sample an imported part's segments into polylines, in the part's own frame —
+ * XTrkCAD angles run CLOCKWISE FROM NORTH, so a point on a curve is
+ * `(cx + r·sin a, cy + r·cos a)`, not the usual cos/sin. */
+export function samplePartSegments(
+  segments: PartSegment[],
+  stepsPerCurve = 16,
+): BenchworkPoint[][] {
+  return segments.map((s) => {
+    if (s.kind === "straight") {
+      return [
+        { x: s.x0, y: s.y0 },
+        { x: s.x1, y: s.y1 },
+      ];
+    }
+    const r = Math.abs(s.radius);
+    const out: BenchworkPoint[] = [];
+    for (let i = 0; i <= stepsPerCurve; i++) {
+      const a = ((s.startDeg + (s.extentDeg * i) / stepsPerCurve) * Math.PI) / 180;
+      out.push({ x: s.cx + r * Math.sin(a), y: s.cy + r * Math.cos(a) });
+    }
+    return out;
+  });
+}
+
 /** A turnout's CLOSURE — the diverging route's lateral offset from the through
  * route, from the points (s = 0) to the frog (s = lead) and beyond.
  *

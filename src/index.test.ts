@@ -58,6 +58,15 @@ import {
   returnLoop,
   turnoutClosure,
   RAIL_GAUGE_INCHES,
+  TURNOUT_LEAD_INCHES_PER_FROG,
+  ATLAS_CODE55_N,
+  BUILT_IN_TRACK_PARTS,
+  trackPart,
+  turnoutPartForSize,
+  leadInchesForSize,
+  parseXtpLibrary,
+  samplePartSegments,
+  type PartSegment,
   type ReturnLoopShape,
   type ModuleSchematicDoc,
 } from "./index";
@@ -2146,6 +2155,113 @@ describe("docToState keeps authored precision (#132 measurements)", () => {
   it("absorbs float noise from a rescale rather than carrying 15 decimals", () => {
     const p = docToState(docWith(10, 30), 100).turnouts[0].pos; // ×10/3
     expect(p).toBe(Math.round(p * 100) / 100);
+  });
+});
+
+describe("track parts library (#179 stage 3)", () => {
+  it("has the Atlas code 55 turnouts Free-moN actually uses", () => {
+    for (const n of [5, 7, 10]) {
+      const p = ATLAS_CODE55_N.find((x) => x.frogNumber === n && x.kind === "turnout");
+      expect(p, `#${n}`).toBeTruthy();
+      expect(p!.manufacturer).toBe("Atlas");
+      expect(p!.line).toBe("Code 55");
+    }
+  });
+
+  it("records PROVENANCE on every dimension, so a guess can't pass as a spec", () => {
+    for (const part of BUILT_IN_TRACK_PARTS) {
+      for (const key of ["lead", "overallLength", "divergingRadius", "outerRadius", "innerRadius"] as const) {
+        const d = part[key];
+        if (!d) continue;
+        expect(["manufacturer", "measured", "derived", "unverified"]).toContain(d.source);
+        // Anything not straight from the manufacturer must say where it came from.
+        if (d.source !== "manufacturer") expect(d.note, `${part.id}.${key}`).toBeTruthy();
+      }
+    }
+  });
+
+  it("only the #7 lead is MEASURED — the others are honestly marked derived", () => {
+    const seven = trackPart("atlas-c55-n-7")!;
+    expect(seven.lead!.source).toBe("measured");
+    expect(seven.lead!.inches).toBeCloseTo(3.375, 6);
+    expect(trackPart("atlas-c55-n-5")!.lead!.source).toBe("derived");
+    expect(trackPart("atlas-c55-n-10")!.lead!.source).toBe("derived");
+  });
+
+  it("carries the curved turnout's published radii", () => {
+    const c = trackPart("atlas-c55-n-curved-21-15")!;
+    expect(c.outerRadius).toEqual({ inches: 21.25, source: "manufacturer", note: expect.any(String) });
+    expect(c.innerRadius!.inches).toBe(15);
+  });
+
+  it("leadInchesForSize uses a real measurement ONLY when the frog matches", () => {
+    expect(leadInchesForSize(7)).toBeCloseTo(3.375, 6); // the measured part
+    // A #4 has no part — fall back to the rule rather than borrowing the #7's.
+    expect(leadInchesForSize(4)).toBeCloseTo(4 * TURNOUT_LEAD_INCHES_PER_FROG, 6);
+    expect(leadInchesForSize(6)).toBeCloseTo(6 * TURNOUT_LEAD_INCHES_PER_FROG, 6);
+  });
+
+  it("turnoutPartForSize picks the nearest frog", () => {
+    expect(turnoutPartForSize(7)!.id).toBe("atlas-c55-n-7");
+    expect(turnoutPartForSize(9)!.id).toBe("atlas-c55-n-10");
+    expect(turnoutPartForSize(4)!.id).toBe("atlas-c55-n-5");
+  });
+});
+
+describe("parseXtpLibrary — importing an owner's OWN XTrkCAD library", () => {
+  // A verbatim excerpt of the .xtp record shape (an owner supplies the file;
+  // we redistribute none of it).
+  const sample = [
+    '# a comment line',
+    'TURNOUT N "Atlas\t#7 LH Switch\t2052"',
+    '\tP "Normal" 1 2',
+    '\tE 0.000000 0.000000 270.000000',
+    '\tE 6.000000 0.000000 90.000000',
+    '\tE 6.000000 0.625000 81.818182',
+    '\tS 0 0.000000 0.000000 0.000000 0.353100 0.000000',
+    '\tC 0 0.000000 -18.176138 0.353124 18.176138 171.818106 8.181970',
+    '\tEND',
+  ].join("\n");
+
+  it("extracts the manufacturer, name and part number from the tabbed title", () => {
+    const [p] = parseXtpLibrary(sample);
+    expect(p.manufacturer).toBe("Atlas");
+    expect(p.name).toBe("#7 LH Switch");
+    expect(p.partNumber).toBe("2052");
+    expect(p.scale).toBe("N");
+  });
+
+  it("extracts endpoints with their tangents", () => {
+    const [p] = parseXtpLibrary(sample);
+    expect(p.ends).toHaveLength(3);
+    expect(p.ends[0]).toEqual({ x: 0, y: 0, angleDeg: 270 });
+    expect(p.ends[2]).toEqual({ x: 6, y: 0.625, angleDeg: 81.818182 });
+  });
+
+  it("extracts straight and curved segments", () => {
+    const [p] = parseXtpLibrary(sample);
+    expect(p.segments).toHaveLength(2);
+    expect(p.segments[0]).toEqual({ kind: "straight", x0: 0, y0: 0, x1: 0.3531, y1: 0 });
+    const c = p.segments[1] as Extract<PartSegment, { kind: "curve" }>;
+    expect(c.kind).toBe("curve");
+    expect(c.radius).toBeCloseTo(-18.176138, 6);
+    expect(c.extentDeg).toBeCloseTo(8.18197, 5);
+  });
+
+  it("ignores comments and doesn't emit empty parts", () => {
+    expect(parseXtpLibrary("# nothing but a comment\n")).toEqual([]);
+    expect(parseXtpLibrary('TURNOUT N "X\tY\tZ"\n\tEND\n')).toEqual([]);
+  });
+
+  it("samples a curve with XTrkCAD's clockwise-from-north angles", () => {
+    const [p] = parseXtpLibrary(sample);
+    const polys = samplePartSegments(p.segments);
+    // The curve runs to 180° = straight 'down' from its centre, which is the
+    // switch-point end at (0.3531, 0) — the same decode used to read the file.
+    const curve = polys[1];
+    const end = curve[curve.length - 1];
+    expect(end.x).toBeCloseTo(0.3531, 3);
+    expect(end.y).toBeCloseTo(0, 3);
   });
 });
 
