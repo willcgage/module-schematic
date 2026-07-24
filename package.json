@@ -1,6 +1,6 @@
 {
   "name": "@willcgage/module-schematic",
-  "version": "0.48.0",
+  "version": "0.49.0",
   "description": "Shared FreeMo module operations-schematic (track-graph): doc types, parser, feature resolver, N-scale helpers, and the editor state machine. Authored by the Module Repository, imported by Free-Dispatcher.",
   "keywords": [
     "freemo",

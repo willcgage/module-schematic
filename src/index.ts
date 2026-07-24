@@ -258,6 +258,10 @@ export interface ModuleSchematicDoc {
    * +y up). Stored as an open ring; renderers close it. Absent = derive an
    * approximate band from the endplate widths. */
   outline?: BenchworkPoint[];
+  /** Benchwork HOLE — an inner boundary punched out of `outline`, making the
+   * board a DONUT (a return loop's open middle). Same frame as `outline`; stored
+   * as an open ring, renderers close it. Absent = a solid board. */
+  outlineInner?: BenchworkPoint[];
   /** Internal section joints — inches from endplate A where the module's boards
    * split into sections. Operationally one unit; these mark construction/transport
    * seams (exempt from the end-interface standards). Empty/absent = one section.
@@ -582,6 +586,9 @@ export interface ModuleFootprintInput {
   endplateTrackOffsets?: Record<string, number>;
   /** Authored benchwork outline (module-local inches), or absent for the band. */
   outline?: BenchworkPoint[] | null;
+  /** Authored benchwork HOLE — the inner boundary punched out of `outline` to
+   * make a donut. Absent/short = a solid board. */
+  outlineInner?: BenchworkPoint[] | null;
   /** The module's sections (#96 phase 2). When any carries an outline, the
    * module's footprint is the union of those — `outline` is then ignored. */
   sections?: SchematicSection[] | null;
@@ -611,6 +618,9 @@ export interface ModuleFootprint {
   /** Authored outline (arc-sampled closed ring) or null → render the band.
    * Null too when `sectionOutlines` is non-empty — the sections ARE the shape. */
   outline: BenchworkPoint[] | null;
+  /** Authored HOLE (arc-sampled closed ring) punched out of `outline` → a donut
+   * board. Null = solid. Renderers fill `outline` with `outlineInner` cut out. */
+  outlineInner: BenchworkPoint[] | null;
   /** Per-section footprints, arc-sampled (#96 phase 2b). Draw every one: together
    * they are the module's footprint. Empty = this module doesn't use sections,
    * so fall back to `outline ?? band` exactly as before. */
@@ -1167,6 +1177,12 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
       ? endplateFaceSegments(centerline, widthA, widthB, offA, offB).slice(0, 1)
       : endplateFaceSegments(centerline, widthA, widthB, offA, offB),
     outline: sectionOutlines.length || !authored ? null : sampleBenchworkOutline(authored),
+    // The donut hole, arc-sampled — only when there's a solid outline to punch it
+    // out of (a sectioned module isn't a donut). Renderers cut it from `outline`.
+    outlineInner:
+      sectionOutlines.length || !authored || !input.outlineInner || input.outlineInner.length < 3
+        ? null
+        : sampleBenchworkOutline(input.outlineInner),
     sectionOutlines,
   };
 }
@@ -1449,6 +1465,9 @@ export interface EditorState {
    * (endplate A's track point at the origin, mainline +x, perpendicular +y up).
    * Empty = no authored outline (fall back to the endplate-width band). */
   outline: BenchworkPoint[];
+  /** Benchwork HOLE (donut inner boundary), module-local inches. Empty = a solid
+   * board. Set by the return-loop generator; punched out of `outline`. */
+  outlineInner: BenchworkPoint[];
   /** Internal section joints — inches from endplate A where the boards split
    * into sections. Empty = a single section (#48). */
   sectionBreaks: number[];
@@ -1482,6 +1501,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     endplateWidths: {},
     endplateTrackOffsets: {},
     outline: [],
+    outlineInner: [],
     sectionBreaks: [],
     sections: [],
     controlPoints: [],
@@ -1814,6 +1834,8 @@ export function stateToDoc(
     // Benchwork footprint outline (module-local inches); only when it's a real
     // ring (≥ 3 vertices).
     ...(state.outline.length >= 3 ? { outline: state.outline } : {}),
+    // Benchwork hole (donut inner boundary), when it's a real ring.
+    ...(state.outlineInner.length >= 3 ? { outlineInner: state.outlineInner } : {}),
     // Internal section joints (inches from A), when the module has more than one.
     ...(state.sectionBreaks.length ? { sectionBreaks: state.sectionBreaks } : {}),
     // Sections as objects — emitted only once the owner has some, so a module
@@ -1936,6 +1958,14 @@ export function docToState(
       y: p.y,
       ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
     }));
+  // Benchwork hole (donut inner boundary), kept as authored like the outline.
+  const outlineInner = (d!.outlineInner ?? [])
+    .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+    .map((p) => ({
+      x: p.x,
+      y: p.y,
+      ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
+    }));
   // Authored mainline path — kept as drawn (a physical shape, not rescaled).
   const mainPath = trackPath(d!.mainPath) ?? [];
   // Main 2's authored path may sit on the doc top-level or on its track record.
@@ -1961,6 +1991,7 @@ export function docToState(
     endplateWidths,
     endplateTrackOffsets,
     outline,
+    outlineInner,
     sectionBreaks: (d!.sectionBreaks ?? [])
       .filter((n) => Number.isFinite(n))
       .map((n) => sc(n)),
@@ -2763,41 +2794,13 @@ export function returnLoop(
     return out;
   };
 
-  if (shape === "square") {
-    const s = 2 * R;
-    const loop = [
-      { x: L, y: 0 },
-      { x: L, y: R },
-      { x: L + s, y: R },
-      { x: L + s, y: -R },
-      { x: L, y: -R },
-      { x: L, y: 0 },
-    ];
-    return {
-      throat: T,
-      loop: rd(loop),
-      wyeLegs: [rd([T, { x: L, y: R }]), rd([T, { x: L, y: -R }])],
-      wyeHalfAngleDeg: 90,
-      outlineOuter: rd([
-        { x: 0, y: hw },
-        { x: L + s + hw, y: hw },
-        { x: L + s + hw, y: -R - hw },
-        { x: 0, y: -R - hw },
-      ]),
-      outlineInner: rd([
-        { x: L + hw, y: R - hw },
-        { x: L + s - hw, y: R - hw },
-        { x: L + s - hw, y: -R + hw },
-        { x: L + hw, y: -R + hw },
-      ]),
-    };
-  }
-
-  // circle / teardrop / offset-teardrop: a loop circle whose centre C sits ahead
-  // of the throat. The wye legs are the two tangent lines from the throat to the
-  // circle; the loop is the MAJOR (far) arc between the tangent points, so the
-  // legs diverge symmetrically (the wye) and the loop closes at the throat.
-  const D = shape === "circle" ? R * 1.15 : R * 1.6; // throat → centre
+  // circle / teardrop / offset-teardrop / square: the LOOP TRACK is always a
+  // proper circle whose centre C sits ahead of the throat — real track can't turn
+  // a square corner, so a "square" module is a curved loop inside a square board,
+  // never a square track. The wye legs are the two tangent lines from the throat
+  // to the circle; the loop is the MAJOR (far) arc between the tangent points, so
+  // the legs diverge symmetrically (the wye) and the loop closes at the throat.
+  const D = shape === "circle" || shape === "square" ? R * 1.15 : R * 1.6; // throat → centre
   const offY = shape === "offset-teardrop" ? R * 0.7 : 0;
   const C = { x: L + D, y: offY };
   const dist = Math.hypot(C.x - T.x, C.y - T.y);
@@ -2829,6 +2832,45 @@ export function returnLoop(
     ];
   };
   const Ri = R - hw;
+
+  // A "square" module frames that same circular loop in a SQUARE DONUT: a
+  // rectangular loop board (a lead strip + a square around the circle) with a
+  // square hole in the open middle. The hole's corners are kept inside the track
+  // circle (half-diagonal ≤ R − hw) so the board is at least hw wide under the rail.
+  if (shape === "square") {
+    const xL = C.x - R - hw; // square board's left edge
+    const xR = C.x + R + hw; // right edge
+    const yT = R + hw;
+    const outerSquare = [
+      { x: 0, y: hw },
+      { x: xL, y: hw },
+      { x: xL, y: yT },
+      { x: xR, y: yT },
+      { x: xR, y: -yT },
+      { x: xL, y: -yT },
+      { x: xL, y: -hw },
+      { x: 0, y: -hw },
+    ];
+    const iHalf = (R - hw) / Math.SQRT2; // inner-square half-side (corners inside R)
+    const holeSquare =
+      iHalf > 2
+        ? [
+            { x: C.x - iHalf, y: iHalf },
+            { x: C.x + iHalf, y: iHalf },
+            { x: C.x + iHalf, y: -iHalf },
+            { x: C.x - iHalf, y: -iHalf },
+          ]
+        : [];
+    return {
+      throat: T,
+      loop: rd(loop),
+      wyeLegs: [rd([T, P1]), rd([T, P2])],
+      wyeHalfAngleDeg: r2((half * 180) / Math.PI),
+      outlineOuter: rd(outerSquare),
+      outlineInner: rd(holeSquare),
+    };
+  }
+
   return {
     throat: T,
     loop: rd(loop),
