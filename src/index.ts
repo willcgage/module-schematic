@@ -1161,13 +1161,25 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   // A module built from shaped sections IS its sections — the whole-module
   // outline stops speaking for it, so don't hand back both and leave renderers
   // to guess which wins (#96 phase 2).
-  const sectionOutlines = sectionFootprints(input, {
-    centerline,
-    widthA,
-    widthB,
-    offsetA: offA,
-    offsetB: offB,
-  });
+  //
+  // EXCEPT a LONE section with no shape of its own: that section IS the module,
+  // so its derived band says nothing the authored outline doesn't already say —
+  // and letting it win ORPHANED the owner's corners (drawn as faint context,
+  // uneditable, while the Objects list still counted them). That's Steve's
+  // "benchwork points are set but the benchwork is not drawn" (#173). Two or
+  // more sections still own the shape, so a multi-board module keeps its split.
+  const secs = input.sections ?? [];
+  const sectionsOwnShape =
+    secs.length > 1 || secs.some((s) => (s.outline?.length ?? 0) >= 3);
+  const sectionOutlines = sectionsOwnShape
+    ? sectionFootprints(input, {
+        centerline,
+        widthA,
+        widthB,
+        offsetA: offA,
+        offsetB: offB,
+      })
+    : [];
   return {
     centerline,
     band: benchworkBand(centerline, widthA, widthB, offA, offB),

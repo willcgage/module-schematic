@@ -2070,6 +2070,56 @@ describe("turnout self-heals when it diverges into the track it sits on (#172)",
   });
 });
 
+describe("a lone shapeless section doesn't orphan the module outline (#173)", () => {
+  const rect = [
+    { x: 0, y: 9 },
+    { x: 120, y: 9 },
+    { x: 120, y: -9 },
+    { x: 0, y: -9 },
+  ];
+  const base = {
+    lengthInches: 120,
+    geometryType: "straight",
+    endplateWidths: { A: 18, B: 18 },
+    outline: rect,
+  };
+
+  it("keeps the authored outline when the only section has no shape of its own", () => {
+    // Oxnard Auto Port's exact shape: one section, no outline, module outline drawn.
+    const fp = moduleFootprint({ ...base, sections: [{ id: "sec1", lengthInches: 120 }] });
+    expect(fp.sectionOutlines).toHaveLength(0);
+    expect(fp.outline).not.toBeNull();
+    expect(fp.outline).toHaveLength(4);
+  });
+
+  it("sections take over once one is actually shaped", () => {
+    const fp = moduleFootprint({
+      ...base,
+      sections: [{ id: "sec1", lengthInches: 120, outline: rect }],
+    });
+    expect(fp.sectionOutlines.length).toBeGreaterThan(0);
+    expect(fp.outline).toBeNull();
+  });
+
+  it("two shapeless sections still split into their own derived boards", () => {
+    const fp = moduleFootprint({
+      ...base,
+      sections: [
+        { id: "sec1", lengthInches: 60 },
+        { id: "sec2", lengthInches: 60 },
+      ],
+    });
+    expect(fp.sectionOutlines).toHaveLength(2);
+    expect(fp.outline).toBeNull();
+  });
+
+  it("no sections at all is unchanged — the outline still wins", () => {
+    const fp = moduleFootprint(base);
+    expect(fp.sectionOutlines).toHaveLength(0);
+    expect(fp.outline).toHaveLength(4);
+  });
+});
+
 describe("swapped transition draws Main 2 below in the schematic (#172)", () => {
   const feats = (swapped: boolean) => {
     const st = emptyEditorState(96);
