@@ -2250,6 +2250,39 @@ describe("returnLoop geometry (wye-throated return loop)", () => {
     }
   });
 
+  // Ray-cast point-in-polygon (module-local inches).
+  const inPoly = (pt: { x: number; y: number }, poly: { x: number; y: number }[]) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if (yi > pt.y !== yj > pt.y && pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi) + xi)
+        inside = !inside;
+    }
+    return inside;
+  };
+
+  it("the benchwork is never narrower than the endplate at the face", () => {
+    for (const shape of ["circle", "teardrop", "offset-teardrop", "square"] as ReturnLoopShape[]) {
+      // 24″ endplate → the lead board must be ≥ 24″ (±12) where it meets the face.
+      const g = returnLoop(shape, { leadInches: 48, radius: 24, endplateHalfWidth: 12 });
+      const atFace = g.outlineOuter.filter((p) => Math.abs(p.x) < 0.5);
+      expect(atFace.length).toBeGreaterThanOrEqual(2);
+      expect(Math.max(...atFace.map((p) => Math.abs(p.y)))).toBeGreaterThanOrEqual(12 - 0.01);
+    }
+  });
+
+  it("every point of the loop track sits ON the board (inside the outline, outside the hole)", () => {
+    for (const shape of ["circle", "teardrop", "offset-teardrop", "square"] as ReturnLoopShape[]) {
+      const g = returnLoop(shape, { leadInches: 48, radius: 24, endplateHalfWidth: 12 });
+      // the loop track, plus the straight lead from the endplate to the throat
+      const track = [...g.loop, { x: 0, y: 0 }, { x: 24, y: 0 }, g.throat];
+      for (const p of track) {
+        expect(inPoly(p, g.outlineOuter)).toBe(true); // on the board
+        if (g.outlineInner.length >= 3) expect(inPoly(p, g.outlineInner)).toBe(false); // not over the hole
+      }
+    }
+  });
+
   it("outlineInner round-trips through stateToDoc / docToState", () => {
     const g = returnLoop("teardrop", { leadInches: 48, radius: 24 });
     const st = emptyEditorState(48);
