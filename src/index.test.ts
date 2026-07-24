@@ -2194,9 +2194,47 @@ describe("returnLoop geometry (wye-throated return loop)", () => {
     expect(Math.abs(mid)).toBeGreaterThan(2); // bulb centre is off y=0
   });
 
-  it("has a donut hole (inner outline) for a normal board width", () => {
-    const g = returnLoop("circle", { leadInches: 48, radius: 24, boardHalfWidth: 6 });
-    expect(g.outlineOuter.length).toBeGreaterThan(3);
-    expect(g.outlineInner.length).toBeGreaterThan(3); // the open middle
+  it("has a donut hole (inner outline) for every shape at a normal board width", () => {
+    for (const shape of ["circle", "teardrop", "offset-teardrop", "square"] as ReturnLoopShape[]) {
+      const g = returnLoop(shape, { leadInches: 48, radius: 24, boardHalfWidth: 6 });
+      expect(g.outlineOuter.length).toBeGreaterThan(3);
+      expect(g.outlineInner.length).toBeGreaterThanOrEqual(4); // the open middle
+    }
+  });
+
+  it("square: the TRACK is a curved circle, not a rectangle (real track has no 90° corners)", () => {
+    const R = 24;
+    const g = returnLoop("square", { leadInches: 48, radius: R });
+    const D = R * 1.15;
+    const C = { x: 48 + D, y: 0 };
+    // Every loop vertex except the throat itself rides the circle of radius R.
+    const onCircle = g.loop.filter((p) => !near(p, g.throat, 0.01));
+    expect(onCircle.length).toBeGreaterThan(20); // densely sampled arc, not 4 corners
+    for (const p of onCircle) {
+      expect(Math.hypot(p.x - C.x, p.y - C.y)).toBeCloseTo(R, 0);
+    }
+  });
+
+  it("square: the benchwork is a SQUARE donut (rectangular hole), the loop hole 4 corners", () => {
+    const g = returnLoop("square", { leadInches: 48, radius: 24, boardHalfWidth: 6 });
+    // A square hole has exactly 4 distinct corners (vs the curved shapes' ~40-pt ring).
+    expect(g.outlineInner.length).toBe(4);
+    // Hole corners sit inside the R=24 track circle (board stays under the rail).
+    const C = { x: 48 + 24 * 1.15, y: 0 };
+    for (const p of g.outlineInner) {
+      expect(Math.hypot(p.x - C.x, p.y - C.y)).toBeLessThanOrEqual(24);
+    }
+  });
+
+  it("outlineInner round-trips through stateToDoc / docToState", () => {
+    const g = returnLoop("teardrop", { leadInches: 48, radius: 24 });
+    const st = emptyEditorState(48);
+    st.loop = true;
+    st.outline = g.outlineOuter.map((p) => ({ x: p.x, y: p.y }));
+    st.outlineInner = g.outlineInner.map((p) => ({ x: p.x, y: p.y }));
+    const doc = stateToDoc(st, "FMN-LOOP");
+    expect(doc.outlineInner?.length).toBe(g.outlineInner.length);
+    const back = docToState(doc, 48);
+    expect(back.outlineInner.length).toBe(g.outlineInner.length);
   });
 })
