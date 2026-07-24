@@ -1335,13 +1335,37 @@ export function carCapacity(
   return Math.max(0, Math.floor(Math.abs(toPos - fromPos) / carLengthInches));
 }
 
-/** Parse a jsonb value into a schematic doc, or null if it isn't one. */
+/** Repoint a turnout that diverges into the track it sits on at the OTHER main.
+ * A reversed transition whose on-track was later set to the same main stored
+ * `onTrack === divergeTrack` (#172): it then had no second route, so
+ * `isTransitionTurnout` went false and the module derived as if it had no
+ * transition at all — both mains running endplate to endplate. Applied on READ
+ * so a doc saved in that state renders correctly everywhere without waiting for
+ * its owner to open and re-save it. Returns the same array when nothing needs
+ * healing, so untouched docs keep referential identity. */
+function healSelfDivergingTurnouts(
+  turnouts: SchematicTurnout[] | undefined,
+): SchematicTurnout[] | undefined {
+  if (!turnouts?.some((t) => t.onTrack === t.divergeTrack)) return turnouts;
+  return turnouts.map((t) => {
+    if (t.onTrack !== t.divergeTrack) return t;
+    if (t.onTrack === MAIN_TRACK_ID) return { ...t, divergeTrack: MAIN2_TRACK_ID };
+    if (t.onTrack === MAIN2_TRACK_ID) return { ...t, divergeTrack: MAIN_TRACK_ID };
+    return t; // not a main — nothing sensible to repoint it at
+  });
+}
+
+/** Parse a jsonb value into a schematic doc, or null if it isn't one.
+ * EVERY read path goes through here (catalog, module page, my-modules, FD), so
+ * it's also where a stored doc gets healed — see healSelfDivergingTurnouts. */
 export function asModuleSchematic(x: unknown): ModuleSchematicDoc | null {
   if (!x || typeof x !== "object") return null;
   const d = x as Record<string, unknown>;
   if (typeof d.version !== "number") return null;
   if (!Array.isArray(d.endplates) || !Array.isArray(d.tracks)) return null;
-  return d as unknown as ModuleSchematicDoc;
+  const doc = d as unknown as ModuleSchematicDoc;
+  const healed = healSelfDivergingTurnouts(doc.turnouts);
+  return healed === doc.turnouts ? doc : { ...doc, turnouts: healed };
 }
 
 // ---- Editor state (a flatter shape an authoring form binds to) -------------
@@ -2018,28 +2042,19 @@ export function docToState(
       trackB: x.tracks?.[1] ?? MAIN_TRACK_ID,
     })),
     extraTracks,
-    turnouts: (d!.turnouts ?? []).map((t) => {
-      // Self-heal a turnout that diverges into the track it sits on — a reversed
-      // transition left onTrack === divergeTrack after an on-track edit, so it
-      // had no second route and the false "nothing will draw" warning fired
-      // (#172). Repoint it at the OTHER main so it's a valid transition again.
-      let divergeTrack = t.divergeTrack;
-      if (divergeTrack === t.onTrack) {
-        if (t.onTrack === MAIN_TRACK_ID) divergeTrack = MAIN2_TRACK_ID;
-        else if (t.onTrack === MAIN2_TRACK_ID) divergeTrack = MAIN_TRACK_ID;
-      }
-      return {
-        id: t.id,
-        name: t.name ?? "",
-        pos: sc(t.pos),
-        onTrack: t.onTrack,
-        divergeTrack,
-        kind: (t.kind as TurnoutKind) ?? "right",
-        ...(t.size ? { size: t.size } : {}),
-        ...(t.curved ? { curved: true } : {}),
-        ...(t.flipped ? { flipped: true } : {}),
-      };
-    }),
+    // Heal a turnout that diverges into the track it sits on (#172) with the
+    // same helper the read path uses, so the editor and every renderer agree.
+    turnouts: (healSelfDivergingTurnouts(d!.turnouts) ?? []).map((t) => ({
+      id: t.id,
+      name: t.name ?? "",
+      pos: sc(t.pos),
+      onTrack: t.onTrack,
+      divergeTrack: t.divergeTrack,
+      kind: (t.kind as TurnoutKind) ?? "right",
+      ...(t.size ? { size: t.size } : {}),
+      ...(t.curved ? { curved: true } : {}),
+      ...(t.flipped ? { flipped: true } : {}),
+    })),
     controlPoints: readControlPoints(d!, sc),
     industries: (d!.industries ?? []).map((ind) => ({
       id: ind.id,

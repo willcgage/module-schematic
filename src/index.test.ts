@@ -2068,6 +2068,46 @@ describe("turnout self-heals when it diverges into the track it sits on (#172)",
     expect(t.onTrack).toBe(MAIN_TRACK_ID);
     expect(t.divergeTrack).toBe(MAIN2_TRACK_ID);
   });
+
+  // The editor heals on load, but the catalog / module page / FD render from the
+  // RAW doc — Steve's FMN-0067 still drew both mains endplate-to-endplate after
+  // the editor-side fix, because nothing had rewritten the stored doc.
+  it("asModuleSchematic heals on READ, so every renderer sees a valid transition", () => {
+    const raw = {
+      version: 1,
+      module: "M",
+      lengthInches: 96,
+      mainsSwapped: true,
+      tracks: [
+        { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" },
+        { id: MAIN2_TRACK_ID, role: "main", lane: -1, from: "A", to: "B" },
+      ],
+      endplates: [
+        { id: "A", tracks: [{ lane: 0, config: "double", trackId: MAIN_TRACK_ID }] },
+        { id: "B", tracks: [{ lane: 0, config: "single", trackId: MAIN_TRACK_ID }] },
+      ],
+      turnouts: [
+        { id: "sw1", name: "End of Double Track", pos: 17.4, onTrack: MAIN_TRACK_ID, divergeTrack: MAIN_TRACK_ID, kind: "left" },
+      ],
+    };
+    const doc = asModuleSchematic(raw)!;
+    expect(doc.turnouts?.[0].divergeTrack).toBe(MAIN2_TRACK_ID);
+    expect(isTransitionTurnout(doc.turnouts![0])).toBe(true);
+    // …and the derived schematic now knows it's a transition at all.
+    expect(moduleFeatures(doc).transition).not.toBeNull();
+  });
+
+  it("asModuleSchematic returns the SAME object when nothing needs healing", () => {
+    const raw = {
+      version: 1,
+      module: "M",
+      lengthInches: 96,
+      tracks: [{ id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" }],
+      endplates: [],
+      turnouts: [{ id: "sw1", pos: 10, onTrack: MAIN_TRACK_ID, divergeTrack: "spur1", kind: "left" }],
+    };
+    expect(asModuleSchematic(raw)).toBe(raw as unknown);
+  });
 });
 
 describe("a lone shapeless section doesn't orphan the module outline (#173)", () => {
