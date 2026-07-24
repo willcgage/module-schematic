@@ -2006,17 +2006,28 @@ export function docToState(
       trackB: x.tracks?.[1] ?? MAIN_TRACK_ID,
     })),
     extraTracks,
-    turnouts: (d!.turnouts ?? []).map((t) => ({
-      id: t.id,
-      name: t.name ?? "",
-      pos: sc(t.pos),
-      onTrack: t.onTrack,
-      divergeTrack: t.divergeTrack,
-      kind: (t.kind as TurnoutKind) ?? "right",
-      ...(t.size ? { size: t.size } : {}),
-      ...(t.curved ? { curved: true } : {}),
-      ...(t.flipped ? { flipped: true } : {}),
-    })),
+    turnouts: (d!.turnouts ?? []).map((t) => {
+      // Self-heal a turnout that diverges into the track it sits on — a reversed
+      // transition left onTrack === divergeTrack after an on-track edit, so it
+      // had no second route and the false "nothing will draw" warning fired
+      // (#172). Repoint it at the OTHER main so it's a valid transition again.
+      let divergeTrack = t.divergeTrack;
+      if (divergeTrack === t.onTrack) {
+        if (t.onTrack === MAIN_TRACK_ID) divergeTrack = MAIN2_TRACK_ID;
+        else if (t.onTrack === MAIN2_TRACK_ID) divergeTrack = MAIN_TRACK_ID;
+      }
+      return {
+        id: t.id,
+        name: t.name ?? "",
+        pos: sc(t.pos),
+        onTrack: t.onTrack,
+        divergeTrack,
+        kind: (t.kind as TurnoutKind) ?? "right",
+        ...(t.size ? { size: t.size } : {}),
+        ...(t.curved ? { curved: true } : {}),
+        ...(t.flipped ? { flipped: true } : {}),
+      };
+    }),
     controlPoints: readControlPoints(d!, sc),
     industries: (d!.industries ?? []).map((ind) => ({
       id: ind.id,
