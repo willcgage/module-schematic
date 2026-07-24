@@ -2380,6 +2380,70 @@ export interface ModuleFeatures {
  * right-hand throws to the opposite side. `kind` is the source of truth for the
  * drawn side (#bug1) — the stored lane's sign is reconciled to match it.
  */
+/** N-scale track gauge, inches (9 mm). */
+export const RAIL_GAUGE_INCHES = 0.354;
+/** Points → FROG for a #1 frog, inches — a turnout's LEAD, scaled by frog
+ * number. Calibrated COMMERCIALLY rather than on the prototype, since owners lay
+ * real product: an Atlas code 55 #7 measures 3⅜″ points→frog (Steve Branton,
+ * #173) ⇒ 3.375 / 7. (The prototype #7 lead is 62′-1″ ≈ 4.66″ in N; commercial
+ * turnouts are compressed against that.) */
+export const TURNOUT_LEAD_INCHES_PER_FROG = 0.482;
+
+/** A turnout's CLOSURE — the diverging route's lateral offset from the through
+ * route, from the points (s = 0) to the frog (s = lead) and beyond.
+ *
+ * Anchored on one geometric fact: the FROG is where the two routes' inner rails
+ * cross, which happens where the centre-lines are exactly ONE GAUGE apart. So
+ * `pos` (which means the frog, #132) must be where d = gauge — otherwise the
+ * drawn crossing and the frog marker disagree.
+ *
+ * The curve is `d(s) = α·s + k·s²`, fixed by three conditions:
+ *   d(0)      = 0      — the points start ON the stock rail
+ *   d(lead)   = gauge  — the frog lands exactly on `pos`
+ *   d'(lead)  = 1/N    — it leaves at the frog angle
+ *
+ * ⚠️ `α` is the SWITCH ANGLE and is deliberately non-zero. A curve leaving
+ * TANGENT to the stock rail only reaches `lead/2N` of lateral by the frog
+ * (0.24″ on a #7) — it could never reach a gauge within a commercial lead; you'd
+ * need `lead = 2·gauge·N` ≈ the prototype figure. Real points leave the stock
+ * rail at a finite angle, which is exactly why a commercial turnout can be
+ * shorter than prototype. Valid while `lead < 2·gauge·N`; α is clamped at 0
+ * otherwise so an absurd lead degrades to a tangent start instead of bending
+ * backwards. */
+export interface TurnoutClosure {
+  /** Lateral offset from the through route at arc length `s` past the points. */
+  offsetAt: (s: number) => number;
+  /** Points→frog, inches. */
+  lead: number;
+  /** Slope at the points (the switch angle), rise over run. */
+  switchSlope: number;
+  /** Slope at and beyond the frog — the frog angle, 1/N. */
+  frogSlope: number;
+}
+
+export function turnoutClosure(
+  size: number,
+  opts: { leadInches?: number; gaugeInches?: number } = {},
+): TurnoutClosure {
+  const N = size > 0 ? size : 6;
+  const g = opts.gaugeInches ?? RAIL_GAUGE_INCHES;
+  const lead = Math.max(0.01, opts.leadInches ?? N * TURNOUT_LEAD_INCHES_PER_FROG);
+  const frogSlope = 1 / N;
+  const k = (lead / N - g) / (lead * lead);
+  const switchSlope = Math.max(0, frogSlope - 2 * k * lead);
+  return {
+    lead,
+    switchSlope,
+    frogSlope,
+    // Past the frog the route is straight at the frog angle — the closure curve
+    // has done its work, so don't keep bending (that's the tangent Option 1).
+    offsetAt: (s: number) =>
+      s <= lead
+        ? switchSlope * s + k * s * s
+        : g + frogSlope * (s - lead),
+  };
+}
+
 export function divergeSideForHand(
   kind: TurnoutKind | undefined,
   stubDir: number,

@@ -56,6 +56,8 @@ import {
   trackMeetsEndplateIssues,
   ENDPLATE_LEAD_INCHES,
   returnLoop,
+  turnoutClosure,
+  RAIL_GAUGE_INCHES,
   type ReturnLoopShape,
   type ModuleSchematicDoc,
 } from "./index";
@@ -2107,6 +2109,59 @@ describe("turnout self-heals when it diverges into the track it sits on (#172)",
       turnouts: [{ id: "sw1", pos: 10, onTrack: MAIN_TRACK_ID, divergeTrack: "spur1", kind: "left" }],
     };
     expect(asModuleSchematic(raw)).toBe(raw as unknown);
+  });
+});
+
+describe("turnoutClosure — the frog lands where the inner rails actually cross (#173)", () => {
+  const G = RAIL_GAUGE_INCHES;
+
+  for (const N of [4, 5, 6, 7, 8, 10]) {
+    it(`#${N}: points on the stock rail, frog at one gauge, leaving at 1/N`, () => {
+      const c = turnoutClosure(N);
+      expect(c.offsetAt(0)).toBeCloseTo(0, 6); // points start ON the stock rail
+      expect(c.offsetAt(c.lead)).toBeCloseTo(G, 6); // frog = inner rails crossing
+      // slope arriving at the frog is the frog angle
+      const h = 1e-4;
+      expect((c.offsetAt(c.lead) - c.offsetAt(c.lead - h)) / h).toBeCloseTo(1 / N, 3);
+      expect(c.frogSlope).toBeCloseTo(1 / N, 9);
+    });
+
+    it(`#${N}: the switch angle is positive and shallower than the frog angle`, () => {
+      const c = turnoutClosure(N);
+      // A tangent start (slope 0) could never reach a gauge within a commercial
+      // lead — real points leave at a finite angle. But it must still be gentler
+      // than the frog angle, or the closure would be bending the wrong way.
+      expect(c.switchSlope).toBeGreaterThan(0);
+      expect(c.switchSlope).toBeLessThan(c.frogSlope);
+    });
+
+    it(`#${N}: the closure never doubles back`, () => {
+      const c = turnoutClosure(N);
+      let prev = -1;
+      for (let i = 0; i <= 40; i++) {
+        const d = c.offsetAt((c.lead * i) / 40);
+        expect(d).toBeGreaterThanOrEqual(prev - 1e-9);
+        prev = d;
+      }
+    });
+  }
+
+  it("past the frog it runs STRAIGHT at the frog angle, not bending further", () => {
+    const c = turnoutClosure(7);
+    const a = c.offsetAt(c.lead + 1);
+    const b = c.offsetAt(c.lead + 2);
+    expect(a - G).toBeCloseTo(1 / 7, 6);
+    expect(b - a).toBeCloseTo(1 / 7, 6); // constant slope ⇒ straight
+  });
+
+  it("uses the commercial lead by default (Atlas #7 = 3⅜″)", () => {
+    expect(turnoutClosure(7).lead).toBeCloseTo(3.374, 3);
+  });
+
+  it("an absurdly long lead degrades to a tangent start instead of bending backwards", () => {
+    // lead ≥ 2·gauge·N is outside the model; α clamps at 0 rather than going negative.
+    const c = turnoutClosure(7, { leadInches: 2 * G * 7 + 5 });
+    expect(c.switchSlope).toBe(0);
   });
 });
 
