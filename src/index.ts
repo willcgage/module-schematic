@@ -2780,11 +2780,23 @@ export interface ReturnLoopGeometry {
 
 export function returnLoop(
   shape: ReturnLoopShape,
-  opts: { leadInches: number; radius: number; boardHalfWidth?: number },
+  opts: {
+    leadInches: number;
+    radius: number;
+    /** Half-width of the board UNDER the loop track (the donut ring), inches. */
+    boardHalfWidth?: number;
+    /** Half the endplate face width, inches. The lead/interface board is sized to
+     * this so the benchwork is never narrower than the endplate (Free-moN §2.0);
+     * the track crosses the endplate centred on a full-width board. */
+    endplateHalfWidth?: number;
+  },
 ): ReturnLoopGeometry {
   const L = Math.max(1, opts.leadInches);
   const R = Math.max(1, opts.radius);
-  const hw = Math.min(opts.boardHalfWidth ?? 6, R - 1); // keep an inner hole
+  // Two widths: the ring under the loop track, and the lead/interface board — the
+  // latter at least the endplate half-width, so benchwork ≥ endplate at the face.
+  const hw = Math.min(opts.boardHalfWidth ?? 6, R - 1); // ring half-width (keeps a hole)
+  const leadHalf = Math.max(hw, opts.endplateHalfWidth ?? hw);
   const T: BenchworkPoint = { x: L, y: 0 };
   const r2 = (v: number) => Math.round(v * 100) / 100;
   const rd = (pts: BenchworkPoint[]) => pts.map((p) => ({ x: r2(p.x), y: r2(p.y) }));
@@ -2819,10 +2831,13 @@ export function returnLoop(
   // Donut benchwork: outer ring (R+hw) and inner ring (R-hw) around C, the outer
   // meeting the lead's edges. Inner hole = the open middle of the loop.
   const ringOuter = (rr: number) => {
-    const xTop = C.x - Math.sqrt(Math.max(0, rr * rr - (hw - C.y) ** 2));
-    const xBot = C.x - Math.sqrt(Math.max(0, rr * rr - (-hw - C.y) ** 2));
-    const tTop = Math.atan2(hw - C.y, xTop - C.x);
-    const tBot = Math.atan2(-hw - C.y, xBot - C.x);
+    // The lead/interface board runs at ±leadHalf (≥ the endplate) until it meets
+    // the outer ring; the ring itself is radius rr. Using leadHalf here is what
+    // keeps the benchwork at least as wide as the endplate at the face.
+    const xTop = C.x - Math.sqrt(Math.max(0, rr * rr - (leadHalf - C.y) ** 2));
+    const xBot = C.x - Math.sqrt(Math.max(0, rr * rr - (-leadHalf - C.y) ** 2));
+    const tTop = Math.atan2(leadHalf - C.y, xTop - C.x);
+    const tBot = Math.atan2(-leadHalf - C.y, xBot - C.x);
     // Sweep CLOCKWISE from tTop down to tBot (the FAR arc, away from the lead
     // notch) as a SINGLE traversal. A fixed `tBot − 2π` double-wraps the circle
     // when tTop/tBot straddle ±π (the symmetric shapes), which a solid fill hides
@@ -2830,11 +2845,11 @@ export function returnLoop(
     let end = tBot;
     while (end >= tTop) end -= 2 * Math.PI;
     return [
-      { x: 0, y: hw },
-      { x: xTop, y: hw },
+      { x: 0, y: leadHalf },
+      { x: xTop, y: leadHalf },
       ...arc(C.x, C.y, rr, tTop, end, 48).slice(1, -1),
-      { x: xBot, y: -hw },
-      { x: 0, y: -hw },
+      { x: xBot, y: -leadHalf },
+      { x: 0, y: -leadHalf },
     ];
   };
   const Ri = R - hw;
@@ -2847,15 +2862,16 @@ export function returnLoop(
     const xL = C.x - R - hw; // square board's left edge
     const xR = C.x + R + hw; // right edge
     const yT = R + hw;
+    // Lead/interface strip at ±leadHalf (≥ the endplate) sticking out of the square.
     const outerSquare = [
-      { x: 0, y: hw },
-      { x: xL, y: hw },
+      { x: 0, y: leadHalf },
+      { x: xL, y: leadHalf },
       { x: xL, y: yT },
       { x: xR, y: yT },
       { x: xR, y: -yT },
       { x: xL, y: -yT },
-      { x: xL, y: -hw },
-      { x: 0, y: -hw },
+      { x: xL, y: -leadHalf },
+      { x: 0, y: -leadHalf },
     ];
     const iHalf = (R - hw) / Math.SQRT2; // inner-square half-side (corners inside R)
     const holeSquare =
