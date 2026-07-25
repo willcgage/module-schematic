@@ -3247,6 +3247,76 @@ export function turnoutClosure(
   };
 }
 
+/** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the
+ * points, `y` = lateral offset from the through route. */
+export interface FrogCasting {
+  /** The point rail — the acute V, apex at the crossing, opening toward the
+   * diverging end. Three points: through leg, apex, diverging leg. */
+  point: Array<{ x: number; y: number }>;
+  /** The two wing rails flanking the point, each a short polyline. */
+  wings: Array<Array<{ x: number; y: number }>>;
+  /** The apex — where the two inner rails actually cross. */
+  apex: { x: number; y: number };
+}
+
+/**
+ * The frog casting at a turnout's crossing.
+ *
+ * The apex is where the two INNER rails cross, which is HALF a gauge off the
+ * through centre-line (the through inner rail sits at +g/2, the diverging inner
+ * rail at d−g/2, and d = g at the frog). Not one full gauge — that is the
+ * diverging CENTRE-line, and putting the casting there floats it clear of the
+ * rails it is made of.
+ *
+ * ⚠️ **The flangeway is EXAGGERATED and that is deliberate.** True scale in N is
+ * about 0.011″ (prototype 1¾″ ÷ 160) — one pixel in a close-up render and
+ * invisible at module zoom. Drawn to scale the wing rails would sit exactly on
+ * the running rails and add nothing. `flangewayInches` defaults to a readable
+ * fraction of the gauge instead; pass the true figure if you ever need it.
+ */
+export function frogCasting(
+  cl: TurnoutClosure,
+  opts: {
+    gaugeInches?: number;
+    /** How far the casting runs either side of the apex. */
+    reachInches?: number;
+    /** See the warning above — exaggerated for legibility by default. */
+    flangewayInches?: number;
+  } = {},
+): FrogCasting {
+  const g = opts.gaugeInches ?? RAIL_GAUGE_INCHES;
+  const w = opts.reachInches ?? g * 1.5;
+  const fw = opts.flangewayInches ?? g * 0.12;
+  const m = cl.frogSlope;
+  const lead = cl.lead;
+  const apex = { x: lead, y: g / 2 };
+
+  // Past the apex the two inner rails separate: the through one stays at +g/2,
+  // the diverging one climbs at the frog angle. That divergence IS the V.
+  const point = [
+    { x: lead + w, y: g / 2 },
+    apex,
+    { x: lead + w, y: g / 2 + m * w },
+  ];
+
+  // Approaching the frog those same two rails converge. The wing rails are that
+  // incoming pair, bent out by a flangeway so a wheel is carried across the gap
+  // rather than dropping into it — so each runs past the apex, not up to it.
+  const wings = [
+    [
+      { x: lead - w, y: g / 2 - fw },
+      { x: lead - w * 0.35, y: g / 2 - fw },
+      { x: lead + w * 0.35, y: g / 2 - fw * 0.5 },
+    ],
+    [
+      { x: lead - w, y: g / 2 + m * -w + fw },
+      { x: lead - w * 0.35, y: g / 2 + m * -w * 0.35 + fw },
+      { x: lead + w * 0.35, y: g / 2 + m * w * 0.35 + fw * 0.5 },
+    ],
+  ];
+  return { point, wings, apex };
+}
+
 export function divergeSideForHand(
   kind: TurnoutKind | undefined,
   stubDir: number,
