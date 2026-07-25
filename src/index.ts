@@ -2511,16 +2511,20 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  *
  *     part   points   frog V    overall   lead      past frog   ÷N
  *     #5     1¾″      4.75″     6.00″     3.0000″   1.25″       0.2500
- *     #7     —        4³⁄₁₆″    6.00″     3.3750″*  1.8125″     0.2589
+ *     #7     ⁵⁄₈″     4⁷⁄₃₂″    6.00″     3.3750″*  1.78125″    0.2545
  *     #10    ⁹⁄₁₆″    5.50″     8.00″     4.9375″   2.50″       0.2500
  *
- *     * the #7's lead is Steve Branton's (#173), a DIFFERENT person and possibly
- *       a different convention. Its points offset has never been measured, so
- *       4³⁄₁₆ − 3⅜ = ¹³⁄₁₆″ is implied, not observed. Measure a 2052 to close it.
+ *     * ⚠️ the #7's lead is DISPUTED. Steve Branton measured 3⅜″ as a single span
+ *       (#173); Will Gage's two positions give 4⁷⁄₃₂ − ⁵⁄₈ = 3¹⁹⁄₃₂″. ⁷⁄₃₂″ apart,
+ *       far beyond the other parts' residuals. Steve's is carried because a
+ *       single span has one chance to err where a difference has two. Closing it
+ *       needs a re-read of a physical part, not a decision here.
  *
  * ⭐ **THE PART RUNS PAST THE FROG FAR ENOUGH TO GAIN 0.25″ OF SEPARATION.**
- * Past-frog run ÷ N is 0.2500 / 0.2589 / 0.2500 — the #5 and #10 EXACT, the #7
- * within ¹⁄₁₆″ of the tie end (a 4¼″ frog would make it exact too). At the frog
+ * Past-frog run ÷ N is 0.2500 / 0.2545 / 0.2500 — the #5 and #10 EXACT, the #7
+ * within ¹⁄₃₂″ of the tie end (a 4¼″ frog would make it exact too, one tape
+ * division away). Provenance note: the measurer was told that prediction BEFORE
+ * re-reading and did not return 4¼″, so this is not a confirmation artefact. At the frog
  * the routes are one gauge apart; at the end of the moulding they are
  * 0.354 + 0.25 ≈ 0.6″ apart. So Atlas size the moulding for a constant
  * CLEARANCE, not a constant length — which is what a manufacturer would
@@ -2604,12 +2608,13 @@ export const ATLAS_CODE55_N: TrackPart[] = [
       inches: 3.375,
       source: "measured",
       note:
-        "⚠️ DISPUTED — two measurers, ³⁄₁₆″ apart. Steve Branton measured 3⅜″ " +
+        "⚠️ DISPUTED — two measurers, ⁷⁄₃₂″ apart. Steve Branton measured 3⅜″ " +
         "points→frog directly (#173). Will Gage's positions on the same part give " +
-        "4³⁄₁₆ − ⁵⁄₈ = 3⁹⁄₁₆″. Steve's is kept because it was taken as a single " +
-        "span; unresolved until someone re-reads one of them. The gap is bigger " +
-        "than the #5's and #10's residuals, so it is a real disagreement, not " +
-        "rounding.",
+        "4⁷⁄₃₂ − ⁵⁄₈ = 3¹⁹⁄₃₂″. Steve's is kept because it was taken as a SINGLE " +
+        "SPAN — one reading, one chance to err — where a difference of two " +
+        "readings compounds both. Unresolved until someone re-reads a physical " +
+        "part; the gap is far bigger than the #5's and #10's residuals, so it is " +
+        "a real disagreement and not rounding.",
     },
     pointsOffset: {
       inches: 0.625,
@@ -2617,13 +2622,14 @@ export const ATLAS_CODE55_N: TrackPart[] = [
       note: "Will Gage, physical Atlas 2052 (#7) — ¹⁰⁄₁₆″ tie end to point tips",
     },
     frogOffset: {
-      inches: 4.1875,
+      inches: 4.21875,
       source: "measured",
       note:
-        "Will Gage, physical Atlas 2052 (#7) — tie end to the apex of the V. " +
-        "⚠️ A later re-read was reported as '4 7/24″', which is not a fraction any " +
-        "tape carries; 4³⁄₁₆″ (the original reading) is retained pending a re-read. " +
-        "Candidates were 4³⁄₁₆, 4⁷⁄₃₂ and 4¼″.",
+        "Will Gage, physical Atlas 2052 (#7) — 4⁷⁄₃₂″, tie end to the apex of the V. " +
+        "Supersedes an initial 4³⁄₁₆″. Worth noting for provenance: he was told " +
+        "beforehand that the clearance hypothesis predicted 4¼″ and did NOT read " +
+        "4¼″ — so this number is not a confirmation artefact, and it sits ¹⁄₃₂″ " +
+        "(one tape division) from the predicted value.",
     },
     overallLength: {
       inches: 6.0,

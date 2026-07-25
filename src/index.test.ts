@@ -2219,9 +2219,9 @@ describe("track parts library (#179 stage 3)", () => {
   it("the #7's lead is DISPUTED between two measurers", () => {
     const p = trackPart("atlas-c55-n-7")!;
     const fromPositions = p.frogOffset!.inches - p.pointsOffset!.inches;
-    expect(fromPositions).toBeCloseTo(3.5625, 6);
+    expect(fromPositions).toBeCloseTo(3.59375, 6);
     expect(p.lead!.inches).toBeCloseTo(3.375, 6);
-    expect(fromPositions - p.lead!.inches).toBeCloseTo(0.1875, 6);
+    expect(fromPositions - p.lead!.inches).toBeCloseTo(0.21875, 6);
     expect(p.lead!.note).toMatch(/DISPUTED/);
   });
 
@@ -2256,11 +2256,11 @@ describe("track parts library (#179 stage 3)", () => {
     };
     expect(past("atlas-c55-n-5")).toBeCloseTo(0.25, 6);
     expect(past("atlas-c55-n-10")).toBeCloseTo(0.25, 6);
-    // The #7 is the near miss: 0.2589, out by 1/16in of tie end. A 4 1/4in frog
-    // would make it exact. Pinned loosely ON PURPOSE — tightening this without a
-    // re-measurement would be asserting a rule the parts have not yet earned.
-    expect(past("atlas-c55-n-7")).toBeCloseTo(0.25, 1);
-    expect(past("atlas-c55-n-7")).not.toBeCloseTo(0.25, 2);
+    // The #7 is the near miss: 0.2545, out by 1/32in of tie end — one tape
+    // division from exact. Still asserted at the strength it has earned and no
+    // more; the `not` is what stops this quietly becoming a law.
+    expect(past("atlas-c55-n-7")).toBeCloseTo(0.25, 2);
+    expect(past("atlas-c55-n-7")).not.toBeCloseTo(0.25, 3);
   });
 
   // Overall length isn't a function of N either: #5 and #7 share a 6" moulding.
