@@ -45,8 +45,8 @@ it("renders a turnout for inspection", () => {
 <line x1="${X(-0.3)}" y1="${Y(g / 2)}" x2="${X(L)}" y2="${Y(g / 2)}" stroke="#334" stroke-width="2"/>
 <polyline points="${railOf(1)}" fill="none" stroke="#334" stroke-width="2"/>
 <polyline points="${railOf(-1)}" fill="none" stroke="#334" stroke-width="2"/>
-<circle cx="${X(lead)}" cy="${Y(g)}" r="5" fill="none" stroke="#0284c7" stroke-width="2"/>
-<text x="40" y="410" font-family="sans-serif" font-size="15" fill="#334">#${N}  lead ${lead.toFixed(3)}"  span ${span.toFixed(3)}"  gauge ${g}"  (circle = frog)</text>
+<circle cx="${X(lead)}" cy="${Y(g / 2)}" r="5" fill="none" stroke="#0284c7" stroke-width="2"/>
+<text x="40" y="410" font-family="sans-serif" font-size="15" fill="#334">#${N}  lead ${lead.toFixed(3)}"  span ${span.toFixed(3)}"  gauge ${g}"  (circle = frog, at g/2 — where the inner rails cross)</text>
 </svg>`;
   mkdirSync(OUT, { recursive: true });
   writeFileSync(`${OUT}/turnout.svg`, svg);
