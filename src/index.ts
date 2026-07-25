@@ -134,6 +134,11 @@ export interface SchematicTurnout {
    * forces it: the body has nowhere to go but back toward the module, so the
    * derived facing comes out backwards. */
   flipped?: boolean | null;
+  /** The library part this turnout IS — e.g. "atlas-c55-n-7". Binds a drawn
+   * turnout to real geometry: with it the renderer can draw the part's own
+   * outline instead of a shape derived from `size`. Absent means "just a #N",
+   * which is what every turnout authored before the parts library was. */
+  partId?: string | null;
 }
 export interface SchematicSignal {
   id: string;
@@ -1404,6 +1409,8 @@ export interface EditorTurnout {
   size?: number;
   /** Rotate the turnout 180° — the points face the other way (#turnout-flip). */
   flipped?: boolean;
+  /** The library part this turnout IS — see SchematicTurnout.partId. */
+  partId?: string;
   /** A curved turnout — the diverging route bows into an arc rather than a
    * straight diagonal. Physical-render only (the operations view is topological). */
   curved?: boolean;
@@ -1822,6 +1829,7 @@ export function stateToDoc(
       ...(t.size ? { size: t.size } : {}),
       ...(t.curved ? { curved: true } : {}),
       ...(t.flipped ? { flipped: true } : {}),
+      ...(t.partId ? { partId: t.partId } : {}),
     })),
     ...(state.crossings.length > 0
       ? {
@@ -2061,6 +2069,7 @@ export function docToState(
       ...(t.size ? { size: t.size } : {}),
       ...(t.curved ? { curved: true } : {}),
       ...(t.flipped ? { flipped: true } : {}),
+      ...(t.partId ? { partId: t.partId } : {}),
     })),
     controlPoints: readControlPoints(d!, sc),
     industries: (d!.industries ?? []).map((ind) => ({
@@ -3056,6 +3065,79 @@ export function mergeImportedParts(
     if (!match.actualAngle && conv.actualAngle) match.actualAngle = conv.actualAngle;
   }
   return out;
+}
+
+/**
+ * A part's drawn outline in TURNOUT-LOCAL coordinates, ready for MR to map onto
+ * a lane: `x` = inches along the through route measured **from the frog**
+ * (negative back toward the points), `y` = lateral offset with the DIVERGING
+ * side positive. That is the same frame {@link turnoutClosure} works in, so a
+ * renderer can swap one for the other.
+ *
+ * ⚠️ **Anchored on OUR measured lead, not the file's frog.** The part is placed
+ * so its points sit `leadInches` back from the frog, because `pos` means the
+ * frog (#132) and our leads are physical measurements while the shipped Atlas
+ * `.xtp`'s frog positions are internally inconsistent. A consequence worth
+ * knowing: if the file's own geometry disagrees, its drawn V will not land on
+ * the frog marker — and that visible gap IS the validation. Don't "fix" it by
+ * anchoring on the file.
+ *
+ * Returns null when the part carries no geometry to draw.
+ */
+export function partOutlineAtFrog(
+  part: TrackPart,
+  leadInches: number,
+  stepsPerCurve = 16,
+): BenchworkPoint[][] | null {
+  const ends = part.ends ?? [];
+  const segs = part.segments ?? [];
+  if (!segs.length || ends.length < 2) return null;
+
+  // The two EXIT ends sit close together at the far end; the points end is the
+  // odd one out. More robust than assuming the file lists points first.
+  let points = ends[0];
+  if (ends.length >= 3) {
+    let bestPair = Infinity;
+    let pairIdx: [number, number] = [1, 2];
+    for (let i = 0; i < ends.length; i++) {
+      for (let j = i + 1; j < ends.length; j++) {
+        const d = Math.hypot(ends[i].x - ends[j].x, ends[i].y - ends[j].y);
+        if (d < bestPair) {
+          bestPair = d;
+          pairIdx = [i, j];
+        }
+      }
+    }
+    const odd = ends.findIndex((_, k) => k !== pairIdx[0] && k !== pairIdx[1]);
+    if (odd >= 0) points = ends[odd];
+  }
+
+  // Ends face OUTWARD, so the through direction is the inward normal. XTrkCAD
+  // headings run clockwise from north ⇒ the heading vector is (sin, cos).
+  const a = (points.angleDeg * Math.PI) / 180;
+  const ux = -Math.sin(a);
+  const uy = -Math.cos(a);
+  // Left-perpendicular, so `y` is a consistent lateral before we fix its sign.
+  const toLocal = (p: BenchworkPoint): BenchworkPoint => {
+    const dx = p.x - points.x;
+    const dy = p.y - points.y;
+    return { x: dx * ux + dy * uy, y: dx * -uy + dy * ux };
+  };
+
+  // Whichever exit end is off-axis is the diverging one; flip so it reads +y.
+  let sign = 1;
+  const offAxis = ends
+    .filter((e) => e !== points)
+    .map(toLocal)
+    .sort((p, q) => Math.abs(q.y) - Math.abs(p.y))[0];
+  if (offAxis && offAxis.y < 0) sign = -1;
+
+  return samplePartSegments(segs, stepsPerCurve).map((poly) =>
+    poly.map((p) => {
+      const l = toLocal(p);
+      return { x: l.x - leadInches, y: l.y * sign };
+    }),
+  );
 }
 
 /** A turnout's CLOSURE — the diverging route's lateral offset from the through

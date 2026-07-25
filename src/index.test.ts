@@ -69,6 +69,8 @@ import {
   importedPartToTrackPart,
   mergeImportedParts,
   frogNumberFromName,
+  partOutlineAtFrog,
+  type ImportedPart,
   type PartSegment,
   type ReturnLoopShape,
   type ModuleSchematicDoc,
@@ -222,6 +224,32 @@ describe("endplate face width (#per-endplate authoring)", () => {
 
     const bare = stateToDoc(emptyEditorState(96), "M");
     expect(bare.endplates.every((e) => e.widthInches === undefined)).toBe(true);
+  });
+
+  // Binds a drawn turnout to real part geometry. An unsaved field is how a doc
+  // contract addition silently fails, so both directions are pinned.
+  it("round-trips a turnout's partId, and omits it when absent", () => {
+    const base = emptyEditorState(96);
+    const turnout = {
+      id: "sw1",
+      pos: 24,
+      onTrack: MAIN_TRACK_ID,
+      divergeTrack: "sid1",
+      kind: "right" as const,
+      size: 7,
+    };
+    const withPart = stateToDoc(
+      { ...base, turnouts: [{ ...turnout, partId: "atlas-c55-n-7" }] },
+      "M",
+    );
+    expect(withPart.turnouts[0].partId).toBe("atlas-c55-n-7");
+    expect(docToState(withPart, 96).turnouts[0].partId).toBe("atlas-c55-n-7");
+
+    // A turnout that names no part stays bare — every turnout authored before
+    // the parts library existed is exactly that, and must not gain a key.
+    const bare = stateToDoc({ ...base, turnouts: [turnout] }, "M");
+    expect("partId" in bare.turnouts[0]).toBe(false);
+    expect(docToState(bare, 96).turnouts[0].partId).toBeUndefined();
   });
 
   it("round-trips authored widths through docToState (unscaled by length)", () => {
@@ -2473,6 +2501,55 @@ describe("parseXtpLibrary — importing an owner's OWN XTrkCAD library", () => {
       expect(frogNumberFromName("No. 5 Turnout")).toBe(5);
       expect(frogNumberFromName("Mark 3 Wye 280")).toBeUndefined();
       expect(frogNumberFromName(undefined)).toBeUndefined();
+    });
+
+    it("places a part's outline in frog-local coordinates", () => {
+      const merged = mergeImportedParts(parseXtpLibrary(sample), BUILT_IN_TRACK_PARTS);
+      const seven = merged.find((p) => p.id === "atlas-c55-n-7")!;
+      const lead = seven.lead!.inches; // 3.59375, MEASURED
+      const polys = partOutlineAtFrog(seven, lead)!;
+      expect(polys).toHaveLength(2);
+
+      // The fixture's first segment runs from the points along the through
+      // route, so it must start exactly one lead BEHIND the frog (x = 0).
+      const first = polys[0];
+      expect(first[0].x).toBeCloseTo(-lead, 6);
+      expect(first[0].y).toBeCloseTo(0, 6);
+      // ...and stay on the through route.
+      expect(first[first.length - 1].y).toBeCloseTo(0, 6);
+      // The part is 6" long, so nothing may run past 6 - lead beyond the frog.
+      for (const p of polys.flat()) {
+        expect(p.x).toBeGreaterThanOrEqual(-lead - 1e-6);
+        expect(p.x).toBeLessThanOrEqual(6 - lead + 1e-6);
+      }
+    });
+
+    // A left-hand and a right-hand part are mirror images in the file. Both must
+    // come out with the diverging side on +y, or one hand would draw inverted.
+    it("puts the diverging side on POSITIVE y regardless of the part's hand", () => {
+      const handed = (s: 1 | -1): ImportedPart => ({
+        title: "synthetic",
+        name: "#6 Switch",
+        ends: [
+          { x: 0, y: 0, angleDeg: 270 }, // points, facing back down -x
+          { x: 6, y: 0, angleDeg: 90 }, // through
+          { x: 6, y: 0.5 * s, angleDeg: 90 - 5 * s }, // diverging
+        ],
+        segments: [{ kind: "straight", x0: 0, y0: 0, x1: 6, y1: 0.5 * s }],
+      });
+      for (const s of [1, -1] as const) {
+        const t = importedPartToTrackPart(handed(s));
+        const pts = partOutlineAtFrog(t, 3)!.flat();
+        expect(Math.min(...pts.map((p) => p.y)), `hand ${s}`).toBeGreaterThan(-1e-9);
+        // Both hands land the diverging end at the SAME +y.
+        expect(pts[pts.length - 1].y, `hand ${s}`).toBeCloseTo(0.5, 9);
+        // ...and the lead shift is applied either way.
+        expect(pts[0].x, `hand ${s}`).toBeCloseTo(-3, 9);
+      }
+    });
+
+    it("returns null for a part with no imported geometry", () => {
+      expect(partOutlineAtFrog(trackPart("atlas-c55-n-5")!, 3)).toBeNull();
     });
 
     it("classifies wyes and crossings from the name", () => {
