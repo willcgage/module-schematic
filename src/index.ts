@@ -3422,7 +3422,14 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         // On the main centerline — the hand chooses above/below.
         const [from, to] = ext;
         const far = Math.abs(to - sw.pos) >= Math.abs(from - sw.pos) ? to : from;
-        const s = divergeSideForHand(sw.kind, far - sw.pos);
+        // ⚠️ `flipped` MUST be passed. Rotating a turnout 180° swaps the side
+        // its route leaves on — that is what divergeSideForHand's third
+        // argument is for. Omitting it made the operations view honour the
+        // author's HAND but silently ignore their FLIP, so a flipped turnout
+        // drew on opposite sides in the 2-D and the dispatcher views. The
+        // three authored facts — host track, hand, flip — must all reach the
+        // drawing, and both views must read them through THIS function.
+        const s = divergeSideForHand(sw.kind, far - sw.pos, sw.flipped);
         sign = s !== 0 ? s : Math.sign(trk.lane) || 1;
       } else {
         // Off Main 2 / a ladder rung — follow the parent's side.

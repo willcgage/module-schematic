@@ -2359,6 +2359,54 @@ describe("track parts library (#179 stage 3)", () => {
   });
 });
 
+describe("moduleFeatures honours the flip, not just the hand", () => {
+  const build = (flipped: boolean) =>
+    moduleFeatures({
+      moduleId: "M",
+      lengthInches: 96,
+      endplates: [
+        { id: "A", end: "A", config: "single" },
+        { id: "B", end: "B", config: "single" },
+      ],
+      tracks: [
+        { id: MAIN_TRACK_ID, role: "main", lane: 0 },
+        { id: "sid1", role: "siding", lane: 1, fromPos: 40, toPos: 70 },
+      ],
+      turnouts: [
+        {
+          id: "sw1",
+          pos: 40,
+          onTrack: MAIN_TRACK_ID,
+          divergeTrack: "sid1",
+          kind: "right",
+          size: 6,
+          ...(flipped ? { flipped: true } : {}),
+        },
+      ],
+    });
+
+  // An author sets three things: the host track, the hand, and the flip. All
+  // three must reach the drawing. The flip used to be dropped here, so the 2-D
+  // and the dispatcher put the same turnout's route on OPPOSITE sides.
+  it("a flipped turnout diverges to the other side", () => {
+    const plain = build(false).extraTracks.find((t) => t.id === "sid1")!;
+    const flip = build(true).extraTracks.find((t) => t.id === "sid1")!;
+    expect(Math.sign(plain.lane)).not.toBe(0);
+    expect(Math.sign(flip.lane)).toBe(-Math.sign(plain.lane));
+    // Only the SIDE changes — the track stays the same distance out.
+    expect(Math.abs(flip.lane)).toBe(Math.abs(plain.lane));
+  });
+
+  it("agrees with divergeSideForHand, which the 2-D view uses", () => {
+    for (const flipped of [false, true]) {
+      const lane = build(flipped).extraTracks.find((t) => t.id === "sid1")!.lane;
+      // sid1 runs 40 -> 70, so the far end is forward of the turnout.
+      const expected = divergeSideForHand("right", 30, flipped);
+      expect(Math.sign(lane), `flipped=${flipped}`).toBe(expected);
+    }
+  });
+});
+
 describe("turnoutClosure easement — arriving PARALLEL, not merely reaching", () => {
   const N = 7, LANE = 1.125, G = 0.354;
   const eased = turnoutClosure(N, { leadInches: 3.59375, arriveAtInches: LANE });
