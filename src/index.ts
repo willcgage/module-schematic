@@ -2603,12 +2603,27 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     lead: {
       inches: 3.375,
       source: "measured",
-      note: "Steve Branton, physical Atlas code 55 #7, 3⅜″ points→frog (#173)",
+      note:
+        "⚠️ DISPUTED — two measurers, ³⁄₁₆″ apart. Steve Branton measured 3⅜″ " +
+        "points→frog directly (#173). Will Gage's positions on the same part give " +
+        "4³⁄₁₆ − ⁵⁄₈ = 3⁹⁄₁₆″. Steve's is kept because it was taken as a single " +
+        "span; unresolved until someone re-reads one of them. The gap is bigger " +
+        "than the #5's and #10's residuals, so it is a real disagreement, not " +
+        "rounding.",
+    },
+    pointsOffset: {
+      inches: 0.625,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2052 (#7) — ¹⁰⁄₁₆″ tie end to point tips",
     },
     frogOffset: {
       inches: 4.1875,
       source: "measured",
-      note: "Will Gage, physical Atlas 2052 (#7) — tie end to the apex of the V",
+      note:
+        "Will Gage, physical Atlas 2052 (#7) — tie end to the apex of the V. " +
+        "⚠️ A later re-read was reported as '4 7/24″', which is not a fraction any " +
+        "tape carries; 4³⁄₁₆″ (the original reading) is retained pending a re-read. " +
+        "Candidates were 4³⁄₁₆, 4⁷⁄₃₂ and 4¼″.",
     },
     overallLength: {
       inches: 6.0,

@@ -2213,7 +2213,20 @@ describe("track parts library (#179 stage 3)", () => {
     expect(leadInchesForSize(10)).toBeCloseTo(4.9375, 6);
   });
 
+  // The #7 is the one part measured by two people, and they disagree by 3/16in.
+  // Pinned so the conflict can't be "resolved" by someone quietly editing one
+  // number — it needs a re-read of a physical part, not a code change.
+  it("the #7's lead is DISPUTED between two measurers", () => {
+    const p = trackPart("atlas-c55-n-7")!;
+    const fromPositions = p.frogOffset!.inches - p.pointsOffset!.inches;
+    expect(fromPositions).toBeCloseTo(3.5625, 6);
+    expect(p.lead!.inches).toBeCloseTo(3.375, 6);
+    expect(fromPositions - p.lead!.inches).toBeCloseTo(0.1875, 6);
+    expect(p.lead!.note).toMatch(/DISPUTED/);
+  });
+
   // lead is the difference of two measured positions, not an independent datum.
+  // The #7 is excluded ON PURPOSE — see the dispute test above.
   it("lead reconciles with the measured points and frog offsets", () => {
     for (const id of ["atlas-c55-n-5", "atlas-c55-n-10"]) {
       const p = trackPart(id)!;
