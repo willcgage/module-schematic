@@ -2472,17 +2472,20 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  * Atlas N-scale Code 55 — the Free-moN mainstay.
  *
  * ⚠️ Atlas do not publish leads or overall lengths for the straight turnouts.
- * Everything here traces to two physical measurements: Steve Branton's #7
- * (3⅜″ points→frog, #173) and Will Gage's #5 (6″ overall). The #5 and #10 leads
- * are still SCALED from the #7 by frog number and marked `derived` for exactly
- * that reason.
+ * Everything here traces to physical measurements: Steve Branton's #7 lead
+ * (3⅜″ points→frog, #173) and Will Gage's #5 and #10 overall lengths.
  *
  * TWO DIFFERENT BEHAVIOURS, don't conflate them:
  * - **Lead scales with N** (so far). #7 gives 0.482″/frog; a photo read of the
- *   #5 gives ~0.48. Two parts, consistent. The #10 is the real test — scaling
- *   error grows with N.
- * - **Overall length does NOT scale with N.** The #5 is 6″ and the longest part
- *   in the same batch (believed #10) is under 8″. Never extrapolate a length.
+ *   #5 gives ~0.48. Consistent — but ONLY checked at N=5 and N=7, which are too
+ *   close together for a bad rule to show. **No measured lead exists above N=7**,
+ *   so the #10's 4.82″ is the library's weakest number.
+ * - **Overall length does NOT scale with N.** #5 = 6.00″, #10 = 8.00″: double the
+ *   frog number buys 33% more length. Never extrapolate a length from N.
+ *
+ * ⭐ Both measured lengths are WHOLE INCHES, and the #5 diverges at exactly
+ * 1/32 of a circle. Atlas appear to design this line to a round sectional
+ * system rather than to prototype frog ratios. Testable: the #7 should be 7.00″.
  */
 export const ATLAS_CODE55_N: TrackPart[] = [
   {
@@ -2551,7 +2554,15 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     lead: {
       inches: 10 * TURNOUT_LEAD_INCHES_PER_FROG,
       source: "derived",
-      note: "scaled from the measured #7 by frog number — not measured",
+      note:
+        "scaled from the measured #7 by frog number — NOT measured, and this is " +
+        "the least trustworthy value in the library: the scaling rule is only " +
+        "checked at N=5 and N=7, and error grows with N. 4.82″ predicted.",
+    },
+    overallLength: {
+      inches: 8.0,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2054 (#10), end tie to end tie",
     },
     actualAngle: {
       deg: 5.74,
