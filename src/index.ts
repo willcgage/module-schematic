@@ -2472,10 +2472,17 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  * Atlas N-scale Code 55 — the Free-moN mainstay.
  *
  * ⚠️ Atlas do not publish leads or overall lengths for the straight turnouts.
- * The only hard datum is Steve Branton's measurement of a #7 (3⅜″ points→frog,
- * #173); the #5 and #10 leads are SCALED from it by frog number and are marked
- * `derived` for exactly that reason — they should be replaced with real
- * measurements when someone has the parts to hand.
+ * Everything here traces to two physical measurements: Steve Branton's #7
+ * (3⅜″ points→frog, #173) and Will Gage's #5 (6″ overall). The #5 and #10 leads
+ * are still SCALED from the #7 by frog number and marked `derived` for exactly
+ * that reason.
+ *
+ * TWO DIFFERENT BEHAVIOURS, don't conflate them:
+ * - **Lead scales with N** (so far). #7 gives 0.482″/frog; a photo read of the
+ *   #5 gives ~0.48. Two parts, consistent. The #10 is the real test — scaling
+ *   error grows with N.
+ * - **Overall length does NOT scale with N.** The #5 is 6″ and the longest part
+ *   in the same batch (believed #10) is under 8″. Never extrapolate a length.
  */
 export const ATLAS_CODE55_N: TrackPart[] = [
   {
@@ -2490,7 +2497,16 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     lead: {
       inches: 5 * TURNOUT_LEAD_INCHES_PER_FROG,
       source: "derived",
-      note: "scaled from the measured #7 by frog number — not measured",
+      note:
+        "scaled from the measured #7 by frog number — not measured, BUT now " +
+        "corroborated: a photo read of Will's physical 2050 puts points→frog at " +
+        "~2.4″, i.e. 0.48/frog against the #7's 0.482. Replace with a real " +
+        "measurement when someone puts a rule on it.",
+    },
+    overallLength: {
+      inches: 6.0,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2050 (#5 LH), end tie to end tie",
     },
     actualAngle: {
       deg: 11.25,
