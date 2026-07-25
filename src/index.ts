@@ -3170,11 +3170,38 @@ export interface TurnoutClosure {
   switchSlope: number;
   /** Slope at and beyond the frog — the frog angle, 1/N. */
   frogSlope: number;
+  /** Total run from the points to where the route arrives PARALLEL at
+   * `arriveAtInches`. Infinity when no target was given (the legacy
+   * straight-forever behaviour). Use this rather than solving for the offset:
+   * solving finds where the route REACHES the lane, not where it arrives
+   * parallel, and the difference is a visible kink. */
+  span: number;
+  /** Length of the easing curve, 0 when not easing. */
+  easeInches: number;
 }
 
 export function turnoutClosure(
   size: number,
-  opts: { leadInches?: number; gaugeInches?: number } = {},
+  opts: {
+    leadInches?: number;
+    gaugeInches?: number;
+    /**
+     * Lateral offset the diverging route must ARRIVE AT, PARALLEL — normally
+     * one lane spacing, i.e. the track it feeds.
+     *
+     * ⚠️ Without this the route runs straight at the frog angle forever, and a
+     * caller can only solve for where it first REACHES the offset. Reaching is
+     * not arriving: it gets there still climbing at 1/N while the track it
+     * joins runs parallel, so the two meet with an instantaneous change of
+     * direction. That KINK is what reads as "the rails don't line up" — each
+     * rail is offset perpendicular to its own heading, so at a kink the two
+     * rails meet at different points.
+     */
+    arriveAtInches?: number;
+    /** Length of the easing curve. Defaults to one lead, which puts the radius
+     * around 25″ on a #7 — clear of the Free-moN 22″ minimum. */
+    easeInches?: number;
+  } = {},
 ): TurnoutClosure {
   const N = size > 0 ? size : 6;
   const g = opts.gaugeInches ?? RAIL_GAUGE_INCHES;
@@ -3182,16 +3209,41 @@ export function turnoutClosure(
   const frogSlope = 1 / N;
   const k = (lead / N - g) / (lead * lead);
   const switchSlope = Math.max(0, frogSlope - 2 * k * lead);
+
+  // Post-frog profile. Straight at the frog angle for `a`, then ease the slope
+  // from 1/N to ZERO over `b`, arriving parallel at the target.
+  //   straight gains  m·a        ease gains  m·b/2   (parabolic, slope m → 0)
+  const target = opts.arriveAtInches;
+  let a = Infinity;
+  let b = 0;
+  if (target != null && target > g) {
+    b = Math.max(0.01, opts.easeInches ?? lead);
+    a = (target - g) / frogSlope - b / 2;
+    if (a < 0) {
+      // Too close to ease over a full lead — shorten the ease instead of
+      // starting it before the frog, which would move the crossing.
+      a = 0;
+      b = (2 * (target - g)) / frogSlope;
+    }
+  }
+  const span = target != null && target > g ? lead + a + b : Infinity;
+
   return {
     lead,
     switchSlope,
     frogSlope,
-    // Past the frog the route is straight at the frog angle — the closure curve
-    // has done its work, so don't keep bending (that's the tangent Option 1).
-    offsetAt: (s: number) =>
-      s <= lead
-        ? switchSlope * s + k * s * s
-        : g + frogSlope * (s - lead),
+    span,
+    easeInches: b,
+    offsetAt: (s: number) => {
+      if (s <= lead) return switchSlope * s + k * s * s;
+      const past = s - lead;
+      if (past <= a) return g + frogSlope * past;
+      if (target == null) return g + frogSlope * past;
+      const u = Math.min(past - a, b);
+      // slope m at u=0 falling linearly to 0 at u=b
+      const eased = g + frogSlope * a + frogSlope * u - (frogSlope * u * u) / (2 * b);
+      return past - a >= b ? target : eased;
+    },
   };
 }
 

@@ -12,8 +12,9 @@ it("renders a turnout for inspection", () => {
   const S = 90;            // px per inch
   const g = RAIL_GAUGE_INCHES;
   const lead = leadInchesForSize(N);
-  const cl = turnoutClosure(N, { leadInches: lead });
-  const span = lead + (1.125 - g) * N;   // as frogLegOf solves it
+  const LANE_IN = 1.125;
+  const cl = turnoutClosure(N, { leadInches: lead, arriveAtInches: LANE_IN });
+  const span = cl.span;
   const L = span + 2;
   const X = (i: number) => 40 + i * S;
   const Y = (o: number) => 200 + o * S;
@@ -41,7 +42,7 @@ it("renders a turnout for inspection", () => {
 
   // The diverging TRACK's body, as MR draws it: parallel to the main at one
   // lane spacing, beginning where the leg ends. This is the join under test.
-  const LANE = 1.125;
+  const LANE = LANE_IN;
   const bodyRail = (side: 1 | -1) =>
     `${X(span)},${Y(LANE + (side * g) / 2)} ${X(L)},${Y(LANE + (side * g) / 2)}`;
 
@@ -54,7 +55,7 @@ it("renders a turnout for inspection", () => {
 <line x1="${bodyRail(1).split(" ")[0].split(",")[0]}" y1="${bodyRail(1).split(" ")[0].split(",")[1]}" x2="${bodyRail(1).split(" ")[1].split(",")[0]}" y2="${bodyRail(1).split(" ")[1].split(",")[1]}" stroke="#a33" stroke-width="2"/>
 <line x1="${bodyRail(-1).split(" ")[0].split(",")[0]}" y1="${bodyRail(-1).split(" ")[0].split(",")[1]}" x2="${bodyRail(-1).split(" ")[1].split(",")[0]}" y2="${bodyRail(-1).split(" ")[1].split(",")[1]}" stroke="#a33" stroke-width="2"/>
 <circle cx="${X(lead)}" cy="${Y(g / 2)}" r="5" fill="none" stroke="#0284c7" stroke-width="2"/>
-<text x="40" y="410" font-family="sans-serif" font-size="15" fill="#334">#${N}  lead ${lead.toFixed(3)}"  span ${span.toFixed(3)}"  gauge ${g}"  (blue = frog; RED = the diverging track body, drawn parallel at one lane)</text>
+<text x="40" y="410" font-family="sans-serif" font-size="15" fill="#334">#${N}  lead ${lead.toFixed(3)}"  span ${span.toFixed(3)}"  gauge ${g}"  ease ${cl.easeInches.toFixed(2)}" R~${(cl.easeInches / cl.frogSlope).toFixed(0)}"  (RED = the track it joins)</text>
 </svg>`;
   mkdirSync(OUT, { recursive: true });
   writeFileSync(`${OUT}/turnout.svg`, svg);

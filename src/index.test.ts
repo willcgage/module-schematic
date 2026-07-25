@@ -2359,6 +2359,69 @@ describe("track parts library (#179 stage 3)", () => {
   });
 });
 
+describe("turnoutClosure easement — arriving PARALLEL, not merely reaching", () => {
+  const N = 7, LANE = 1.125, G = 0.354;
+  const eased = turnoutClosure(N, { leadInches: 3.59375, arriveAtInches: LANE });
+
+  it("arrives exactly at the target offset", () => {
+    expect(eased.offsetAt(eased.span)).toBeCloseTo(LANE, 9);
+  });
+
+  // THE WHOLE POINT. Reaching the lane while still climbing at 1/N is the kink
+  // that read as misaligned rails; the slope must be ZERO on arrival.
+  it("arrives with zero slope", () => {
+    const e = 1e-4;
+    const slope = (eased.offsetAt(eased.span) - eased.offsetAt(eased.span - e)) / e;
+    expect(slope).toBeCloseTo(0, 4);
+    // ...where the un-eased profile is still at the full frog angle.
+    const plain = turnoutClosure(N, { leadInches: 3.59375 });
+    const reach = 3.59375 + (LANE - G) * N;
+    const s2 = (plain.offsetAt(reach) - plain.offsetAt(reach - e)) / e;
+    expect(s2).toBeCloseTo(1 / N, 4);
+  });
+
+  it("keeps the frog exactly where it was — the crossing must not move", () => {
+    const plain = turnoutClosure(N, { leadInches: 3.59375 });
+    for (const s of [0, 0.5, 1.5, 3.0, 3.59375]) {
+      expect(eased.offsetAt(s), `s=${s}`).toBeCloseTo(plain.offsetAt(s), 9);
+    }
+    expect(eased.offsetAt(eased.lead)).toBeCloseTo(G, 9);
+  });
+
+  it("is monotonic and never overshoots the target", () => {
+    let prev = -1;
+    for (let s = 0; s <= eased.span + 1; s += 0.05) {
+      const o = eased.offsetAt(s);
+      expect(o, `s=${s}`).toBeGreaterThanOrEqual(prev - 1e-9);
+      expect(o, `s=${s}`).toBeLessThanOrEqual(LANE + 1e-9);
+      prev = o;
+    }
+  });
+
+  it("costs length — the route needs room to come back parallel", () => {
+    expect(eased.span).toBeGreaterThan(3.59375 + (LANE - G) * N);
+    expect(eased.span).toBeCloseTo(10.788, 2);
+    // Radius stays clear of the Free-moN 22in main minimum.
+    expect(eased.easeInches / eased.frogSlope).toBeGreaterThan(22);
+  });
+
+  it("shortens the ease rather than starting it before the frog", () => {
+    // A target barely past the gauge cannot absorb a full-lead ease; moving the
+    // ease earlier would shift the crossing, so `b` shrinks instead.
+    const tight = turnoutClosure(N, { leadInches: 3.59375, arriveAtInches: G + 0.05 });
+    expect(tight.offsetAt(tight.lead)).toBeCloseTo(G, 9);
+    expect(tight.offsetAt(tight.span)).toBeCloseTo(G + 0.05, 9);
+    expect(tight.easeInches).toBeLessThan(3.59375);
+  });
+
+  it("without a target, behaves exactly as before", () => {
+    const plain = turnoutClosure(N, { leadInches: 3.59375 });
+    expect(plain.span).toBe(Infinity);
+    expect(plain.easeInches).toBe(0);
+    expect(plain.offsetAt(20)).toBeCloseTo(G + (20 - 3.59375) / N, 9);
+  });
+});
+
 describe("parseXtpLibrary — importing an owner's OWN XTrkCAD library", () => {
   // A verbatim excerpt of the .xtp record shape (an owner supplies the file;
   // we redistribute none of it).
