@@ -2190,7 +2190,7 @@ describe("track parts library (#179 stage 3)", () => {
       source: "measured",
     });
     expect(trackPart("atlas-c55-n-10")!.lead).toMatchObject({
-      inches: 4.1875,
+      inches: 4.9375,
       source: "measured",
     });
     expect(trackPart("atlas-c55-n-wye")!.lead!.source).toBe("derived");
@@ -2205,25 +2205,49 @@ describe("track parts library (#179 stage 3)", () => {
     };
     expect(perFrog("atlas-c55-n-5")).toBeCloseTo(0.6, 3);
     expect(perFrog("atlas-c55-n-7")).toBeCloseTo(0.482, 3);
-    expect(perFrog("atlas-c55-n-10")).toBeCloseTo(0.419, 3);
-    // Monotonically falling — not noise around a constant.
-    expect(perFrog("atlas-c55-n-5")).toBeGreaterThan(perFrog("atlas-c55-n-7"));
-    expect(perFrog("atlas-c55-n-7")).toBeGreaterThan(perFrog("atlas-c55-n-10"));
-    // The rule reads SHORT at N=5 and LONG at N=10. Both pinned, because a rule
-    // that erred one way could at least be corrected with a fudge factor.
+    expect(perFrog("atlas-c55-n-10")).toBeCloseTo(0.494, 3);
+    // Reads ~20% SHORT at N=5, so no fudge factor rescues it.
     expect(5 * TURNOUT_LEAD_INCHES_PER_FROG).toBeLessThan(3.0 * 0.85);
-    expect(10 * TURNOUT_LEAD_INCHES_PER_FROG).toBeGreaterThan(4.1875 * 1.1);
     // ...so leadInchesForSize must return the PART, never the rule.
     expect(leadInchesForSize(5)).toBeCloseTo(3.0, 6);
-    expect(leadInchesForSize(10)).toBeCloseTo(4.1875, 6);
+    expect(leadInchesForSize(10)).toBeCloseTo(4.9375, 6);
   });
 
-  // The pattern that survived: Atlas fix the frog and move the points.
-  it("both fully measured parts put the frog 4.75in from the tie end", () => {
+  // lead is the difference of two measured positions, not an independent datum.
+  it("lead reconciles with the measured points and frog offsets", () => {
     for (const id of ["atlas-c55-n-5", "atlas-c55-n-10"]) {
       const p = trackPart(id)!;
-      expect(p.pointsOffset!.inches + p.lead!.inches, id).toBeCloseTo(4.75, 6);
+      expect(p.frogOffset!.inches - p.pointsOffset!.inches, id).toBeCloseTo(
+        p.lead!.inches,
+        6,
+      );
     }
+  });
+
+  // The frogs are at 4.75 / 4 3/16 / 5.5 — the "fixed at 4.75in" model shipped in
+  // 0.54.0 came from measuring the #10 to the frog CASTING END, not the V.
+  it("the frog is NOT at a fixed offset", () => {
+    const offsets = ["atlas-c55-n-5", "atlas-c55-n-7", "atlas-c55-n-10"].map(
+      (id) => trackPart(id)!.frogOffset!.inches,
+    );
+    expect(new Set(offsets).size).toBe(3);
+  });
+
+  // The pattern that currently fits: the moulding runs past the frog far enough
+  // to gain a constant ~0.25in of separation. Predicts the FROG, not the lead.
+  // Asserted at the strength the evidence actually has — two exact, one near.
+  it("every part runs past the frog for ~0.25in of extra separation", () => {
+    const past = (id: string) => {
+      const p = trackPart(id)!;
+      return (p.overallLength!.inches - p.frogOffset!.inches) / p.frogNumber!;
+    };
+    expect(past("atlas-c55-n-5")).toBeCloseTo(0.25, 6);
+    expect(past("atlas-c55-n-10")).toBeCloseTo(0.25, 6);
+    // The #7 is the near miss: 0.2589, out by 1/16in of tie end. A 4 1/4in frog
+    // would make it exact. Pinned loosely ON PURPOSE — tightening this without a
+    // re-measurement would be asserting a rule the parts have not yet earned.
+    expect(past("atlas-c55-n-7")).toBeCloseTo(0.25, 1);
+    expect(past("atlas-c55-n-7")).not.toBeCloseTo(0.25, 2);
   });
 
   // Overall length isn't a function of N either: #5 and #7 share a 6" moulding.
