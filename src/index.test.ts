@@ -2180,12 +2180,48 @@ describe("track parts library (#179 stage 3)", () => {
     }
   });
 
-  it("only the #7 lead is MEASURED — the others are honestly marked derived", () => {
+  it("the #7 and #10 leads are MEASURED — the others are honestly marked derived", () => {
     const seven = trackPart("atlas-c55-n-7")!;
     expect(seven.lead!.source).toBe("measured");
     expect(seven.lead!.inches).toBeCloseTo(3.375, 6);
+    const ten = trackPart("atlas-c55-n-10")!;
+    expect(ten.lead!.source).toBe("measured");
+    expect(ten.lead!.inches).toBeCloseTo(4.1875, 6);
     expect(trackPart("atlas-c55-n-5")!.lead!.source).toBe("derived");
-    expect(trackPart("atlas-c55-n-10")!.lead!.source).toBe("derived");
+    expect(trackPart("atlas-c55-n-wye")!.lead!.source).toBe("derived");
+  });
+
+  // The whole reason the library exists. Two measured leads disagree about
+  // lead-per-frog by 13%, so nothing may reconstruct a lead by multiplying.
+  it("lead is NOT proportional to frog number", () => {
+    const seven = trackPart("atlas-c55-n-7")!;
+    const ten = trackPart("atlas-c55-n-10")!;
+    const perFrog = (p: TrackPart) => p.lead!.inches / p.frogNumber!;
+    expect(perFrog(seven)).toBeCloseTo(0.482, 3);
+    expect(perFrog(ten)).toBeCloseTo(0.419, 3);
+    // The per-frog rule reads LONG at N=10 — this is the refutation, pinned.
+    expect(10 * TURNOUT_LEAD_INCHES_PER_FROG).toBeGreaterThan(ten.lead!.inches * 1.1);
+    // ...so leadInchesForSize must return the PART, never the rule, for a #10.
+    expect(leadInchesForSize(10)).toBeCloseTo(4.1875, 6);
+  });
+
+  // Overall length isn't a function of N either: #5 and #7 share a 6" moulding.
+  it("overall length is not a function of frog number", () => {
+    expect(trackPart("atlas-c55-n-5")!.overallLength!.inches).toBe(6);
+    expect(trackPart("atlas-c55-n-7")!.overallLength!.inches).toBe(6);
+    expect(trackPart("atlas-c55-n-10")!.overallLength!.inches).toBe(8);
+  });
+
+  // The working turnout starts partway into its moulding; the rest is approach
+  // track. A part must never be treated as if its points sat at the tie end.
+  it("the #10's points sit 9/16in inside the tie strip", () => {
+    const ten = trackPart("atlas-c55-n-10")!;
+    expect(ten.pointsOffset!.inches).toBeCloseTo(0.5625, 6);
+    expect(ten.pointsOffset!.source).toBe("measured");
+    // Points + lead must land the frog inside the part, not past its end.
+    expect(ten.pointsOffset!.inches + ten.lead!.inches).toBeLessThan(
+      ten.overallLength!.inches,
+    );
   });
 
   it("carries the curved turnout's published radii", () => {

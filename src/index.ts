@@ -2389,11 +2389,28 @@ export interface ModuleFeatures {
  */
 /** N-scale track gauge, inches (9 mm). */
 export const RAIL_GAUGE_INCHES = 0.354;
-/** Points → FROG for a #1 frog, inches — a turnout's LEAD, scaled by frog
- * number. Calibrated COMMERCIALLY rather than on the prototype, since owners lay
- * real product: an Atlas code 55 #7 measures 3⅜″ points→frog (Steve Branton,
- * #173) ⇒ 3.375 / 7. (The prototype #7 lead is 62′-1″ ≈ 4.66″ in N; commercial
- * turnouts are compressed against that.) */
+/**
+ * ⚠️ **REFUTED AS A GENERAL RULE — LAST RESORT ONLY.** Points→frog for a #1
+ * frog, i.e. a turnout's LEAD if lead were proportional to frog number. From an
+ * Atlas code 55 #7 measuring 3⅜″ (Steve Branton, #173) ⇒ 3.375 / 7.
+ *
+ * It is NOT proportional. Measured lead ÷ N: **#7 = 0.482, #10 = 0.419.** The
+ * rule predicted 4.82″ for the #10; it measures 4³⁄₁₆″ — **13% over**. Atlas
+ * compress the lead on long turnouts, just as they compress overall length.
+ *
+ * Prefer {@link leadInchesForSize}, which returns a real part's measurement when
+ * one exists and only falls back here for sizes nothing in the library covers.
+ * A fallback at N ≥ 10 will read LONG.
+ *
+ * BETTER MODEL (hypothesis, not yet enough data): a roughly CONSTANT SWITCH
+ * ANGLE α — the angle the point rails leave the stock rail at — which is real
+ * prototype practice, points being planed to a standard angle. Inverting
+ * {@link turnoutClosure} gives `lead = 2g / (1/N + α)`, and the two measured
+ * leads agree to 3%: #7 ⇒ α = 0.0669, #10 ⇒ α = 0.0691. If it holds, lead is
+ * whatever falls out of a fixed point angle meeting the frog, not a multiple
+ * of N. DISCRIMINATING TEST: at α ≈ 0.068 the #5's lead is **2.64″**, where
+ * this constant says 2.41″ — measure a physical 2050 to settle it.
+ */
 export const TURNOUT_LEAD_INCHES_PER_FROG = 0.482;
 
 // ---- Track parts library (#179 stage 3) ------------------------------------
@@ -2454,6 +2471,10 @@ export interface TrackPart {
   actualAngle?: PartAngle;
   /** Points → frog. The number that decides where a turnout's throat lands. */
   lead?: PartDimension;
+  /** End of the tie strip → the point tips. Where the working turnout starts
+   * inside its moulding; the rest of that end is plain approach track. Needed to
+   * fit a part into a space, and by any renderer drawing the real outline. */
+  pointsOffset?: PartDimension;
   /** End-to-end length of the part. */
   overallLength?: PartDimension;
   /** Diverging route radius (straight turnouts). */
@@ -2473,13 +2494,15 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  *
  * ⚠️ Atlas do not publish leads or overall lengths for the straight turnouts.
  * Everything here traces to physical measurements: Steve Branton's #7 lead
- * (3⅜″ points→frog, #173) and Will Gage's #5 and #10 overall lengths.
+ * (3⅜″ points→frog, #173) and Will Gage's #5/#7/#10 overall lengths plus the
+ * #10's lead and points offset. The #5's lead and the wye's are still derived.
  *
- * TWO DIFFERENT BEHAVIOURS, don't conflate them:
- * - **Lead scales with N** (so far). #7 gives 0.482″/frog; a photo read of the
- *   #5 gives ~0.48. Consistent — but ONLY checked at N=5 and N=7, which are too
- *   close together for a bad rule to show. **No measured lead exists above N=7**,
- *   so the #10's 4.82″ is the library's weakest number.
+ * NEITHER DIMENSION IS PROPORTIONAL TO FROG NUMBER. Both rules that assumed so
+ * have now been tested and failed:
+ * - **Lead does NOT scale with N.** Measured lead ÷ N: #7 = 0.482, #10 = 0.419.
+ *   {@link TURNOUT_LEAD_INCHES_PER_FROG} predicted 4.82″ for the #10 against a
+ *   measured 4³⁄₁₆″ — 13% over. See that constant for the constant-switch-angle
+ *   model that fits both measurements, and the test that would confirm it.
  * - ⭐ **Overall length is NOT A FUNCTION OF N AT ALL.** Measured: #5 = 6.00″,
  *   **#7 = 6.00″**, #10 = 8.00″. The #5 and #7 are the SAME LENGTH — Atlas mould
  *   them on a shared 6″ tie strip and vary only the frog angle and where the frog
@@ -2567,12 +2590,17 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     partNumbers: { left: "2054", right: "2055" },
     frogNumber: 10,
     lead: {
-      inches: 10 * TURNOUT_LEAD_INCHES_PER_FROG,
-      source: "derived",
+      inches: 4.1875,
+      source: "measured",
       note:
-        "scaled from the measured #7 by frog number — NOT measured, and this is " +
-        "the least trustworthy value in the library: the scaling rule is only " +
-        "checked at N=5 and N=7, and error grows with N. 4.82″ predicted.",
+        "Will Gage, physical Atlas 2054 (#10): points at 9/16″ from the end, frog " +
+        "at 4.75″ ⇒ 4³⁄₁₆″. THIS IS THE MEASUREMENT THAT REFUTED the lead-per-frog " +
+        "rule — it predicted 4.82″, 13% over.",
+    },
+    pointsOffset: {
+      inches: 0.5625,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2054 (#10) — end of tie strip to point tips",
     },
     overallLength: {
       inches: 8.0,
