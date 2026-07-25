@@ -1407,6 +1407,86 @@ describe("manual pose overrides (#175 phase 1b)", () => {
     expect(docToState(doc, 120).poseOverrides).toEqual({ B: { x: 40, y: -30, heading: 300 } });
   });
 
+  it("an UNFLAGGED pose on A/B is derived residue — ignored, so the plate keeps following the module (#182)", () => {
+    // Exactly FMN-0068's stored shape: a straight 47.9″ board that picked up
+    // poses for A and B. B's was written when the board was 48″ and never
+    // followed it down, which is the whole failure — honouring it pins the
+    // plate 0.1″ past its own end.
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 47.9,
+      endplates: [
+        { id: "A", pose: { x: 0, y: 0, heading: 180 } },
+        { id: "B", pose: { x: 48, y: 0, heading: 0 } },
+      ],
+      tracks: [{ id: "main", role: "main", lane: 0, from: "A", to: "B" }],
+    };
+    expect(poseOverridesFromDoc(doc)).toEqual({});
+
+    const poses = deriveEndplatePoses({
+      lengthInches: 47.9,
+      geometryType: "straight",
+      poseOverrides: poseOverridesFromDoc(doc),
+    });
+    const b = poses.find((p) => p.id === "B")!;
+    expect(b.x).toBe(47.9); // follows the module, not pinned at the stale 48
+    expect(b.manual).toBeUndefined();
+  });
+
+  it("an OFF-AXIS pose on B counts as authored even without the flag (old docs)", () => {
+    // A wye's B is hand-placed off the axis — that's WHY it needed placing, and
+    // derivation could never have produced it. Free-Dispatcher's footprint
+    // compositor relies on this.
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 100,
+      endplates: [{ id: "A" }, { id: "B", pose: { x: 10, y: 90, heading: 90 } }],
+      tracks: [{ id: "main", role: "main", lane: 0 }],
+    };
+    expect(poseOverridesFromDoc(doc)).toEqual({ B: { x: 10, y: 90, heading: 90 } });
+  });
+
+  it("an AUTHORED pose still overrides — the capability is intact", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 47.9,
+      endplates: [
+        { id: "A" },
+        { id: "B", pose: { x: 48, y: 3, heading: 10 }, poseAuthored: true },
+      ],
+      tracks: [{ id: "main", role: "main", lane: 0, from: "A", to: "B" }],
+    };
+    expect(poseOverridesFromDoc(doc)).toEqual({ B: { x: 48, y: 3, heading: 10 } });
+  });
+
+  it("a PLACED branch endplate keeps its pose with or without the flag", () => {
+    // Its pose IS its placement — there's nothing to derive it from — and docs
+    // written before the flag existed must keep working.
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 47.9,
+      endplates: [
+        { id: "A" },
+        { id: "B" },
+        { id: "C", at: { pos: 12, side: "up" }, pose: { x: 12, y: 12, heading: 90 } },
+      ],
+      tracks: [{ id: "main", role: "main", lane: 0, from: "A", to: "B" }],
+    };
+    expect(poseOverridesFromDoc(doc)).toEqual({ C: { x: 12, y: 12, heading: 90 } });
+  });
+
+  it("saving marks an override authored, so a healed doc can't re-pin itself", () => {
+    const doc = stateToDoc(
+      { ...emptyEditorState(120), poseOverrides: { B: { x: 40, y: -30, heading: 300 } } },
+      "M",
+    );
+    expect(doc.endplates.find((e) => e.id === "B")?.poseAuthored).toBe(true);
+    // …and a plate with no override gains neither field.
+    expect(doc.endplates.find((e) => e.id === "A")?.poseAuthored).toBeUndefined();
+    // Round-trips: an authored override survives save → load → save.
+    expect(poseOverridesFromDoc(doc)).toEqual({ B: { x: 40, y: -30, heading: 300 } });
+  });
+
   it("deriveEndplatePoses honours the doc's overrides via poseOverridesFromDoc", () => {
     const doc = stateToDoc(
       { ...emptyEditorState(100), poseOverrides: { B: { x: 10, y: 90, heading: 90 } } },

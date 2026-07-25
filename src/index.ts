@@ -38,6 +38,19 @@ export interface SchematicEndplate {
    * the geometry fields can't derive (wye, freeform, loop); wins over
    * deriveEndplatePoses' derivation. */
   pose?: { x: number; y: number; heading: number };
+  /** Whether that pose was AUTHORED — placed or typed by the owner — rather
+   * than a derived one that found its way into the doc (#182).
+   *
+   * Authorship used to be inferred from `pose` merely existing, so a derived
+   * pose written back silently PINNED the plate: it stopped following the
+   * module and went stale the moment the length changed (FMN-0068 ended up with
+   * endplate B at x=48 on a 47.9″ board). A pose is only an override when the
+   * owner meant it.
+   *
+   * Absent on A/B = derived residue, ignored. Absent on a placed branch
+   * endplate (one with `at`) = still authored — placing it IS the gesture, and
+   * docs predate this flag. */
+  poseAuthored?: boolean;
   /** Free-moN endplate FACE width across the track, inches — the physical size
    * of the standard interface at this end. Free-moN spec: 12″ minimum, 24″
    * recommended. Absent = the recommended default (modules may differ end to
@@ -1718,8 +1731,13 @@ function withPoses(
   endplates: SchematicEndplate[],
   overrides: Record<string, { x: number; y: number; heading: number }>,
 ): SchematicEndplate[] {
+  // Everything in the map is an override the owner placed or typed — a derived
+  // pose never enters it (poseOverridesFromDoc filters those out on the way in),
+  // so it's safe to mark every one authored. That's what stops a derived pose
+  // round-tripping into a silent pin, and it cleans an already-affected doc the
+  // next time its owner saves (#182).
   return endplates.map((e) =>
-    overrides[e.id] ? { ...e, pose: overrides[e.id] } : e,
+    overrides[e.id] ? { ...e, pose: overrides[e.id], poseAuthored: true } : e,
   );
 }
 
@@ -4272,6 +4290,15 @@ export function poseNeedsManual(geometryType?: string | null): boolean {
   return geometryType === "wye" || geometryType === "other";
 }
 
+/** Whether a pose sits on the module's own axis — on the centre line, facing
+ * straight out either end. That's the shape plain derivation produces for A and
+ * B, so an unflagged axial pose can't be told apart from derived residue (#182).
+ * Anything off-axis had to be put there by hand. */
+function isAxialPose(p: { y: number; heading: number }): boolean {
+  const h = norm360(p.heading);
+  return Math.abs(p.y) < 1e-6 && (Math.abs(h) < 1e-6 || Math.abs(h - 180) < 1e-6);
+}
+
 /** Extract manual pose overrides from a schematic doc's endplates (#175 phase
  * 1b) — the map deriveEndplatePoses / a footprint solver feeds as overrides. */
 export function poseOverridesFromDoc(
@@ -4284,7 +4311,20 @@ export function poseOverridesFromDoc(
       e.pose &&
       typeof e.pose.x === "number" &&
       typeof e.pose.y === "number" &&
-      typeof e.pose.heading === "number"
+      typeof e.pose.heading === "number" &&
+      // Only an AUTHORED pose overrides derivation (#182) — but docs written
+      // before the flag existed have to keep working, so authorship is inferred
+      // for the two cases that can only BE authored:
+      //   · a placed branch endplate (`at`) — dropping it on the board is the
+      //     gesture, and it has no derivable position at all;
+      //   · an OFF-AXIS pose on A/B — a hand-placed plate is off-axis by
+      //     definition (that's why it needed hand placing, e.g. a wye's B).
+      // What's left is an axial A/B pose, which is exactly the shape plain
+      // derivation produces — residue. Honouring it silently pins the plate so
+      // it stops following the module and goes stale (FMN-0068's B sat at 48 on
+      // a 47.9″ board). Anything saved from now on carries the flag, so this
+      // guesswork only ever applies to old docs.
+      (e.poseAuthored === true || !!e.at || !isAxialPose(e.pose))
     ) {
       out[e.id] = { x: e.pose.x, y: e.pose.y, heading: e.pose.heading };
     }
