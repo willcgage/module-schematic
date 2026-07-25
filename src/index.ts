@@ -2480,12 +2480,20 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  *   #5 gives ~0.48. Consistent — but ONLY checked at N=5 and N=7, which are too
  *   close together for a bad rule to show. **No measured lead exists above N=7**,
  *   so the #10's 4.82″ is the library's weakest number.
- * - **Overall length does NOT scale with N.** #5 = 6.00″, #10 = 8.00″: double the
- *   frog number buys 33% more length. Never extrapolate a length from N.
+ * - ⭐ **Overall length is NOT A FUNCTION OF N AT ALL.** Measured: #5 = 6.00″,
+ *   **#7 = 6.00″**, #10 = 8.00″. The #5 and #7 are the SAME LENGTH — Atlas mould
+ *   them on a shared 6″ tie strip and vary only the frog angle and where the frog
+ *   sits. NEVER derive a length from a frog number; look the part up.
  *
- * ⭐ Both measured lengths are WHOLE INCHES, and the #5 diverges at exactly
- * 1/32 of a circle. Atlas appear to design this line to a round sectional
- * system rather than to prototype frog ratios. Testable: the #7 should be 7.00″.
+ * This is what the frog-number definition actually says, and it's easy to forget:
+ * #N fixes the DIVERGENCE RATE AT THE FROG (1 across per N along). It says
+ * nothing about how much tie strip the manufacturer wraps around it. Angle is
+ * geometry; length is packaging. Hence the lead — where the frog falls inside
+ * that strip — is the only dimension worth chasing.
+ *
+ * (Lengths are whole inches and the #5 diverges at exactly 1/32 of a circle, so
+ * Atlas do seem to work to round numbers — but a prediction that the #7 would
+ * therefore be 7.00″ was tested and FAILED. Round, but not one inch per frog.)
  */
 export const ATLAS_CODE55_N: TrackPart[] = [
   {
@@ -2533,6 +2541,13 @@ export const ATLAS_CODE55_N: TrackPart[] = [
       inches: 3.375,
       source: "measured",
       note: "Steve Branton, physical Atlas code 55 #7, 3⅜″ points→frog (#173)",
+    },
+    overallLength: {
+      inches: 6.0,
+      source: "measured",
+      note:
+        "Will Gage, physical Atlas 2052 (#7), end tie to end tie — the SAME 6″ " +
+        "as the #5, which is what proves length is not a function of frog number",
     },
     actualAngle: {
       deg: 8.13,
