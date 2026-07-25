@@ -2390,18 +2390,24 @@ export interface ModuleFeatures {
 /** N-scale track gauge, inches (9 mm). */
 export const RAIL_GAUGE_INCHES = 0.354;
 /**
- * ⚠️ **REFUTED AS A GENERAL RULE — LAST RESORT ONLY.** Points→frog for a #1
- * frog, i.e. a turnout's LEAD if lead were proportional to frog number. From an
- * Atlas code 55 #7 measuring 3⅜″ (Steve Branton, #173) ⇒ 3.375 / 7.
+ * ⚠️⚠️ **DEAD — REFUTED *AND* BASELESS. NOTHING SHOULD REACH THIS.** Kept only
+ * so a library with no measured leads at all still returns a number, and as a
+ * record of how the mistake was made.
  *
- * It is NOT proportional. Measured lead ÷ N: **#5 = 0.600, #7 = 0.482,
- * #10 = 0.494.** This rule reads ~20% SHORT at N=5 (2.41″ vs a measured 3.00″).
+ * It was points→frog for a #1 frog: a turnout's LEAD if lead were proportional
+ * to frog number, from an Atlas #7 measuring 3⅜″ (Steve Branton, #173) ⇒
+ * 3.375 / 7.
  *
- * Prefer {@link leadInchesForSize}, which returns a real part's measurement when
- * one exists and only falls back here for sizes nothing in the library covers.
- * ⚠️ The remaining fallback user is the #2.5 wye at 1.21″; since per-frog is
- * HIGHEST at the low end (0.600 at N=5), that is very likely SHORT. It is a
- * placeholder, not a value.
+ * TWO independent things are wrong with it:
+ * 1. **Lead is not proportional to N.** Measured lead ÷ N: #5 = 0.600,
+ *    #7 = 0.513, #10 = 0.494. It reads ~20% SHORT at N=5.
+ * 2. **Its founding measurement was superseded.** Will Gage re-measured the same
+ *    part at 3¹⁹⁄₃₂″, ⁷⁄₃₂″ longer, confirmed against his own points and frog
+ *    positions. So 0.482 is not even the right constant for the wrong model.
+ *
+ * {@link leadInchesForSize} now INTERPOLATES across the measured parts instead.
+ * A single measurement can only ever be scaled — which is this rule — so the
+ * lesson is that one data point cannot support a shape, only a value.
  *
  * A constant-switch-angle model was also proposed here and is likewise REFUTED:
  * inverting {@link turnoutClosure} gives α = 0.036 (#5), 0.067 (#7), 0.043
@@ -2509,16 +2515,17 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  *
  * MEASURED GEOMETRY (all Will Gage's, off physical parts, frog taken at the V):
  *
- *     part   points   frog V    overall   lead      past frog   ÷N
- *     #5     1¾″      4.75″     6.00″     3.0000″   1.25″       0.2500
- *     #7     ⁵⁄₈″     4⁷⁄₃₂″    6.00″     3.3750″*  1.78125″    0.2545
- *     #10    ⁹⁄₁₆″    5.50″     8.00″     4.9375″   2.50″       0.2500
+ *     part   points   frog V    overall   lead       past frog   ÷N
+ *     #5     1¾″      4.75″     6.00″     3.00000″   1.25″       0.2500
+ *     #7     ⁵⁄₈″     4⁷⁄₃₂″    6.00″     3.59375″   1.78125″    0.2545
+ *     #10    ⁹⁄₁₆″    5.50″     8.00″     4.93750″   2.50″       0.2500
  *
- *     * ⚠️ the #7's lead is DISPUTED. Steve Branton measured 3⅜″ as a single span
- *       (#173); Will Gage's two positions give 4⁷⁄₃₂ − ⁵⁄₈ = 3¹⁹⁄₃₂″. ⁷⁄₃₂″ apart,
- *       far beyond the other parts' residuals. Steve's is carried because a
- *       single span has one chance to err where a difference has two. Closing it
- *       needs a re-read of a physical part, not a decision here.
+ * Every one of these is Will Gage's, off a physical part, frog taken at the V.
+ * ⚠️ The #7 lead SUPERSEDES Steve Branton's 3⅜″ (#173) — the library's founding
+ * measurement, ⁷⁄₃₂″ short. Will's single-span reading and his two positions
+ * agree exactly, which is why it wins. Steve's number was also the sole basis of
+ * {@link TURNOUT_LEAD_INCHES_PER_FROG}; that constant is now baseless as well as
+ * refuted, and {@link leadInchesForSize} interpolates across this table instead.
  *
  * ⭐ **THE PART RUNS PAST THE FROG FAR ENOUGH TO GAIN 0.25″ OF SEPARATION.**
  * Past-frog run ÷ N is 0.2500 / 0.2545 / 0.2500 — the #5 and #10 EXACT, the #7
@@ -2536,10 +2543,11 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  *
  * NOTHING HERE IS PROPORTIONAL TO FROG NUMBER. Three rules assumed otherwise;
  * all three were tested against a physical part and FAILED:
- * - ❌ **Lead ∝ N.** Measured lead ÷ N: #5 = 0.600, #7 = 0.482, #10 = 0.494.
- *   {@link TURNOUT_LEAD_INCHES_PER_FROG} reads ~20% SHORT at N=5.
+ * - ❌ **Lead ∝ N.** Measured lead ÷ N: #5 = 0.600, #7 = 0.513, #10 = 0.494.
+ *   {@link TURNOUT_LEAD_INCHES_PER_FROG} reads ~20% SHORT at N=5 — and its
+ *   founding measurement has since been superseded, so it is baseless too.
  * - ❌ **Constant switch angle.** Inverting {@link turnoutClosure} gives α =
- *   0.036 (#5), 0.067 (#7), 0.043 (#10). Not constant.
+ *   0.036 (#5), 0.055 (#7), 0.043 (#10). Not constant.
  * - ❌ **Overall length ∝ N.** #5 = 6.00″ and #7 = 6.00″ — same moulding, two
  *   frog numbers.
  * - ❌ **Frog fixed at 4.75″** (shipped in 0.54.0, retracted in 0.55.0). It
@@ -2605,16 +2613,16 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     partNumbers: { left: "2052", right: "2053" },
     frogNumber: 7,
     lead: {
-      inches: 3.375,
+      inches: 3.59375,
       source: "measured",
       note:
-        "⚠️ DISPUTED — two measurers, ⁷⁄₃₂″ apart. Steve Branton measured 3⅜″ " +
-        "points→frog directly (#173). Will Gage's positions on the same part give " +
-        "4⁷⁄₃₂ − ⁵⁄₈ = 3¹⁹⁄₃₂″. Steve's is kept because it was taken as a SINGLE " +
-        "SPAN — one reading, one chance to err — where a difference of two " +
-        "readings compounds both. Unresolved until someone re-reads a physical " +
-        "part; the gap is far bigger than the #5's and #10's residuals, so it is " +
-        "a real disagreement and not rounding.",
+        "Will Gage, physical Atlas 2052 (#7), 3¹⁹⁄₃₂″ points→frog as a single " +
+        "span — and it matches his two positions exactly (4⁷⁄₃₂ − ⁵⁄₈), so the " +
+        "reading is internally consistent. SUPERSEDES Steve Branton's 3⅜″ (#173), " +
+        "which was ⁷⁄₃₂″ short and was the library's founding measurement. " +
+        "⚠️ Steve's number was also the SOLE basis of " +
+        "TURNOUT_LEAD_INCHES_PER_FROG (3.375/7 = 0.482) — that constant is now " +
+        "baseless as well as refuted.",
     },
     pointsOffset: {
       inches: 0.625,
@@ -2738,15 +2746,47 @@ export function turnoutPartForSize(
   );
 }
 
-/** The lead to draw a turnout of this size with — a real part's measurement when
- * we have one, else the per-frog rule. Keeps `frogLegOf` honest without it
- * needing to know the library exists. */
+/** Measured leads, ascending by frog number — the interpolation basis. Only
+ * `measured` counts: interpolating through a derived value would launder a guess
+ * into the sizes either side of it. */
+function measuredLeadPoints(library: TrackPart[]): Array<{ n: number; lead: number }> {
+  return library
+    .filter(
+      (p) => p.kind === "turnout" && p.frogNumber != null && p.lead?.source === "measured",
+    )
+    .map((p) => ({ n: p.frogNumber as number, lead: p.lead!.inches }))
+    .sort((a, b) => a.n - b.n);
+}
+
+/**
+ * The lead to draw a turnout of this size with. Keeps `frogLegOf` honest without
+ * it needing to know the library exists.
+ *
+ * 1. An exact part match wins — a #7's measurement says nothing about a #4.
+ * 2. Otherwise INTERPOLATE piecewise-linearly across the measured parts. This
+ *    replaced `size × TURNOUT_LEAD_INCHES_PER_FROG`, which was refuted (its
+ *    error changes sign across the measured range) and is now baseless besides,
+ *    its founding #7 measurement having been superseded.
+ * 3. ⚠️ Outside the measured range the end segments EXTRAPOLATE. Measured leads
+ *    span N = 5…10, so a #4 or #12 is a projection, not a reading, and the #2.5
+ *    wye is a long way out. Treat those as placeholders until a part is measured.
+ */
 export function leadInchesForSize(size: number, library = BUILT_IN_TRACK_PARTS): number {
   const part = turnoutPartForSize(size, library);
-  // Only trust a part's lead when its frog number actually matches — a #7's
-  // measurement says nothing about a #4.
   if (part?.lead && part.frogNumber === size) return part.lead.inches;
-  return size * TURNOUT_LEAD_INCHES_PER_FROG;
+
+  const pts = measuredLeadPoints(library);
+  if (!pts.length) return size * TURNOUT_LEAD_INCHES_PER_FROG;
+  // One measurement can only be scaled; that IS the refuted rule, so say so.
+  if (pts.length === 1) return (size / pts[0].n) * pts[0].lead;
+
+  let i: number;
+  if (size >= pts[pts.length - 1].n) i = pts.length - 2;
+  else i = Math.max(0, pts.findIndex((p) => p.n >= size) - 1);
+  const lo = pts[i];
+  const hi = pts[i + 1];
+  const t = (size - lo.n) / (hi.n - lo.n);
+  return lo.lead + t * (hi.lead - lo.lead);
 }
 
 /** One drawn piece of a part's geometry, in the part's own local frame. */

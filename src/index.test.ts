@@ -2186,7 +2186,7 @@ describe("track parts library (#179 stage 3)", () => {
       source: "measured",
     });
     expect(trackPart("atlas-c55-n-7")!.lead).toMatchObject({
-      inches: 3.375,
+      inches: 3.59375,
       source: "measured",
     });
     expect(trackPart("atlas-c55-n-10")!.lead).toMatchObject({
@@ -2204,31 +2204,50 @@ describe("track parts library (#179 stage 3)", () => {
       return p.lead!.inches / p.frogNumber!;
     };
     expect(perFrog("atlas-c55-n-5")).toBeCloseTo(0.6, 3);
-    expect(perFrog("atlas-c55-n-7")).toBeCloseTo(0.482, 3);
-    expect(perFrog("atlas-c55-n-10")).toBeCloseTo(0.494, 3);
+    expect(perFrog("atlas-c55-n-7")).toBeCloseTo(0.5134, 3);
+    expect(perFrog("atlas-c55-n-10")).toBeCloseTo(0.4938, 3);
     // Reads ~20% SHORT at N=5, so no fudge factor rescues it.
     expect(5 * TURNOUT_LEAD_INCHES_PER_FROG).toBeLessThan(3.0 * 0.85);
     // ...so leadInchesForSize must return the PART, never the rule.
     expect(leadInchesForSize(5)).toBeCloseTo(3.0, 6);
+    expect(leadInchesForSize(7)).toBeCloseTo(3.59375, 6);
     expect(leadInchesForSize(10)).toBeCloseTo(4.9375, 6);
   });
 
-  // The #7 is the one part measured by two people, and they disagree by 3/16in.
-  // Pinned so the conflict can't be "resolved" by someone quietly editing one
-  // number — it needs a re-read of a physical part, not a code change.
-  it("the #7's lead is DISPUTED between two measurers", () => {
-    const p = trackPart("atlas-c55-n-7")!;
-    const fromPositions = p.frogOffset!.inches - p.pointsOffset!.inches;
-    expect(fromPositions).toBeCloseTo(3.59375, 6);
-    expect(p.lead!.inches).toBeCloseTo(3.375, 6);
-    expect(fromPositions - p.lead!.inches).toBeCloseTo(0.21875, 6);
-    expect(p.lead!.note).toMatch(/DISPUTED/);
+  // Sizes with no part interpolate across the MEASURED leads rather than
+  // multiplying by the dead constant.
+  it("interpolates the lead for sizes no part covers", () => {
+    // #6 sits halfway between the measured #5 and #7.
+    expect(leadInchesForSize(6)).toBeCloseTo((3.0 + 3.59375) / 2, 6);
+    // #8 and #9 ride the #7 -> #10 segment.
+    expect(leadInchesForSize(8)).toBeCloseTo(3.59375 + (4.9375 - 3.59375) / 3, 6);
+    // Strictly increasing across the whole range a user can pick.
+    for (let n = 4; n < 12; n += 0.5) {
+      expect(leadInchesForSize(n), `${n}`).toBeLessThan(leadInchesForSize(n + 0.5));
+    }
+    // Nothing may equal the dead rule any more.
+    for (const n of [4, 6, 8, 9, 12]) {
+      expect(leadInchesForSize(n), `${n}`).not.toBeCloseTo(
+        n * TURNOUT_LEAD_INCHES_PER_FROG,
+        2,
+      );
+    }
+  });
+
+  // Only `measured` leads form the basis — interpolating through a derived value
+  // would launder a guess into the sizes either side of it.
+  it("ignores derived leads when interpolating", () => {
+    const wye = trackPart("atlas-c55-n-wye")!;
+    expect(wye.lead!.source).toBe("derived");
+    // The wye is N=2.5 and derived; it must not anchor the low end.
+    expect(leadInchesForSize(4)).toBeGreaterThan(2.5);
   });
 
   // lead is the difference of two measured positions, not an independent datum.
-  // The #7 is excluded ON PURPOSE — see the dispute test above.
+  // The #7 now reconciles too: its single-span re-read matched its positions
+  // exactly, which is what retired Steve Branton's founding 3 3/8in figure.
   it("lead reconciles with the measured points and frog offsets", () => {
-    for (const id of ["atlas-c55-n-5", "atlas-c55-n-10"]) {
+    for (const id of ["atlas-c55-n-5", "atlas-c55-n-7", "atlas-c55-n-10"]) {
       const p = trackPart(id)!;
       expect(p.frogOffset!.inches - p.pointsOffset!.inches, id).toBeCloseTo(
         p.lead!.inches,
@@ -2289,10 +2308,17 @@ describe("track parts library (#179 stage 3)", () => {
   });
 
   it("leadInchesForSize uses a real measurement ONLY when the frog matches", () => {
-    expect(leadInchesForSize(7)).toBeCloseTo(3.375, 6); // the measured part
-    // A #4 has no part — fall back to the rule rather than borrowing the #7's.
-    expect(leadInchesForSize(4)).toBeCloseTo(4 * TURNOUT_LEAD_INCHES_PER_FROG, 6);
-    expect(leadInchesForSize(6)).toBeCloseTo(6 * TURNOUT_LEAD_INCHES_PER_FROG, 6);
+    expect(leadInchesForSize(7)).toBeCloseTo(3.59375, 6); // the measured part
+    // A #4 and #6 have no part. They interpolate — and crucially must NOT
+    // borrow a neighbour's measurement wholesale.
+    const measured = [3.0, 3.59375, 4.9375];
+    for (const n of [4, 6, 8]) {
+      for (const m of measured) {
+        expect(leadInchesForSize(n), `${n} vs ${m}`).not.toBeCloseTo(m, 6);
+      }
+    }
+    expect(leadInchesForSize(6)).toBeCloseTo(3.296875, 6);
+    expect(leadInchesForSize(4)).toBeCloseTo(2.703125, 6);
   });
 
   it("turnoutPartForSize picks the nearest frog", () => {
