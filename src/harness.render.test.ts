@@ -1,69 +1,96 @@
 import { it } from "vitest";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { turnoutClosure, leadInchesForSize, RAIL_GAUGE_INCHES, frogCasting } from "./index";
+import { turnoutClosure, leadInchesForSize, RAIL_GAUGE_INCHES } from "./index";
 
-// RENDER HARNESS — not an assertion. Draws a turnout with the SAME geometry the
-// canvas uses, so it can be LOOKED AT without running MR or logging in. Every
-// visual bug in this thread survived because it was checked by coordinates.
+// RENDER HARNESS — not an assertion. Draws turnouts with the SAME geometry the
+// canvas uses, so they can be LOOKED AT without running MR or logging in.
+//
+// ⚠️ Draws SEVERAL COMPOSITIONS, not one ideal turnout. The easement was
+// verified here in isolation, was correct, and still broke in production
+// against a spur too short to hold it — the track's near end is pulled out to
+// the leg's join, so an overlong join inverts the body and the track vanishes.
+// Isolation cannot catch that. Every case below is a composition.
 const OUT = process.env.HARNESS_OUT ?? "harness";
+const G = RAIL_GAUGE_INCHES;
+const LANE = 1.125;
+const S = 54;
 
-it("renders a turnout for inspection", () => {
-  const N = 7;
-  const S = 90;            // px per inch
-  const g = RAIL_GAUGE_INCHES;
+/** The ease MR settles on for a track with this much room past the frog. */
+function easeFor(N: number, lead: number, available: number) {
+  const straightSpan = lead + Math.max(0, (LANE - G) * N);
+  return Math.max(0, Math.min(lead, 2 * (available - straightSpan)));
+}
+
+function panel(N: number, available: number, label: string, top: number) {
   const lead = leadInchesForSize(N);
-  const LANE_IN = 1.125;
-  const cl = turnoutClosure(N, { leadInches: lead, arriveAtInches: LANE_IN });
-  const span = cl.span;
-  const L = span + 2;
-  const X = (i: number) => 40 + i * S;
-  const Y = (o: number) => 200 + o * S;
+  const ease = easeFor(N, lead, available);
+  const cl = turnoutClosure(N, { leadInches: lead, arriveAtInches: LANE, easeInches: ease });
+  const span = Math.min(cl.span, available);
+  const X = (i: number) => 150 + i * S;
+  const Y = (o: number) => top + o * S;
+  const L = available + 1.5;
 
-  const steps = 96;
-  const div: [number, number][] = [];
+  const steps = 120;
+  const pts: [number, number][] = [];
   for (let i = 0; i <= steps; i++) {
     const s = (span * i) / steps;
-    div.push([s, cl.offsetAt(s)]);
+    pts.push([s, cl.offsetAt(s)]);
   }
   const norm = (i: number) => {
-    const k = Math.max(1, Math.min(div.length - 1, i));
-    const dx = div[k][0] - div[k - 1][0];
-    const dy = div[k][1] - div[k - 1][1];
+    const k = Math.max(1, Math.min(pts.length - 1, i));
+    const dx = pts[k][0] - pts[k - 1][0];
+    const dy = pts[k][1] - pts[k - 1][1];
     const m = Math.hypot(dx, dy) || 1;
     return [-dy / m, dx / m] as const;
   };
-  const railOf = (side: 1 | -1) =>
-    div
+  const leg = (side: 1 | -1) =>
+    pts
       .map(([s, o], i) => {
         const [nx, ny] = norm(i);
-        return `${X(s + (nx * side * g) / 2)},${Y(o + (ny * side * g) / 2)}`;
+        return `${X(s + (nx * side * G) / 2)},${Y(o + (ny * side * G) / 2)}`;
       })
       .join(" ");
 
-  // The diverging TRACK's body, as MR draws it: parallel to the main at one
-  // lane spacing, beginning where the leg ends. This is the join under test.
-  const LANE = LANE_IN;
-  const bodyRail = (side: 1 | -1) =>
-    `${X(span)},${Y(LANE + (side * g) / 2)} ${X(L)},${Y(LANE + (side * g) / 2)}`;
+  // The track it feeds: from the join to its far end, parallel at one lane.
+  // If the join ran past the far end this is where it would invert.
+  const bodyFrom = span;
+  const bodyTo = available;
+  const body = (side: 1 | -1) =>
+    `<line x1="${X(bodyFrom)}" y1="${Y(LANE + (side * G) / 2)}" x2="${X(bodyTo)}" y2="${Y(
+      LANE + (side * G) / 2,
+    )}" stroke="#a33" stroke-width="2"/>`;
 
-  const fc = frogCasting(cl);
-  const poly = (pts: Array<{ x: number; y: number }>) =>
-    pts.map((p) => `${X(p.x)},${Y(p.y)}`).join(" ");
+  // Two DIFFERENT failures, and conflating them hides the dangerous one.
+  // Consumed = the leg uses the whole spur and no body is left: correct, the
+  // rails still reach the end. Inverted = the join ran PAST the far end, which
+  // is the v0.15.44 regression where the track disappeared.
+  const consumed = Math.abs(bodyTo - bodyFrom) < 1e-6;
+  const inverted = bodyTo < bodyFrom - 1e-6;
+  return `
+<line x1="${X(-0.4)}" y1="${Y(-G / 2)}" x2="${X(L)}" y2="${Y(-G / 2)}" stroke="#334" stroke-width="2"/>
+<line x1="${X(-0.4)}" y1="${Y(G / 2)}" x2="${X(L)}" y2="${Y(G / 2)}" stroke="#334" stroke-width="2"/>
+<polyline points="${leg(1)}" fill="none" stroke="#334" stroke-width="2"/>
+<polyline points="${leg(-1)}" fill="none" stroke="#334" stroke-width="2"/>
+${body(1)}${body(-1)}
+<circle cx="${X(lead)}" cy="${Y(G / 2)}" r="4" fill="none" stroke="#0284c7" stroke-width="2"/>
+<text x="16" y="${top - 14}" font-family="sans-serif" font-size="13" fill="#334">${label}</text>
+<text x="16" y="${top + 6}" font-family="monospace" font-size="11" fill="#667">room ${available}" · ease ${ease.toFixed(
+    2,
+  )}" · span ${span.toFixed(2)}"${inverted ? "  ⚠⚠ BODY INVERTED — track lost" : consumed ? "  · body fully consumed by the leg" : ""}</text>`;
+}
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${X(L) + 40}" height="440">
-<rect width="100%" height="100%" fill="#f6f3ec"/>
-<line x1="${X(-0.3)}" y1="${Y(-g / 2)}" x2="${X(L)}" y2="${Y(-g / 2)}" stroke="#334" stroke-width="2"/>
-<line x1="${X(-0.3)}" y1="${Y(g / 2)}" x2="${X(L)}" y2="${Y(g / 2)}" stroke="#334" stroke-width="2"/>
-<polyline points="${railOf(1)}" fill="none" stroke="#334" stroke-width="2"/>
-<polyline points="${railOf(-1)}" fill="none" stroke="#334" stroke-width="2"/>
-<line x1="${bodyRail(1).split(" ")[0].split(",")[0]}" y1="${bodyRail(1).split(" ")[0].split(",")[1]}" x2="${bodyRail(1).split(" ")[1].split(",")[0]}" y2="${bodyRail(1).split(" ")[1].split(",")[1]}" stroke="#a33" stroke-width="2"/>
-<line x1="${bodyRail(-1).split(" ")[0].split(",")[0]}" y1="${bodyRail(-1).split(" ")[0].split(",")[1]}" x2="${bodyRail(-1).split(" ")[1].split(",")[0]}" y2="${bodyRail(-1).split(" ")[1].split(",")[1]}" stroke="#a33" stroke-width="2"/>
-<polygon points="${poly(fc.point)}" fill="#334" stroke="#334" stroke-width="1" stroke-linejoin="miter"/>
-<polyline points="${poly(fc.wings[0])}" fill="none" stroke="#334" stroke-width="2.5" stroke-linecap="butt"/>
-<polyline points="${poly(fc.wings[1])}" fill="none" stroke="#334" stroke-width="2.5" stroke-linecap="butt"/>
-<circle cx="${X(lead)}" cy="${Y(g / 2)}" r="5" fill="none" stroke="#0284c7" stroke-width="2"/>
-<text x="40" y="410" font-family="sans-serif" font-size="15" fill="#334">#${N}  lead ${lead.toFixed(3)}"  span ${span.toFixed(3)}"  gauge ${g}"  ease ${cl.easeInches.toFixed(2)}" R~${(cl.easeInches / cl.frogSlope).toFixed(0)}"  (RED = the track it joins)</text>
-</svg>`;
+it("renders turnout compositions for inspection", () => {
+  const cases: Array<[number, number, string]> = [
+    [7, 20, "#7 · plenty of room — full ease, smooth join"],
+    [7, 12, "#7 · tight — ease shortened to fit"],
+    [7, 9.5, "#7 · SHORT SPUR — no room to ease, runs straight (the v0.15.44 regression)"],
+    [5, 9.5, "#5 · same short spur — a sharper frog needs less run"],
+  ];
+  const H = 150;
+  const body = cases.map(([n, a, l], i) => panel(n, a, l, 90 + i * H)).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="${
+    90 + cases.length * H
+  }"><rect width="100%" height="100%" fill="#f6f3ec"/>${body}</svg>`;
   mkdirSync(OUT, { recursive: true });
   writeFileSync(`${OUT}/turnout.svg`, svg);
 });
