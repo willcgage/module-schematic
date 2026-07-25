@@ -2180,29 +2180,50 @@ describe("track parts library (#179 stage 3)", () => {
     }
   });
 
-  it("the #7 and #10 leads are MEASURED — the others are honestly marked derived", () => {
-    const seven = trackPart("atlas-c55-n-7")!;
-    expect(seven.lead!.source).toBe("measured");
-    expect(seven.lead!.inches).toBeCloseTo(3.375, 6);
-    const ten = trackPart("atlas-c55-n-10")!;
-    expect(ten.lead!.source).toBe("measured");
-    expect(ten.lead!.inches).toBeCloseTo(4.1875, 6);
-    expect(trackPart("atlas-c55-n-5")!.lead!.source).toBe("derived");
+  it("every straight turnout lead is MEASURED — only the wye is still derived", () => {
+    expect(trackPart("atlas-c55-n-5")!.lead).toMatchObject({
+      inches: 3.0,
+      source: "measured",
+    });
+    expect(trackPart("atlas-c55-n-7")!.lead).toMatchObject({
+      inches: 3.375,
+      source: "measured",
+    });
+    expect(trackPart("atlas-c55-n-10")!.lead).toMatchObject({
+      inches: 4.1875,
+      source: "measured",
+    });
     expect(trackPart("atlas-c55-n-wye")!.lead!.source).toBe("derived");
   });
 
-  // The whole reason the library exists. Two measured leads disagree about
-  // lead-per-frog by 13%, so nothing may reconstruct a lead by multiplying.
-  it("lead is NOT proportional to frog number", () => {
-    const seven = trackPart("atlas-c55-n-7")!;
-    const ten = trackPart("atlas-c55-n-10")!;
-    const perFrog = (p: TrackPart) => p.lead!.inches / p.frogNumber!;
-    expect(perFrog(seven)).toBeCloseTo(0.482, 3);
-    expect(perFrog(ten)).toBeCloseTo(0.419, 3);
-    // The per-frog rule reads LONG at N=10 — this is the refutation, pinned.
-    expect(10 * TURNOUT_LEAD_INCHES_PER_FROG).toBeGreaterThan(ten.lead!.inches * 1.1);
-    // ...so leadInchesForSize must return the PART, never the rule, for a #10.
+  // The whole reason the library exists. Lead-per-frog FALLS with N, so the
+  // rule's error changes sign — nothing may reconstruct a lead by multiplying.
+  it("lead is NOT proportional to frog number, and the error changes sign", () => {
+    const perFrog = (id: string) => {
+      const p = trackPart(id)!;
+      return p.lead!.inches / p.frogNumber!;
+    };
+    expect(perFrog("atlas-c55-n-5")).toBeCloseTo(0.6, 3);
+    expect(perFrog("atlas-c55-n-7")).toBeCloseTo(0.482, 3);
+    expect(perFrog("atlas-c55-n-10")).toBeCloseTo(0.419, 3);
+    // Monotonically falling — not noise around a constant.
+    expect(perFrog("atlas-c55-n-5")).toBeGreaterThan(perFrog("atlas-c55-n-7"));
+    expect(perFrog("atlas-c55-n-7")).toBeGreaterThan(perFrog("atlas-c55-n-10"));
+    // The rule reads SHORT at N=5 and LONG at N=10. Both pinned, because a rule
+    // that erred one way could at least be corrected with a fudge factor.
+    expect(5 * TURNOUT_LEAD_INCHES_PER_FROG).toBeLessThan(3.0 * 0.85);
+    expect(10 * TURNOUT_LEAD_INCHES_PER_FROG).toBeGreaterThan(4.1875 * 1.1);
+    // ...so leadInchesForSize must return the PART, never the rule.
+    expect(leadInchesForSize(5)).toBeCloseTo(3.0, 6);
     expect(leadInchesForSize(10)).toBeCloseTo(4.1875, 6);
+  });
+
+  // The pattern that survived: Atlas fix the frog and move the points.
+  it("both fully measured parts put the frog 4.75in from the tie end", () => {
+    for (const id of ["atlas-c55-n-5", "atlas-c55-n-10"]) {
+      const p = trackPart(id)!;
+      expect(p.pointsOffset!.inches + p.lead!.inches, id).toBeCloseTo(4.75, 6);
+    }
   });
 
   // Overall length isn't a function of N either: #5 and #7 share a 6" moulding.
