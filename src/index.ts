@@ -2820,6 +2820,65 @@ export function trackPart(id: string, library = BUILT_IN_TRACK_PARTS): TrackPart
   return library.find((p) => p.id === id) ?? null;
 }
 
+/** Half an N-scale tie, inches — a 8′6″ tie is 102″ prototype, /160 ≈ 0.638″.
+ * The half-width a tie strip extends either side of the rail it carries, which
+ * is what gives a drawn turnout body its width. */
+export const TIE_HALF_LENGTH_INCHES = 0.319;
+
+/** Where a turnout part physically starts and stops, relative to its POINTS.
+ * All inches; `aheadOfPoints` is the end of the tie strip, which is essentially
+ * where the diverging rail stops and the owner's flex track begins. */
+export interface PartExtent {
+  /** Points → the near end of the tie strip. Positive = the strip starts this
+   * far BEHIND the points (it always does — that end is plain approach track). */
+  behindPoints: number;
+  /** Points → the far end of the tie strip. */
+  aheadOfPoints: number;
+  /** Frog → the far end. How much turnout there still is past the frog. */
+  pastFrog: number;
+}
+
+/**
+ * A part's real extent, or **null when it hasn't been measured**.
+ *
+ * ⚠️ This deliberately does NOT fall back to a frog-number rule, unlike
+ * {@link leadInchesForSize}. Overall length is not a function of N — the #5 and
+ * the #7 are BOTH 6.00″, same tie strip, different frog. Angle is geometry;
+ * length is packaging, and packaging can only be looked up. A renderer that
+ * gets null should draw no part boundary rather than invent one: the absence is
+ * a truthful signal that the library has a gap, and inventing a length here is
+ * how hand-built geometry once reached owners as if it were part data.
+ *
+ * Requires `pointsOffset` and `overallLength`; `pastFrog` additionally needs
+ * `frogOffset`. Every dimension must be `measured` — a derived one would launder
+ * a guess into a drawing that says "this is where your turnout ends".
+ */
+export function partExtent(part: TrackPart | null | undefined): PartExtent | null {
+  const pts = part?.pointsOffset;
+  const overall = part?.overallLength;
+  if (!pts || !overall) return null;
+  if (pts.source !== "measured" || overall.source !== "measured") return null;
+  const frog = part?.frogOffset;
+  const aheadOfPoints = overall.inches - pts.inches;
+  return {
+    behindPoints: pts.inches,
+    aheadOfPoints,
+    pastFrog:
+      frog && frog.source === "measured" ? overall.inches - frog.inches : aheadOfPoints,
+  };
+}
+
+/** The extent of the part a turnout of this frog number IS, or null when no
+ * measured part matches EXACTLY. A #6 is not a #5 or a #7 — the nearest part's
+ * length says nothing about it (see {@link partExtent}). */
+export function partExtentForSize(
+  size: number,
+  library = BUILT_IN_TRACK_PARTS,
+): PartExtent | null {
+  const part = turnoutPartForSize(size, library);
+  return part && part.frogNumber === size ? partExtent(part) : null;
+}
+
 /** The closest built-in turnout for a frog number — what a bare `size` maps to
  * when a turnout names no part. Exact match wins; otherwise the nearest frog. */
 export function turnoutPartForSize(

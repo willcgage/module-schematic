@@ -64,6 +64,8 @@ import {
   BUILT_IN_TRACK_PARTS,
   trackPart,
   turnoutPartForSize,
+  partExtent,
+  partExtentForSize,
   leadInchesForSize,
   parseXtpLibrary,
   samplePartSegments,
@@ -1387,6 +1389,49 @@ describe("endplate poses (#175)", () => {
       poseOverrides: { B: { x: 40, y: -30, heading: 300 } },
     });
     expect(poses.find((p) => p.id === "B")).toMatchObject({ x: 40, y: -30, heading: 300, manual: true });
+  });
+
+  it("partExtent reads the measured parts, and the numbers reconcile with the rail-end readings", () => {
+    // Will measured frog → end of the diverging rail independently of the tie
+    // dimensions, and the two routes agree — that cross-check is what makes this
+    // the strongest data in the library, so pin it.
+    const seven = partExtent(trackPart("atlas-c55-n-7"))!;
+    expect(seven.behindPoints).toBeCloseTo(0.625, 6);
+    expect(seven.aheadOfPoints).toBeCloseTo(5.375, 6); // 6.00 − 0.625
+    expect(seven.pastFrog).toBeCloseTo(1.78125, 6); // vs 1 13/16″ = 1.8125 read directly
+    // Exactly one tape division apart — the closest the two routes come, and
+    // the reason a tighter bound here would be fitting noise, not measurement.
+    expect(Math.abs(seven.pastFrog - 1.8125)).toBeLessThanOrEqual(1 / 32);
+
+    const five = partExtent(trackPart("atlas-c55-n-5"))!;
+    expect(five.aheadOfPoints).toBeCloseTo(4.25, 6);
+    expect(Math.abs(five.pastFrog - 1.3125)).toBeLessThanOrEqual(1 / 16);
+
+    const ten = partExtent(trackPart("atlas-c55-n-10"))!;
+    expect(ten.aheadOfPoints).toBeCloseTo(7.4375, 6);
+    expect(Math.abs(ten.pastFrog - 2.5625)).toBeLessThanOrEqual(1 / 16);
+  });
+
+  it("partExtent refuses to guess — length is packaging, not a function of N", () => {
+    // The #5 and the #7 are BOTH 6.00″. There is no measured #6, and the parts
+    // either side cannot supply one, so nothing is drawn rather than a fiction.
+    expect(partExtentForSize(6)).toBeNull();
+    expect(partExtentForSize(4)).toBeNull();
+    expect(partExtentForSize(7)).not.toBeNull();
+    expect(partExtentForSize(10)).not.toBeNull();
+
+    // A part carrying only derived dimensions is not a measurement either.
+    expect(
+      partExtent({
+        id: "x",
+        manufacturer: "X",
+        line: "L",
+        kind: "turnout",
+        pointsOffset: { inches: 1, source: "derived" },
+        overallLength: { inches: 6, source: "measured" },
+      }),
+    ).toBeNull();
+    expect(partExtent(null)).toBeNull();
   });
 
   it("poseNeedsManual flags wye and other only", () => {

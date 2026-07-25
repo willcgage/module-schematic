@@ -1,6 +1,12 @@
 import { it } from "vitest";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { turnoutClosure, leadInchesForSize, RAIL_GAUGE_INCHES } from "./index";
+import {
+  turnoutClosure,
+  leadInchesForSize,
+  partExtentForSize,
+  RAIL_GAUGE_INCHES,
+  TIE_HALF_LENGTH_INCHES,
+} from "./index";
 
 // RENDER HARNESS — not an assertion. Draws turnouts with the SAME geometry the
 // canvas uses, so they can be LOOKED AT without running MR or logging in.
@@ -60,6 +66,30 @@ function panel(N: number, available: number, label: string, top: number) {
       LANE + (side * G) / 2,
     )}" stroke="#a33" stroke-width="2"/>`;
 
+  // THE PART ITSELF — the moulded tie strip, drawn only when the library has
+  // measured it. Everything past its far end is flex track the owner lays, which
+  // is the distinction this panel exists to show: on a #7 the part stops at
+  // 5.375" while the leg runs to 10.79" to arrive parallel, and drawing the two
+  // as one sweep is what read as "a very long diverging route".
+  const ext = partExtentForSize(N);
+  const T = TIE_HALF_LENGTH_INCHES;
+  const partBody = (() => {
+    if (!ext) return "";
+    const s0 = -ext.behindPoints;
+    const s1 = Math.min(ext.aheadOfPoints, span);
+    const steps2 = 40;
+    const top: string[] = [];
+    const bot: string[] = [];
+    for (let i = 0; i <= steps2; i++) {
+      const s = s0 + ((s1 - s0) * i) / steps2;
+      // Below the through route, and above whichever route is outermost.
+      bot.push(`${X(s)},${Y(-T)}`);
+      top.push(`${X(s)},${Y(Math.max(0, cl.offsetAt(Math.max(0, s))) + T)}`);
+    }
+    return `<polygon points="${bot.join(" ")} ${top.reverse().join(" ")}" fill="#cfc6b4" stroke="#a89e88" stroke-width="1"/>
+<line x1="${X(s1)}" y1="${Y(-T)}" x2="${X(s1)}" y2="${Y(cl.offsetAt(s1) + T)}" stroke="#8a7f66" stroke-width="2"/>`;
+  })();
+
   // Two DIFFERENT failures, and conflating them hides the dangerous one.
   // Consumed = the leg uses the whole spur and no body is left: correct, the
   // rails still reach the end. Inverted = the join ran PAST the far end, which
@@ -67,6 +97,7 @@ function panel(N: number, available: number, label: string, top: number) {
   const consumed = Math.abs(bodyTo - bodyFrom) < 1e-6;
   const inverted = bodyTo < bodyFrom - 1e-6;
   return `
+${partBody}
 <line x1="${X(-0.4)}" y1="${Y(-G / 2)}" x2="${X(L)}" y2="${Y(-G / 2)}" stroke="#334" stroke-width="2"/>
 <line x1="${X(-0.4)}" y1="${Y(G / 2)}" x2="${X(L)}" y2="${Y(G / 2)}" stroke="#334" stroke-width="2"/>
 <polyline points="${leg(1)}" fill="none" stroke="#334" stroke-width="2"/>
@@ -81,10 +112,12 @@ ${body(1)}${body(-1)}
 
 it("renders turnout compositions for inspection", () => {
   const cases: Array<[number, number, string]> = [
-    [7, 20, "#7 · plenty of room — full ease, smooth join"],
+    [7, 20, "#7 · plenty of room — the PART stops at 5.375″; the rest is flex track"],
     [7, 12, "#7 · tight — ease shortened to fit"],
     [7, 9.5, "#7 · SHORT SPUR — no room to ease, runs straight (the v0.15.44 regression)"],
     [5, 9.5, "#5 · same short spur — a sharper frog needs less run"],
+    [10, 20, "#10 · the longest measured part — 7.4375″ of turnout"],
+    [6, 20, "#6 · NO measured part — no boundary drawn, and that's the honest answer"],
   ];
   const H = 150;
   const body = cases.map(([n, a, l], i) => panel(n, a, l, 90 + i * H)).join("");
