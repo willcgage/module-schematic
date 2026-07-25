@@ -39,6 +39,7 @@ import {
   benchworkOutline,
   sampleBenchworkOutline,
   samplePath,
+  pathLengthInches,
   trackPath,
   carCapacity,
   N_CAR_LENGTH_INCHES,
@@ -1047,10 +1048,39 @@ describe("crossings and branch endplates (#170)", () => {
     expect(doc.endplates[3]).toMatchObject({ label: "MoPac East", at: { pos: 110, side: "up" } });
 
     const f = moduleFeatures(doc);
+    // Each branch runs its OWN 6″ length from where it leaves the main, leaning
+    // the way its endplate sits, on a lane clear of everything else (#181).
     expect(f.branchConnectors).toEqual([
-      { id: "C", label: "MoPac West", posFrac: 20 / 120, side: "down" },
-      { id: "D", label: "MoPac East", posFrac: 110 / 120, side: "up" },
+      {
+        id: "C",
+        label: "MoPac West",
+        name: "MoPac West",
+        trackId: "bw",
+        kind: "branch",
+        posFrac: 20 / 120,
+        fromLane: 0,
+        side: "down",
+        lane: -1,
+        endFrac: 26 / 120,
+        lengthInches: 6,
+      },
+      {
+        id: "D",
+        label: "MoPac East",
+        name: "MoPac East",
+        trackId: "be",
+        kind: "branch",
+        posFrac: 110 / 120,
+        fromLane: 0,
+        side: "up",
+        lane: 1,
+        endFrac: 116 / 120,
+        lengthInches: 6,
+      },
     ]);
+    // The branch lanes are part of the drawn extent — renderers need no extra
+    // headroom of their own.
+    expect([f.laneMin, f.laneMax]).toEqual([-1, 1]);
     expect(f.loop).toBe(false);
 
     const back = docToState(doc, 120);
@@ -1077,6 +1107,117 @@ describe("crossings and branch endplates (#170)", () => {
     const f = moduleFeatures(stateToDoc(s, "M"));
     // Endplate C sits at pos 12, but the branch diverges at the turnout (60).
     expect(f.branchConnectors[0]?.posFrac).toBeCloseTo(60 / 96, 6);
+  });
+
+  it("pathLengthInches measures the path itself, arcs included", () => {
+    expect(pathLengthInches([{ x: 0, y: 0 }, { x: 3, y: 4 }])).toBeCloseTo(5, 6);
+    // A bulge equal to half the chord is a semicircle: length πr, not the 2r
+    // chord. (Sampled in 20 segments, so a shade under.)
+    expect(pathLengthInches([{ x: 0, y: 0, bulge: 10 }, { x: 0, y: 20 }])).toBeCloseTo(
+      Math.PI * 10,
+      1,
+    );
+    expect(pathLengthInches([{ x: 0, y: 0 }])).toBe(0);
+    expect(pathLengthInches(undefined)).toBe(0);
+  });
+
+  it("a square 90° branch still gets a real run — its own length, not its projection", () => {
+    // The case that made branches invisible (#181): the endplate sits directly
+    // out from its turnout, so the route projects to ZERO along the module axis.
+    // Its own arc length is the honest measure and the one we draw.
+    const s = emptyEditorState(96);
+    s.branches.push({ label: "Jct", pos: 48, side: "up", config: "single", kind: "main", trackId: "br1" });
+    s.extraTracks.push({
+      id: "br1",
+      role: "branch",
+      lane: 2,
+      fromPos: 48,
+      toPos: 48,
+      path: [{ x: 48, y: 0 }, { x: 48, y: 14 }],
+      moduleTrackId: null,
+      trackName: "Coast Sub",
+    });
+    s.turnouts.push({ id: "sw1", pos: 48, onTrack: "main", divergeTrack: "br1", kind: "right" });
+
+    const b = moduleFeatures(stateToDoc(s, "M")).branchConnectors[0];
+    expect(b.lengthInches).toBeCloseTo(14, 6);
+    expect(b.posFrac).toBeCloseTo(48 / 96, 6);
+    expect(b.endFrac).toBeCloseTo(62 / 96, 6); // 48 + 14, NOT 48
+    // A diverging main is drawn as one — that's the whole point of the rule.
+    expect(b.kind).toBe("main");
+    expect(b.name).toBe("Coast Sub");
+  });
+
+  it("a branch near the end of the module leans back rather than running off the strip", () => {
+    const s = emptyEditorState(96);
+    s.branches.push({ label: "Jct", pos: 92, side: "up", config: "single", kind: "branch", trackId: "br1" });
+    s.extraTracks.push({
+      id: "br1",
+      role: "branch",
+      lane: 2,
+      fromPos: 92,
+      toPos: 92,
+      path: [{ x: 92, y: 0 }, { x: 92, y: 18 }],
+      moduleTrackId: null,
+      trackName: "To C",
+    });
+    s.turnouts.push({ id: "sw1", pos: 92, onTrack: "main", divergeTrack: "br1", kind: "right" });
+
+    const b = moduleFeatures(stateToDoc(s, "M")).branchConnectors[0];
+    // 92 + 18 = 110 would be off the east end, so it runs back west instead.
+    expect(b.endFrac).toBeCloseTo(74 / 96, 6);
+  });
+
+  it("a branch takes a lane clear of the sidings already drawn", () => {
+    const s = emptyEditorState(96);
+    s.extraTracks.push(
+      { id: "sd1", role: "siding", lane: 1, fromPos: 10, toPos: 40, moduleTrackId: null, trackName: "Siding" },
+      { id: "sp1", role: "spur", lane: 2, fromPos: 50, toPos: 70, moduleTrackId: null, trackName: "Spur" },
+    );
+    s.branches.push({ label: "Jct", pos: 80, side: "up", config: "single", kind: "branch", trackId: "br1" });
+    s.extraTracks.push({
+      id: "br1",
+      role: "branch",
+      lane: 9,
+      fromPos: 80,
+      toPos: 80,
+      path: [{ x: 80, y: 0 }, { x: 80, y: 8 }],
+      moduleTrackId: null,
+      trackName: "To C",
+    });
+    s.turnouts.push(
+      { id: "sw1", pos: 10, onTrack: "main", divergeTrack: "sd1", kind: "right" },
+      { id: "sw2", pos: 50, onTrack: "main", divergeTrack: "sp1", kind: "right" },
+      { id: "sw3", pos: 80, onTrack: "main", divergeTrack: "br1", kind: "right" },
+    );
+
+    const f = moduleFeatures(stateToDoc(s, "M"));
+    const b = f.branchConnectors[0];
+    // Above every drawn lane, and the extents already account for it.
+    expect(b.lane).toBeGreaterThan(Math.max(...f.extraTracks.map((t) => t.lane)));
+    expect(f.laneMax).toBe(b.lane);
+  });
+
+  it("a return loop keeps its bulb — a loop track is role:\"branch\" but no endplate reaches it", () => {
+    // The loop generator emits role:"branch" too. Branches are found via the
+    // ENDPLATE's trackId, never the role, so a loop grows no stray lane (#181).
+    const s = emptyEditorState(96);
+    s.loop = true;
+    s.extraTracks.push({
+      id: "loop1",
+      role: "branch",
+      lane: 1,
+      fromPos: 96,
+      toPos: 96,
+      path: [{ x: 96, y: 0 }, { x: 110, y: 14 }, { x: 96, y: 28 }],
+      moduleTrackId: null,
+      trackName: "Return loop",
+    });
+
+    const f = moduleFeatures(stateToDoc(s, "M"));
+    expect(f.loop).toBe(true);
+    expect(f.branchConnectors).toEqual([]);
+    expect(f.laneMax).toBe(0);
   });
 
   it("a placed-but-unconnected branch endplate draws NO connector arrow", () => {

@@ -519,6 +519,24 @@ export function samplePath(
   return out;
 }
 
+/**
+ * Arc length of an authored path, inches — the path's OWN length, independent of
+ * where it sits or which way it runs. A branch route to a third endplate (#181)
+ * has no meaningful extent along the module axis (a square 90° exit projects to
+ * zero), so its own length is the only honest measure of it.
+ */
+export function pathLengthInches(
+  path: BenchworkPoint[] | null | undefined,
+): number {
+  const pts = trackPath(path);
+  if (!pts) return 0;
+  const poly = samplePath(pts);
+  let total = 0;
+  for (let i = 1; i < poly.length; i++)
+    total += Math.hypot(poly[i].x - poly[i - 1].x, poly[i].y - poly[i - 1].y);
+  return total;
+}
+
 /** Normalise an authored track path from a doc, or null if it isn't a real path
  * (needs ≥ 2 valid points). Keeps per-vertex bulge. */
 export function trackPath(
@@ -2310,13 +2328,47 @@ export interface DrawCrossover {
   toPosFrac: number;
   toLane: number;
 }
-/** A branch endplate — draw a connector stub + arrow + label off the given
- * side (the CATS/US&S off-band idiom, #170). */
+/**
+ * A route leaving the module at a third endplate (#170) — Main 3, whatever the
+ * owner labels it (#181). Drawn as an ELBOW: it diverges from its host main at
+ * `posFrac`, drops to its own `lane`, then runs to `endFrac` and ends at an
+ * endplate face.
+ *
+ * The run is the branch's OWN arc length laid along the strip, not its
+ * projection onto the module axis — a square 90° exit projects to zero, which
+ * is exactly the case that made branches invisible here. Straightening the
+ * route out at its true length is the same idiom this whole view applies to the
+ * main; `posFrac → endFrac` is therefore a real axis, and `lengthInches` maps
+ * onto it, so anything positioned along the branch has somewhere to draw.
+ */
 export interface BranchConnector {
+  /** Endplate id — "C", "D", … */
   id: string;
+  /** The endplate's label. MR draws no text (the destination depends on what's
+   * physically attached, so FD derives the panel label at runtime) — this is
+   * the owner's local name, for tooltips and FD's fallback. */
   label: string;
+  /** The route's own name, from the track. */
+  name: string;
+  /** The branch track's id. */
+  trackId: string;
+  /** Whether the route IS a main (a diverging/split main) or a secondary
+   * branch line. Drives drawn weight, not geometry. */
+  kind: "branch" | "main";
+  /** Where it leaves its host main. */
   posFrac: number;
+  /** The host track's lane — a branch need not leave Main 1. Renderers must
+   * start the diverge HERE, not at a hard-coded lane 0. */
+  fromLane: number;
+  /** Which side of the module it exits. */
   side: "up" | "down";
+  /** The branch's own lane, signed by `side` and placed clear of every other
+   * lane (so it never collides) — already folded into laneMin/laneMax. */
+  lane: number;
+  /** Where the run ends, and the endplate face is drawn. */
+  endFrac: number;
+  /** The route's own arc length, inches. */
+  lengthInches: number;
 }
 /** An industry — draw a car-spot span beside its track's lane, on `side`, with
  * a name label + an optional car/length readout (#industries). */
@@ -3587,11 +3639,36 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     laneB: trackLane.get(x.tracks?.[1] ?? "") ?? 1,
   }));
 
-  // Branch endplates → connector arrows in the operating view — but ONLY once a
-  // route actually reaches one. Placing a bare 3rd+ endplate must not conjure a
-  // junction arrow; the arrow follows the drawn branch track that links to it
-  // (its trackId), so it appears when you connect track, not when you add the
+  // Main 2's actual drawn lane — −1 (below) when the mains are swapped, +1
+  // otherwise. Sizing the canvas off a hard-coded +1 clipped a swapped Main 2 at
+  // the bottom (#172); the renderer likewise must draw it here, not at +1.
+  const main2Lane = trackLane.has(MAIN2_TRACK_ID)
+    ? (trackLane.get(MAIN2_TRACK_ID) as number)
+    : null;
+  // Every lane in use BEFORE the branches — the branch routes are then placed
+  // clear of all of them, so a branch can never land on top of a siding.
+  const baseLanes = [
+    0,
+    main2Lane ?? (doubleMain ? 1 : 0),
+    ...extraTracks.map((t) => t.lane),
+    ...signals.map((s) => s.lane),
+    ...crossings.flatMap((x) => [x.laneA, x.laneB]),
+    ...crossovers.flatMap((x) => [x.fromLane, x.toLane]),
+  ];
+
+  // Branch endplates → a route leaving the module in the operating view — but
+  // ONLY once track actually reaches one. Placing a bare 3rd+ endplate must not
+  // conjure a junction; the route follows the drawn branch track that links to
+  // it (its trackId), so it appears when you connect track, not when you add the
   // endplate (#170).
+  //
+  // This is where a branch stops being decoration and becomes Main 3 (#181): it
+  // gets a lane of its own and a run of its own length, which together are the
+  // axis anything positioned along the branch needs. NB the return-loop
+  // generator also emits role:"branch" tracks — they're excluded here (and only
+  // here) because no endplate's trackId points at them, so loops keep their bulb.
+  let upLane = Math.max(...baseLanes, 0);
+  let downLane = Math.min(...baseLanes, 0);
   const branchConnectors: BranchConnector[] = doc.endplates
     .filter(
       (e) =>
@@ -3602,15 +3679,51 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         (doc.tracks ?? []).some((t) => t.id === e.trackId),
     )
     .map((e) => {
+      const trk = (doc.tracks ?? []).find((t) => t.id === e.trackId)!;
       // The branch leaves the main at its FEEDING turnout, not the endplate's
       // own along-axis spot — draw it there so it meets the main where it really
       // diverges (the endplate can sit well off to one side, #170).
       const sw = (doc.turnouts ?? []).find((t) => t.divergeTrack === e.trackId);
+      const startPos = sw ? sw.pos : e.at!.pos;
+      const side = e.at!.side === "down" ? "down" : "up";
+      const lane = side === "down" ? --downLane : ++upLane;
+      // The run is the route's OWN length, straightened onto the strip. Its
+      // projection on the module axis would be the "natural" span, but a square
+      // 90° exit projects to zero — the very case that made branches invisible.
+      // A path is always shorter along the axis than along itself, so the length
+      // is also the larger, safer number.
+      const runInches =
+        pathLengthInches(trk.path) ||
+        Math.abs(e.at!.pos - startPos) ||
+        FREEMO_ENDPLATE_WIDTH_MIN_INCHES;
+      // Lean the way the endplate really sits; fall back to the other way only
+      // when that would run off the end of the strip.
+      const toB = e.at!.pos >= startPos;
+      const fits = (p: number) => p >= 0 && p <= len;
+      const ahead = startPos + runInches;
+      const behind = startPos - runInches;
+      const endPos =
+        toB && fits(ahead)
+          ? ahead
+          : !toB && fits(behind)
+            ? behind
+            : fits(toB ? behind : ahead)
+              ? toB
+                ? behind
+                : ahead
+              : ahead; // longer than the module — clamped below
       return {
         id: e.id,
         label: e.label ?? e.id,
-        posFrac: clampFrac(sw ? sw.pos : e.at!.pos),
-        side: e.at!.side === "down" ? "down" : "up",
+        name: trk.trackName ?? "",
+        trackId: trk.id,
+        kind: (e.kind === "main" ? "main" : "branch") as "branch" | "main",
+        posFrac: clampFrac(startPos),
+        fromLane: (sw ? (trackLane.get(sw.onTrack) ?? 0) : 0) as number,
+        side: side as "up" | "down",
+        lane,
+        endFrac: clampFrac(endPos),
+        lengthInches: runInches,
       };
     });
 
@@ -3640,20 +3753,10 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     });
   });
 
-  // Main 2's actual drawn lane — −1 (below) when the mains are swapped, +1
-  // otherwise. Sizing the canvas off a hard-coded +1 clipped a swapped Main 2 at
-  // the bottom (#172); the renderer likewise must draw it here, not at +1.
-  const main2Lane = trackLane.has(MAIN2_TRACK_ID)
-    ? (trackLane.get(MAIN2_TRACK_ID) as number)
-    : null;
-  const allLanes = [
-    0,
-    main2Lane ?? (doubleMain ? 1 : 0),
-    ...extraTracks.map((t) => t.lane),
-    ...signals.map((s) => s.lane),
-    ...crossings.flatMap((x) => [x.laneA, x.laneB]),
-    ...crossovers.flatMap((x) => [x.fromLane, x.toLane]),
-  ];
+  // Branch lanes are part of the drawn extent, so renderers size their canvas
+  // from laneMin/laneMax alone — no "leave a lane spare if there's a branch"
+  // headroom hack at either end (#181).
+  const allLanes = [...baseLanes, ...branchConnectors.map((b) => b.lane)];
   const loop = isLoopDoc(doc);
   // A positioned Main 2 = a transition module (partial second main).
   const main2 = doc.tracks.find((t) => t.id === MAIN2_TRACK_ID);
