@@ -3144,6 +3144,137 @@ export function importedPartToTrackPart(
 }
 
 /**
+ * A part as an application stores it — one flat row, so the package needs to
+ * know nothing about any particular database. Dimensions are plain numbers with
+ * a `source` beside each, mirroring {@link PartDimension}.
+ */
+export interface StoredTrackPart {
+  slug: string;
+  manufacturer: string;
+  line: string;
+  scale?: string | null;
+  name: string;
+  kind?: string | null;
+  partNumberLeft?: string | null;
+  partNumberRight?: string | null;
+  partNumberSingle?: string | null;
+  frogNumber?: number | null;
+  pointsOffsetInches?: number | null;
+  pointsOffsetSource?: string | null;
+  frogOffsetInches?: number | null;
+  frogOffsetSource?: string | null;
+  overallLengthInches?: number | null;
+  overallLengthSource?: string | null;
+  leadInches?: number | null;
+  leadSource?: string | null;
+  outerRadiusInches?: number | null;
+  innerRadiusInches?: number | null;
+  radiusSource?: string | null;
+  actualAngleDeg?: number | null;
+  actualAngleSource?: string | null;
+  measurementNote?: string | null;
+}
+
+const asSource = (s: string | null | undefined): DimensionSource =>
+  s === "manufacturer" || s === "measured" || s === "derived" ? s : "unverified";
+
+/**
+ * Convert a stored row into a {@link TrackPart}.
+ *
+ * The LEAD is derived from the two offsets whenever both are present, rather
+ * than read from its own column: they're measured from the same tie end, so
+ * their difference is the lead by construction, and a separately-entered lead
+ * could silently disagree with the positions it's supposed to summarise. A
+ * stored `leadInches` is used only for a part whose offsets aren't known.
+ */
+export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
+  const note = row.measurementNote ?? undefined;
+  const dim = (
+    inches: number | null | undefined,
+    source: string | null | undefined,
+  ): PartDimension | undefined =>
+    typeof inches === "number" && Number.isFinite(inches)
+      ? { inches, source: asSource(source), ...(note ? { note } : {}) }
+      : undefined;
+
+  const points = dim(row.pointsOffsetInches, row.pointsOffsetSource);
+  const frog = dim(row.frogOffsetInches, row.frogOffsetSource);
+  // Both offsets ⇒ the lead is their difference, and it is only as good as the
+  // weaker of the two readings.
+  const lead: PartDimension | undefined =
+    points && frog
+      ? {
+          inches: frog.inches - points.inches,
+          source:
+            points.source === "measured" && frog.source === "measured"
+              ? "measured"
+              : "derived",
+          ...(note ? { note } : {}),
+        }
+      : dim(row.leadInches, row.leadSource);
+
+  const kind = row.kind;
+  const part: TrackPart = {
+    id: row.slug,
+    manufacturer: row.manufacturer,
+    line: row.line,
+    scale: "N",
+    name: row.name,
+    kind:
+      kind === "wye" || kind === "curved-turnout" || kind === "crossing"
+        ? kind
+        : "turnout",
+  };
+  const numbers = {
+    ...(row.partNumberLeft ? { left: row.partNumberLeft } : {}),
+    ...(row.partNumberRight ? { right: row.partNumberRight } : {}),
+    ...(row.partNumberSingle ? { single: row.partNumberSingle } : {}),
+  };
+  if (Object.keys(numbers).length) part.partNumbers = numbers;
+  if (typeof row.frogNumber === "number") part.frogNumber = row.frogNumber;
+  if (points) part.pointsOffset = points;
+  if (frog) part.frogOffset = frog;
+  const overall = dim(row.overallLengthInches, row.overallLengthSource);
+  if (overall) part.overallLength = overall;
+  if (lead) part.lead = lead;
+  const outer = dim(row.outerRadiusInches, row.radiusSource);
+  const inner = dim(row.innerRadiusInches, row.radiusSource);
+  if (outer) part.outerRadius = outer;
+  if (inner) part.innerRadius = inner;
+  if (typeof row.actualAngleDeg === "number")
+    part.actualAngle = {
+      deg: row.actualAngleDeg,
+      source: asSource(row.actualAngleSource),
+      ...(note ? { note } : {}),
+    };
+  return part;
+}
+
+/**
+ * Fold an application's STORED library over the built-in one, by slug.
+ *
+ * ⚠️ Unlike {@link mergeImportedParts}, a stored part **replaces** a built-in
+ * outright. That difference is deliberate, and the reason is who is speaking: an
+ * import is a third-party file that may have been fitted in someone else's CAD
+ * program, so it may only fill gaps. The stored library is seeded FROM these
+ * built-ins and edited by an admin with the part in their hand — it is the same
+ * library, later. Refusing their correction would mean a wrong dimension could
+ * only be fixed by shipping a release, which is exactly the limitation the
+ * stored library exists to remove.
+ *
+ * The built-ins remain the floor: a part nobody has stored still resolves, so
+ * geometry keeps working with no database at all.
+ */
+export function mergeStoredParts(
+  stored: StoredTrackPart[],
+  library: TrackPart[] = BUILT_IN_TRACK_PARTS,
+): TrackPart[] {
+  const bySlug = new Map(library.map((p) => [p.id, p]));
+  for (const row of stored) bySlug.set(row.slug, storedPartToTrackPart(row));
+  return [...bySlug.values()];
+}
+
+/**
  * Fold imported parts into a library.
  *
  * **Imports never overwrite. Ever.** They may only fill a gap — attach geometry

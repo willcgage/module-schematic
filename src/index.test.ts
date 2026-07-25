@@ -66,6 +66,8 @@ import {
   turnoutPartForSize,
   partExtent,
   partExtentForSize,
+  storedPartToTrackPart,
+  mergeStoredParts,
   leadInchesForSize,
   parseXtpLibrary,
   samplePartSegments,
@@ -1410,6 +1412,104 @@ describe("endplate poses (#175)", () => {
     const ten = partExtent(trackPart("atlas-c55-n-10"))!;
     expect(ten.aheadOfPoints).toBeCloseTo(7.4375, 6);
     expect(Math.abs(ten.pastFrog - 2.5625)).toBeLessThanOrEqual(1 / 16);
+  });
+
+  it("a stored part derives its lead from the two offsets, not a separate column", () => {
+    // They're measured from the same tie end, so the difference IS the lead. A
+    // separately-typed lead could silently disagree with the positions it is
+    // supposed to summarise, and that disagreement is the check worth keeping.
+    const p = storedPartToTrackPart({
+      slug: "peco-c55-n-6",
+      manufacturer: "Peco",
+      line: "Code 55",
+      name: "#6 Turnout",
+      kind: "turnout",
+      frogNumber: 6,
+      pointsOffsetInches: 0.75,
+      pointsOffsetSource: "measured",
+      frogOffsetInches: 4.25,
+      frogOffsetSource: "measured",
+      overallLengthInches: 6.5,
+      overallLengthSource: "measured",
+      leadInches: 99, // ignored — the offsets are the real reading
+      leadSource: "measured",
+      measurementNote: "test",
+    });
+    expect(p.lead).toMatchObject({ inches: 3.5, source: "measured" });
+
+    // A part with only a lead (the wye) keeps it.
+    const wye = storedPartToTrackPart({
+      slug: "atlas-c55-n-wye",
+      manufacturer: "Atlas",
+      line: "Code 55",
+      name: "#2.5 Wye",
+      kind: "wye",
+      frogNumber: 2.5,
+      leadInches: 1.205,
+      leadSource: "derived",
+    });
+    expect(wye.lead).toMatchObject({ inches: 1.205, source: "derived" });
+    expect(wye.kind).toBe("wye");
+
+    // A lead is only as good as the weaker of the two readings behind it.
+    const shaky = storedPartToTrackPart({
+      slug: "x",
+      manufacturer: "X",
+      line: "L",
+      name: "n",
+      pointsOffsetInches: 1,
+      pointsOffsetSource: "measured",
+      frogOffsetInches: 4,
+      frogOffsetSource: "unverified",
+    });
+    expect(shaky.lead).toMatchObject({ inches: 3, source: "derived" });
+  });
+
+  it("a stored part REPLACES a built-in, and the built-ins remain the floor", () => {
+    // The stored library is seeded from the built-ins and edited by an admin
+    // holding the part — refusing the correction would mean a wrong dimension
+    // could only be fixed by shipping a release.
+    const merged = mergeStoredParts([
+      {
+        slug: "atlas-c55-n-7",
+        manufacturer: "Atlas",
+        line: "Code 55",
+        name: "#7 Turnout",
+        kind: "turnout",
+        frogNumber: 7,
+        pointsOffsetInches: 0.625,
+        pointsOffsetSource: "measured",
+        frogOffsetInches: 4.5, // a corrected reading
+        frogOffsetSource: "measured",
+        overallLengthInches: 6,
+        overallLengthSource: "measured",
+      },
+      {
+        slug: "peco-c55-n-6",
+        manufacturer: "Peco",
+        line: "Code 55",
+        name: "#6 Turnout",
+        kind: "turnout",
+        frogNumber: 6,
+        pointsOffsetInches: 0.75,
+        pointsOffsetSource: "measured",
+        frogOffsetInches: 4.25,
+        frogOffsetSource: "measured",
+        overallLengthInches: 6.5,
+        overallLengthSource: "measured",
+      },
+    ]);
+
+    expect(merged.find((p) => p.id === "atlas-c55-n-7")?.frogOffset?.inches).toBe(4.5);
+    // Untouched built-ins survive, so geometry still works with no database.
+    expect(merged.find((p) => p.id === "atlas-c55-n-5")?.frogOffset?.inches).toBe(4.75);
+    // …and a newly stored part is now a real, drawable #6 — the gap closes.
+    expect(partExtentForSize(6, merged)).toMatchObject({
+      behindPoints: 0.75,
+      aheadOfPoints: 5.75,
+      pastFrog: 2.25,
+    });
+    expect(leadInchesForSize(6, merged)).toBeCloseTo(3.5, 6);
   });
 
   it("partExtent refuses to guess — length is packaging, not a function of N", () => {
