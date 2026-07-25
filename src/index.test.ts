@@ -66,6 +66,9 @@ import {
   leadInchesForSize,
   parseXtpLibrary,
   samplePartSegments,
+  importedPartToTrackPart,
+  mergeImportedParts,
+  frogNumberFromName,
   type PartSegment,
   type ReturnLoopShape,
   type ModuleSchematicDoc,
@@ -2371,6 +2374,115 @@ describe("parseXtpLibrary — importing an owner's OWN XTrkCAD library", () => {
   it("ignores comments and doesn't emit empty parts", () => {
     expect(parseXtpLibrary("# nothing but a comment\n")).toEqual([]);
     expect(parseXtpLibrary('TURNOUT N "X\tY\tZ"\n\tEND\n')).toEqual([]);
+  });
+
+  describe("wiring imports into the parts library", () => {
+    // A size we carry no built-in for, so it must be APPENDED rather than merged.
+    const unknown = [
+      'TURNOUT N "Atlas\t#6 RH Switch\t9999"',
+      '\tE 0.000000 0.000000 270.000000',
+      '\tE 5.000000 0.000000 90.000000',
+      '\tE 5.000000 0.500000 80.537678',
+      '\tS 0 0.000000 0.000000 0.000000 0.353100 0.000000',
+      '\tEND',
+    ].join("\n");
+
+    it("reads identity and geometry off the file", () => {
+      const t = importedPartToTrackPart(parseXtpLibrary(sample)[0], "N-atlasn55.xtp");
+      expect(t.manufacturer).toBe("Atlas");
+      expect(t.frogNumber).toBe(7);
+      expect(t.kind).toBe("turnout");
+      expect(t.partNumbers).toEqual({ single: "2052" });
+      expect(t.segments).toHaveLength(2);
+      expect(t.ends).toHaveLength(3);
+      expect(t.importedFrom).toBe("N-atlasn55.xtp");
+      // Span along the through axis, and the angle between the two exit ends.
+      expect(t.overallLength!.inches).toBeCloseTo(6, 6);
+      expect(t.actualAngle!.deg).toBeCloseTo(8.1818, 3);
+    });
+
+    // THE SAFETY PROPERTY. The shipped Atlas file's frog positions are
+    // internally inconsistent (#5's frog further out than the #7's), and an
+    // imported lead would outrank leadInchesForSize's interpolation across
+    // physical measurements. So imports must never carry one.
+    it("derives NO lead and NO frog offset, ever", () => {
+      for (const src of [sample, unknown]) {
+        for (const raw of parseXtpLibrary(src)) {
+          const t = importedPartToTrackPart(raw);
+          expect(t.lead, t.id).toBeUndefined();
+          expect(t.frogOffset, t.id).toBeUndefined();
+          expect(t.pointsOffset, t.id).toBeUndefined();
+        }
+      }
+    });
+
+    it("everything imported is marked unverified", () => {
+      const t = importedPartToTrackPart(parseXtpLibrary(sample)[0]);
+      for (const d of [t.overallLength, t.actualAngle]) {
+        expect(d!.source).toBe("unverified");
+        expect(d!.note).toMatch(/not a measurement/);
+      }
+    });
+
+    it("matches a built-in by part number and attaches its geometry", () => {
+      const merged = mergeImportedParts(parseXtpLibrary(sample), BUILT_IN_TRACK_PARTS);
+      // Merged, not appended.
+      expect(merged).toHaveLength(BUILT_IN_TRACK_PARTS.length);
+      const seven = merged.find((p) => p.id === "atlas-c55-n-7")!;
+      expect(seven.segments).toHaveLength(2);
+      expect(seven.ends).toHaveLength(3);
+    });
+
+    // The rule that keeps this safe: imports fill gaps, they never overwrite.
+    it("never overwrites a value we already hold", () => {
+      const merged = mergeImportedParts(parseXtpLibrary(sample), BUILT_IN_TRACK_PARTS);
+      const seven = merged.find((p) => p.id === "atlas-c55-n-7")!;
+      const builtIn = trackPart("atlas-c55-n-7")!;
+      // Measured lead and overall length survive untouched...
+      expect(seven.lead).toEqual(builtIn.lead);
+      expect(seven.overallLength).toEqual(builtIn.overallLength);
+      expect(seven.overallLength!.source).toBe("measured");
+      // ...and so does an existing UNVERIFIED value, even against another
+      // unverified one. Ours is at least traceable.
+      expect(seven.actualAngle).toEqual(builtIn.actualAngle);
+      expect(seven.actualAngle!.deg).toBeCloseTo(8.13, 6);
+      // The originals are untouched — merge must not mutate the library.
+      expect(BUILT_IN_TRACK_PARTS.find((p) => p.id === "atlas-c55-n-7")!.segments)
+        .toBeUndefined();
+    });
+
+    it("appends a part we have no entry for", () => {
+      const merged = mergeImportedParts(parseXtpLibrary(unknown), BUILT_IN_TRACK_PARTS);
+      expect(merged).toHaveLength(BUILT_IN_TRACK_PARTS.length + 1);
+      const six = merged.find((p) => p.frogNumber === 6)!;
+      expect(six.importedFrom).toBeTruthy();
+      expect(six.lead).toBeUndefined();
+    });
+
+    // An appended part has no lead, so lead lookups still interpolate across
+    // the MEASURED parts rather than picking up CAD data.
+    it("leaves lead lookups resting on measurements", () => {
+      const merged = mergeImportedParts(parseXtpLibrary(unknown), BUILT_IN_TRACK_PARTS);
+      expect(leadInchesForSize(6, merged)).toBeCloseTo(leadInchesForSize(6), 6);
+      expect(leadInchesForSize(6, merged)).toBeCloseTo(3.296875, 6);
+    });
+
+    it("reads frog numbers out of the maker's own naming", () => {
+      expect(frogNumberFromName("#7 LH Switch")).toBe(7);
+      expect(frogNumberFromName("Number 10 Right")).toBe(10);
+      expect(frogNumberFromName("No. 5 Turnout")).toBe(5);
+      expect(frogNumberFromName("Mark 3 Wye 280")).toBeUndefined();
+      expect(frogNumberFromName(undefined)).toBeUndefined();
+    });
+
+    it("classifies wyes and crossings from the name", () => {
+      const kindOf = (n: string) =>
+        importedPartToTrackPart({ title: n, name: n, ends: [], segments: [] }).kind;
+      expect(kindOf("Mark 3 Wye 280")).toBe("wye");
+      expect(kindOf("19 Degree Crossing")).toBe("crossing");
+      expect(kindOf("Curved Turnout 21/15")).toBe("curved-turnout");
+      expect(kindOf("#7 LH Switch")).toBe("turnout");
+    });
   });
 
   it("samples a curve with XTrkCAD's clockwise-from-north angles", () => {

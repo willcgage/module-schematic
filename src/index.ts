@@ -2500,6 +2500,16 @@ export interface TrackPart {
   innerRadius?: PartDimension;
   /** Crossing angle, degrees. */
   crossingAngleDeg?: number;
+  /** The part's drawn geometry in its own frame, when it came from a library
+   * file. This is the payload worth importing — real outlines we can draw
+   * instead of deriving a turnout's shape from a frog number. */
+  segments?: PartSegment[];
+  /** Connection points, each carrying position AND tangent. The seam a piece
+   * graph would snap on (#179 stage 1-2). */
+  ends?: PartEnd[];
+  /** Set when the part came from an imported library file rather than our own
+   * data — names the source so a user can tell where a dimension came from. */
+  importedFrom?: string;
 }
 
 /** N-scale code 55 rail height, inches — Atlas publish .055″. */
@@ -2903,6 +2913,149 @@ export function samplePartSegments(
     }
     return out;
   });
+}
+
+/** Signed difference between two XTrkCAD headings, normalised to (-180, 180]. */
+function angleDeltaDeg(a: number, b: number): number {
+  let d = ((a - b) % 360 + 540) % 360 - 180;
+  if (d === -180) d = 180;
+  return d;
+}
+
+/** Pull a frog number out of a part name — "#5", "No. 5", "Number 7 Left".
+ * Identification, not measurement: it reads the label the maker printed. */
+export function frogNumberFromName(name: string | undefined): number | undefined {
+  if (!name) return undefined;
+  const m = name.match(/(?:#|no\.?\s*|number\s+)(\d+(?:\.\d+)?)/i);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function importedKind(name: string | undefined): TrackPart["kind"] {
+  const s = (name ?? "").toLowerCase();
+  if (s.includes("wye")) return "wye";
+  if (s.includes("crossing")) return "crossing";
+  if (s.includes("curved")) return "curved-turnout";
+  return "turnout";
+}
+
+const slug = (s: string) =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+/**
+ * Convert a parsed `.xtp` part into a library {@link TrackPart}.
+ *
+ * ⚠️⚠️ **DELIBERATELY DERIVES NO `lead` AND NO `frogOffset`.** The shipped Atlas
+ * file's frog positions are internally inconsistent — it puts the #5's frog
+ * FURTHER OUT than the #7's, which cannot be true of physical parts. Every lead
+ * in this library is a physical measurement and must stay that way; an imported
+ * lead would silently outrank {@link leadInchesForSize}'s interpolation across
+ * those measurements, which is exactly the wrong trade.
+ *
+ * What IS taken: identity (manufacturer, name, part number, frog number), the
+ * drawn `segments` and `ends`, and two dimensions the geometry states directly —
+ * overall length along the through axis, and the actual divergence angle. Both
+ * land as `unverified`, because a community CAD file is not a measurement.
+ */
+export function importedPartToTrackPart(
+  part: ImportedPart,
+  sourceName = "imported .xtp",
+): TrackPart {
+  const name = part.name ?? part.title ?? "Imported part";
+  const manufacturer = part.manufacturer ?? "Unknown";
+  const note = `from ${sourceName} — community CAD data, not a measurement`;
+  const out: TrackPart = {
+    id: `xtp-${slug(manufacturer)}-${slug(part.partNumber || name)}`,
+    manufacturer,
+    name,
+    line: "",
+    scale: "N",
+    kind: importedKind(name),
+    frogNumber: frogNumberFromName(name),
+    segments: part.segments,
+    ends: part.ends,
+    importedFrom: sourceName,
+  };
+  if (part.partNumber) out.partNumbers = { single: part.partNumber };
+
+  const ends = part.ends;
+  if (ends.length >= 2) {
+    // Span along the axis the part faces at its first end. XTrkCAD headings run
+    // CLOCKWISE FROM NORTH, so the unit vector is (sin, cos).
+    const a = (ends[0].angleDeg * Math.PI) / 180;
+    const ux = Math.sin(a);
+    const uy = Math.cos(a);
+    const proj = ends.map((e) => (e.x - ends[0].x) * ux + (e.y - ends[0].y) * uy);
+    const span = Math.max(...proj) - Math.min(...proj);
+    if (span > 0) out.overallLength = { inches: span, source: "unverified", note };
+  }
+  if (ends.length >= 3) {
+    // The through end faces opposite the points end; the other one diverges, and
+    // the gap between their headings IS the frog angle.
+    const rest = ends.slice(1);
+    const opposite = rest
+      .map((e) => ({ e, off: Math.abs(angleDeltaDeg(e.angleDeg, ends[0].angleDeg + 180)) }))
+      .sort((p, q) => p.off - q.off);
+    const through = opposite[0].e;
+    const diverging = opposite[opposite.length - 1].e;
+    const deg = Math.abs(angleDeltaDeg(diverging.angleDeg, through.angleDeg));
+    if (deg > 0.01) out.actualAngle = { deg, source: "unverified", note };
+  }
+  return out;
+}
+
+/**
+ * Fold imported parts into a library.
+ *
+ * **Imports never overwrite. Ever.** They may only fill a gap — attach geometry
+ * a built-in lacks, or add a part we have no entry for. A dimension already
+ * present wins regardless of its source, because our worst built-in value is at
+ * least one we can trace, and this library has already been burned once by a
+ * plausible number from a CAD file (the constant-switch-angle model was fitted
+ * to an `.xtp` figure that turned out to be measured to the wrong landmark).
+ *
+ * Matching is by manufacturer part number first, then manufacturer + frog number.
+ */
+export function mergeImportedParts(
+  imported: ImportedPart[],
+  library: TrackPart[] = BUILT_IN_TRACK_PARTS,
+  sourceName = "imported .xtp",
+): TrackPart[] {
+  const out = library.map((p) => ({ ...p }));
+  const numbersOf = (p: TrackPart) =>
+    [p.partNumbers?.left, p.partNumbers?.right, p.partNumbers?.single]
+      .filter(Boolean)
+      .map((s) => (s as string).trim().toLowerCase());
+
+  for (const raw of imported) {
+    const conv = importedPartToTrackPart(raw, sourceName);
+    const pn = raw.partNumber?.trim().toLowerCase();
+    const match =
+      (pn ? out.find((p) => numbersOf(p).includes(pn)) : undefined) ??
+      (conv.frogNumber != null
+        ? out.find(
+            (p) =>
+              p.frogNumber === conv.frogNumber &&
+              p.kind === conv.kind &&
+              p.manufacturer.toLowerCase() === conv.manufacturer.toLowerCase(),
+          )
+        : undefined);
+
+    if (!match) {
+      out.push(conv);
+      continue;
+    }
+    // Geometry is the point of importing — take it when we have none.
+    if (!match.segments?.length && conv.segments?.length) match.segments = conv.segments;
+    if (!match.ends?.length && conv.ends?.length) match.ends = conv.ends;
+    if (!match.importedFrom && (conv.segments?.length || conv.ends?.length)) {
+      match.importedFrom = sourceName;
+    }
+    if (!match.overallLength && conv.overallLength) match.overallLength = conv.overallLength;
+    if (!match.actualAngle && conv.actualAngle) match.actualAngle = conv.actualAngle;
+  }
+  return out;
 }
 
 /** A turnout's CLOSURE — the diverging route's lateral offset from the through
