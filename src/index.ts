@@ -2487,6 +2487,12 @@ export interface ModuleFeatures {
     atFrac: number;
     doubleSide: "west" | "east";
   } | null;
+  /** Whether the module presents a far endplate at all. False for an *end of
+   * the line* or a *pocket*, which offer one conforming face and simply stop
+   * (#184) — a renderer must not label that end, or it announces a plate the
+   * module hasn't got and invites something to be coupled to it (#191). A loop
+   * is separate: see {@link loop} and {@link loopInterchange}. */
+  hasEndplateB: boolean;
   /** Lane extents across every feature (mains included; negative = outside
    * Main 1). Renderers size their vertical space from these. */
   laneMin: number;
@@ -4094,6 +4100,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     crossings,
     crossovers,
     branchConnectors,
+    hasEndplateB: doc.endplates.some((e) => e.id === "B"),
     industries,
     laneMin: Math.min(...allLanes),
     laneMax: Math.max(...allLanes),

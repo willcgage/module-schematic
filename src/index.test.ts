@@ -1596,7 +1596,11 @@ describe("endplate poses (#175)", () => {
     // loop misclassification.
     expect(back.configB).toBe("none");
     expect(back.loop).toBe(false);
-    expect(moduleFeatures(doc).loop).toBe(false);
+    const f = moduleFeatures(doc);
+    expect(f.loop).toBe(false);
+    // …and renderers are told there's no far end, so they don't label one.
+    expect(f.hasEndplateB).toBe(false);
+    expect(moduleFeatures(stateToDoc(emptyEditorState(120), "M")).hasEndplateB).toBe(true);
   });
 
   it("poseNeedsManual flags wye and other only", () => {
