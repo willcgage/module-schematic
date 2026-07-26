@@ -88,6 +88,7 @@ import {
   carCapacity,
   assessSectionEnd,
   assessSectionJoint,
+  FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   usableCapacity,
   clearancePointPastFrogInches,
   CLEARANCE_SPACING_INCHES,
@@ -4167,5 +4168,61 @@ describe("section ends (#130)", () => {
     expect(back.sections[0].endA?.config).toBe("single");
     expect(back.sections[0].endB?.config).toBe("double");
     expect(back.sections[1].endA ?? null).toBeNull();
+  });
+})
+
+// ── A branch endplate sits on the benchwork edge ─────────────────────────────
+describe("branch endplate placement", () => {
+  it("puts a placed 3rd endplate on the BOARD EDGE, not the centre line", () => {
+    // An endplate is where a train leaves the module, so a side-facing one
+    // belongs on the border. This derived `y: 0` — buried mid-board — and only
+    // looked right on modules whose pose had been hand-authored to the edge.
+    const up = deriveEndplatePoses({
+      lengthInches: 72,
+      geometryType: "straight",
+      branches: [{ id: "C", atPos: 24, side: "up" }],
+    }).find((p) => p.id === "C")!;
+    expect(up.x).toBeCloseTo(24);
+    expect(up.y).toBeCloseTo(FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES / 2); // 12, the board edge
+    expect(up.heading).toBe(90);
+    expect(up.y).not.toBe(0);
+
+    const down = deriveEndplatePoses({
+      lengthInches: 72,
+      geometryType: "straight",
+      branches: [{ id: "D", atPos: 24, side: "down" }],
+    }).find((p) => p.id === "D")!;
+    expect(down.y).toBeCloseTo(-FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES / 2);
+    expect(down.heading).toBe(270);
+  });
+
+  it("follows the board's own depth, and tapers with it", () => {
+    // A module whose plates differ in width is a wedge, so where a branch sits
+    // along it changes how deep the board is there.
+    const poses = deriveEndplatePoses({
+      lengthInches: 100,
+      geometryType: "straight",
+      endplateWidths: { A: 12, B: 24 },
+      branches: [
+        { id: "C", atPos: 0, side: "up" },
+        { id: "D", atPos: 50, side: "up" },
+        { id: "E", atPos: 100, side: "up" },
+      ],
+    });
+    expect(poses.find((p) => p.id === "C")!.y).toBeCloseTo(6); // 12/2
+    expect(poses.find((p) => p.id === "D")!.y).toBeCloseTo(9); // halfway
+    expect(poses.find((p) => p.id === "E")!.y).toBeCloseTo(12); // 24/2
+  });
+
+  it("an authored pose still wins", () => {
+    // The owner dragging the plate is the final word — the derived edge is only
+    // the starting point (#182).
+    const p = deriveEndplatePoses({
+      lengthInches: 72,
+      geometryType: "straight",
+      branches: [{ id: "C", atPos: 24, side: "up" }],
+      poseOverrides: { C: { x: 30, y: 5, heading: 45 } },
+    }).find((x) => x.id === "C")!;
+    expect(p).toMatchObject({ x: 30, y: 5, heading: 45, manual: true });
   });
 })

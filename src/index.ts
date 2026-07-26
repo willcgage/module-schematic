@@ -5181,6 +5181,10 @@ export interface ModuleGeometryInput {
   }[];
   /** Hand-entered pose overrides by endplate id — win over derivation. */
   poseOverrides?: Record<string, { x: number; y: number; heading: number }>;
+  /** Authored endplate FACE widths by id ("A"/"B"), inches — the board's depth.
+   * Needed to place a branch endplate on the benchwork edge rather than on the
+   * centre line; absent ends use the recommended default. */
+  endplateWidths?: Record<string, number>;
   /** Half the spacing between the two tracks of a double endplate (Free-mo ≈ 1",
    * Free-moN ≈ 9/16"). */
   trackHalfSpacingInches?: number;
@@ -5305,18 +5309,36 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
     );
   }
 
-  // Branch endplates — at their along-axis position, facing out their side.
+  // Branch endplates — ON THE BENCHWORK EDGE of their side, facing out.
+  //
+  // ⚠️ This used to derive `y: 0`, putting the plate on the module's CENTRE
+  // LINE. An endplate is where a train leaves the module, so a side-facing one
+  // belongs on the board's border — at y = 0 it sat buried mid-board and any
+  // track drawn to it stopped in the middle of nowhere. It only ever looked
+  // right on modules whose branch pose had been hand-authored to the edge.
+  //
+  // The depth is the endplate-width band's half-width at that point, which is
+  // exactly what the derived board is drawn as. A module with an AUTHORED
+  // outline may have its real edge elsewhere; that's the case the note below
+  // covers — drag the plate and the override wins.
+  //
   // Position along the (possibly curved) mainline is approximated on the A→B
   // chord; the join solver refines with overrides where a module needs it.
+  const widthAt = (frac: number) => {
+    const wa = endplateWidthFor(geo.endplateWidths, "A");
+    const wb = endplateWidthFor(geo.endplateWidths, "B");
+    return (wa * (1 - frac) + wb * frac) / 2;
+  };
   for (const b of geo.branches ?? []) {
     const frac = L > 0 ? Math.min(1, Math.max(0, b.atPos / L)) : 0;
     const px = frac * L;
     const config = b.config === "double" ? "double" : "single";
+    const depth = widthAt(frac);
     poses.push(
       withOverride({
         id: b.id,
         x: px,
-        y: 0,
+        y: b.side === "down" ? -depth : depth,
         heading: b.side === "down" ? 270 : 90,
         trackConfig: config,
         trackOffsets: offsetsFor(config, half),
