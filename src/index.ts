@@ -2347,24 +2347,32 @@ export interface DrawCrossover {
   toLane: number;
 }
 /**
- * A route leaving the module at a third endplate (#170) — Main 3, whatever the
- * owner labels it (#181). Drawn as an ELBOW: it diverges from its host main at
- * `posFrac`, drops to its own `lane`, then runs to `endFrac` and ends at an
- * endplate face.
+ * A route leaving the module at a third endplate — and an endplate is an
+ * endplate, whatever letter it carries (#183).
  *
- * The run is the branch's OWN arc length laid along the strip, not its
- * projection onto the module axis — a square 90° exit projects to zero, which
- * is exactly the case that made branches invisible here. Straightening the
- * route out at its true length is the same idiom this whole view applies to the
- * main; `posFrac → endFrac` is therefore a real axis, and `lengthInches` maps
- * onto it, so anything positioned along the branch has somewhere to draw.
+ * There is no split in the standard between "the two ends" and "the others": an
+ * endplate is the standardised face where a module joins another module, and a
+ * module may present two, three, or one. So a route to C is drawn the way a
+ * route to A or B is drawn — **it runs to the edge of the module and terminates
+ * in an endplate face carrying its letter**, rather than stopping partway along
+ * the strip as a stub.
+ *
+ * ⚠️ Because it runs the full width it would otherwise read as just another
+ * parallel main, which is exactly the confusion a dispatcher must not have. Its
+ * lane is therefore placed with a clear GAP beyond every other lane (see
+ * `laneGapFromOthers`), and it ends at a plate rather than running off the edge.
+ * The two requirements — full width, and not-a-parallel-main — are in tension by
+ * design, and the separation is what resolves it.
+ *
+ * The LETTER is the module's own fact and is fine to draw. The DESTINATION
+ * ("to Fillmore") depends on which module is physically attached at that
+ * junction, so it stays Free-Dispatcher's to derive at runtime.
  */
 export interface BranchConnector {
   /** Endplate id — "C", "D", … */
   id: string;
-  /** The endplate's label. MR draws no text (the destination depends on what's
-   * physically attached, so FD derives the panel label at runtime) — this is
-   * the owner's local name, for tooltips and FD's fallback. */
+  /** The owner's local name for the plate. NOT the destination — that depends
+   * on what's physically attached, so FD derives it at runtime. */
   label: string;
   /** The route's own name, from the track. */
   name: string;
@@ -2380,12 +2388,15 @@ export interface BranchConnector {
   fromLane: number;
   /** Which side of the module it exits. */
   side: "up" | "down";
-  /** The branch's own lane, signed by `side` and placed clear of every other
-   * lane (so it never collides) — already folded into laneMin/laneMax. */
+  /** The branch's own lane, signed by `side`, placed a clear GAP beyond every
+   * other lane so it can't be mistaken for a parallel main — already folded
+   * into laneMin/laneMax. */
   lane: number;
-  /** Where the run ends, and the endplate face is drawn. */
+  /** Where the run ends and the endplate face is drawn: the module EDGE, 0 or
+   * 1, because this is an end of the module like any other (#183). */
   endFrac: number;
-  /** The route's own arc length, inches. */
+  /** The route's own arc length on this module, inches — for the tooltip. The
+   * drawn run is the strip's width, not this. */
   lengthInches: number;
 }
 /** An industry — draw a car-spot span beside its track's lane, on `side`, with
@@ -3920,8 +3931,13 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   // axis anything positioned along the branch needs. NB the return-loop
   // generator also emits role:"branch" tracks — they're excluded here (and only
   // here) because no endplate's trackId points at them, so loops keep their bulb.
-  let upLane = Math.max(...baseLanes, 0);
-  let downLane = Math.min(...baseLanes, 0);
+  // Branch lanes start a clear GAP beyond the outermost drawn lane. One empty
+  // lane is what stops a route that runs the full width of the strip reading as
+  // just another main alongside (#183) — it is an END of the module, and it has
+  // to look like one.
+  const LANE_GAP_FROM_OTHERS = 2;
+  let upLane = Math.max(...baseLanes, 0) + (LANE_GAP_FROM_OTHERS - 1);
+  let downLane = Math.min(...baseLanes, 0) - (LANE_GAP_FROM_OTHERS - 1);
   const branchConnectors: BranchConnector[] = doc.endplates
     .filter(
       (e) =>
@@ -3949,22 +3965,15 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         pathLengthInches(trk.path) ||
         Math.abs(e.at!.pos - startPos) ||
         FREEMO_ENDPLATE_WIDTH_MIN_INCHES;
-      // Lean the way the endplate really sits; fall back to the other way only
-      // when that would run off the end of the strip.
+      // ⚠️ The route runs to the EDGE of the module, not for its own length.
+      // This is an endplate: a train leaves the module here, exactly as it does
+      // at A or B, and the straightened view says so by taking the route to the
+      // end of the strip and terminating it at a plate (#183). Its real
+      // on-module length is still reported, for the tooltip.
+      //
+      // Which edge is the one the plate actually sits toward — a junction near
+      // the west end exits west.
       const toB = e.at!.pos >= startPos;
-      const fits = (p: number) => p >= 0 && p <= len;
-      const ahead = startPos + runInches;
-      const behind = startPos - runInches;
-      const endPos =
-        toB && fits(ahead)
-          ? ahead
-          : !toB && fits(behind)
-            ? behind
-            : fits(toB ? behind : ahead)
-              ? toB
-                ? behind
-                : ahead
-              : ahead; // longer than the module — clamped below
       return {
         id: e.id,
         label: e.label ?? e.id,
@@ -3975,7 +3984,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         fromLane: (sw ? (trackLane.get(sw.onTrack) ?? 0) : 0) as number,
         side: side as "up" | "down",
         lane,
-        endFrac: clampFrac(endPos),
+        endFrac: toB ? 1 : 0,
         lengthInches: runInches,
       };
     });

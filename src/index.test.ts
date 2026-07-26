@@ -1053,8 +1053,10 @@ describe("crossings and branch endplates (#170)", () => {
     expect(doc.endplates[3]).toMatchObject({ label: "MoPac East", at: { pos: 110, side: "up" } });
 
     const f = moduleFeatures(doc);
-    // Each branch runs its OWN 6″ length from where it leaves the main, leaning
-    // the way its endplate sits, on a lane clear of everything else (#181).
+    // Each route runs to the EDGE of the module and ends at a plate, because an
+    // endplate is an endplate whatever letter it carries (#183) — and each sits
+    // a clear lane's GAP beyond everything else, so a full-width route can't be
+    // mistaken for a parallel main.
     expect(f.branchConnectors).toEqual([
       {
         id: "C",
@@ -1065,8 +1067,8 @@ describe("crossings and branch endplates (#170)", () => {
         posFrac: 20 / 120,
         fromLane: 0,
         side: "down",
-        lane: -1,
-        endFrac: 26 / 120,
+        lane: -2,
+        endFrac: 1,
         lengthInches: 6,
       },
       {
@@ -1078,14 +1080,14 @@ describe("crossings and branch endplates (#170)", () => {
         posFrac: 110 / 120,
         fromLane: 0,
         side: "up",
-        lane: 1,
-        endFrac: 116 / 120,
+        lane: 2,
+        endFrac: 1,
         lengthInches: 6,
       },
     ]);
     // The branch lanes are part of the drawn extent — renderers need no extra
     // headroom of their own.
-    expect([f.laneMin, f.laneMax]).toEqual([-1, 1]);
+    expect([f.laneMin, f.laneMax]).toEqual([-2, 2]);
     expect(f.loop).toBe(false);
 
     const back = docToState(doc, 120);
@@ -1126,10 +1128,11 @@ describe("crossings and branch endplates (#170)", () => {
     expect(pathLengthInches(undefined)).toBe(0);
   });
 
-  it("a square 90° branch still gets a real run — its own length, not its projection", () => {
+  it("a square 90° branch runs to the module edge and ends at a plate", () => {
     // The case that made branches invisible (#181): the endplate sits directly
     // out from its turnout, so the route projects to ZERO along the module axis.
-    // Its own arc length is the honest measure and the one we draw.
+    // It is an END of the module, so it runs to the edge like A and B do (#183);
+    // its own on-module length is still reported for the tooltip.
     const s = emptyEditorState(96);
     s.branches.push({ label: "Jct", pos: 48, side: "up", config: "single", kind: "main", trackId: "br1" });
     s.extraTracks.push({
@@ -1145,32 +1148,34 @@ describe("crossings and branch endplates (#170)", () => {
     s.turnouts.push({ id: "sw1", pos: 48, onTrack: "main", divergeTrack: "br1", kind: "right" });
 
     const b = moduleFeatures(stateToDoc(s, "M")).branchConnectors[0];
-    expect(b.lengthInches).toBeCloseTo(14, 6);
-    expect(b.posFrac).toBeCloseTo(48 / 96, 6);
-    expect(b.endFrac).toBeCloseTo(62 / 96, 6); // 48 + 14, NOT 48
+    expect(b.lengthInches).toBeCloseTo(14, 6); // its real 14″ on this module
+    expect(b.posFrac).toBeCloseTo(48 / 96, 6); // leaves the main here
+    expect(b.endFrac).toBe(1); // …and terminates at the module's edge
     // A diverging main is drawn as one — that's the whole point of the rule.
     expect(b.kind).toBe("main");
     expect(b.name).toBe("Coast Sub");
   });
 
-  it("a branch near the end of the module leans back rather than running off the strip", () => {
+  it("a route exits toward the edge its plate actually sits on", () => {
+    // A junction near the west end leaves west. The letter is the module's own
+    // fact; which module lies beyond it is Free-Dispatcher's to say.
     const s = emptyEditorState(96);
-    s.branches.push({ label: "Jct", pos: 92, side: "up", config: "single", kind: "branch", trackId: "br1" });
+    s.branches.push({ label: "Jct", pos: 10, side: "up", config: "single", kind: "branch", trackId: "br1" });
     s.extraTracks.push({
       id: "br1",
       role: "branch",
       lane: 2,
-      fromPos: 92,
-      toPos: 92,
-      path: [{ x: 92, y: 0 }, { x: 92, y: 18 }],
+      fromPos: 60,
+      toPos: 60,
+      path: [{ x: 60, y: 0 }, { x: 10, y: 18 }],
       moduleTrackId: null,
       trackName: "To C",
     });
-    s.turnouts.push({ id: "sw1", pos: 92, onTrack: "main", divergeTrack: "br1", kind: "right" });
+    s.turnouts.push({ id: "sw1", pos: 60, onTrack: "main", divergeTrack: "br1", kind: "right" });
 
     const b = moduleFeatures(stateToDoc(s, "M")).branchConnectors[0];
-    // 92 + 18 = 110 would be off the east end, so it runs back west instead.
-    expect(b.endFrac).toBeCloseTo(74 / 96, 6);
+    expect(b.posFrac).toBeCloseTo(60 / 96, 6); // leaves at its turnout
+    expect(b.endFrac).toBe(0); // exits WEST, where endplate C sits
   });
 
   it("a branch takes a lane clear of the sidings already drawn", () => {
