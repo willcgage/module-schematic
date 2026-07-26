@@ -133,6 +133,10 @@ export interface SchematicTrack {
    * product's maximum piece length. Present = these are the ONLY joints, so an
    * owner's deliberate cut survives a change elsewhere on the module. */
   flexCuts?: number[] | null;
+  /** The owner's MEASURED usable length, real inches (#20) — for what the
+   * drawing can't know: a bumper post short of the drawn end, a structure
+   * fouling the track. Absent = derive it from the clearance points (#19). */
+  measuredUsableInches?: number | null;
 }
 export interface SchematicTurnout {
   id: string;
@@ -1491,6 +1495,134 @@ export function scaleFeetToInches(feet: number, ratio = N_SCALE_RATIO): number {
  * single constant every repo reads so a track's car count matches everywhere. */
 export const N_CAR_LENGTH_INCHES = 3.3;
 
+/**
+ * How far the two routes must separate before a car on one clears equipment on
+ * the other — the CLEARANCE POINT's defining distance (#19).
+ *
+ * ⭐ Deliberately the **Free-moN track spacing**, not a second number. §2.0 uses
+ * 1.125″ as the distance at which two parallel tracks coexist, so "a car here
+ * clears a car there" is the same statement the standard already makes. It's
+ * 15 scale feet centre to centre, inside the prototype's usual 13–15 ft range.
+ *
+ * The alternative — a separate prototype constant — would leave the app holding
+ * two spacings that disagree about what "clear" means.
+ */
+export const CLEARANCE_SPACING_INCHES = FREEMO_TRACK_SPACING_INCHES;
+
+/**
+ * How far past the FROG a turnout's diverging route reaches the clearance point
+ * (#19) — the point from which usable capacity is measured.
+ *
+ * Not a measurement and not a guess: it's solved from the closure the drawing
+ * already uses, by asking where `offsetAt` first reaches
+ * {@link CLEARANCE_SPACING_INCHES}. So it follows the part's real lead, and a
+ * better-measured part moves it automatically.
+ *
+ * Returns the distance PAST THE FROG because `pos` means the frog (#132) — add
+ * it to the turnout's position, in the direction the turnout faces.
+ */
+export function clearancePointPastFrogInches(
+  size: number,
+  library = BUILT_IN_TRACK_PARTS,
+  clearanceInches = CLEARANCE_SPACING_INCHES,
+): number {
+  const N = size > 0 ? size : 6;
+  const lead = leadInchesForSize(N, library);
+  const cl = turnoutClosure(N, { leadInches: lead });
+  // The profile rises monotonically, so bisect — cheap, and it doesn't care
+  // which branch of the closure (switch curve, frog angle, ease) the answer
+  // lands in.
+  let lo = 0;
+  let hi = Math.max(4 * lead, 4 * clearanceInches * N);
+  if (cl.offsetAt(hi) < clearanceInches) return hi - lead;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (cl.offsetAt(mid) < clearanceInches) lo = mid;
+    else hi = mid;
+  }
+  return Math.max(0, hi - lead);
+}
+
+/** A track's usable capacity, measured to the clearance-point standard (#19). */
+export interface UsableCapacity {
+  /** The stretch a car can actually stand on, inches along the run. */
+  fromPos: number;
+  toPos: number;
+  /** Its length — what capacity is computed from. */
+  usableInches: number;
+  /** The run's full drawn length, for comparison. */
+  drawnInches: number;
+  /** How much each end gives up to its governing turnout's clearance point. */
+  givenUpInches: number;
+  /** Cars that fit in the usable length. */
+  cars: number;
+  /** Usable length as scale feet. */
+  scaleFeet: number;
+}
+
+/**
+ * A track's USABLE capacity — measured from the governing turnout's clearance
+ * point, not from the rail ends (#19/#20).
+ *
+ * A spur runs clearance point → end of track; a siding, clearance point →
+ * clearance point. The difference is not small: FMN-0040's 70″ passing siding
+ * has two #7s on it, and loses 5.4″ at each end — 21 cars drawn, 17 usable.
+ *
+ * `measuredUsableInches` is the owner's override for what the drawing can't
+ * know — a bumper post short of the drawn end, a structure fouling the track.
+ * Given, it wins outright and the clearance points aren't applied to it: they
+ * measured the usable length itself.
+ */
+export function usableCapacity(input: {
+  fromPos: number;
+  toPos: number;
+  /** Turnouts that DIVERGE ONTO this track — the ones that govern its ends. */
+  governing?: { pos: number; size?: number | null }[] | null;
+  /** The owner's measured usable length, inches. Wins when present. */
+  measuredUsableInches?: number | null;
+  library?: TrackPart[];
+  carLengthInches?: number;
+}): UsableCapacity {
+  const lo = Math.min(input.fromPos, input.toPos);
+  const hi = Math.max(input.fromPos, input.toPos);
+  const drawn = hi - lo;
+  const carLen = input.carLengthInches ?? N_CAR_LENGTH_INCHES;
+
+  if (typeof input.measuredUsableInches === "number" && input.measuredUsableInches >= 0) {
+    const m = input.measuredUsableInches;
+    return {
+      fromPos: lo,
+      toPos: lo + m,
+      usableInches: m,
+      drawnInches: drawn,
+      givenUpInches: Math.max(0, drawn - m),
+      cars: carCapacity(0, m, carLen),
+      scaleFeet: Math.round(inchesToScaleFeet(m)),
+    };
+  }
+
+  // Each governing turnout pushes the END NEAREST IT inward to its clearance
+  // point. Nearest, not "the low one": a siding's two turnouts sit at its two
+  // ends, and a spur's single turnout may govern either.
+  let a = lo;
+  let b = hi;
+  for (const sw of input.governing ?? []) {
+    const c = clearancePointPastFrogInches(sw.size ?? 6, input.library);
+    if (Math.abs(sw.pos - lo) <= Math.abs(sw.pos - hi)) a = Math.max(a, lo + c);
+    else b = Math.min(b, hi - c);
+  }
+  const usable = Math.max(0, b - a);
+  return {
+    fromPos: a,
+    toPos: Math.max(a, b),
+    usableInches: usable,
+    drawnInches: drawn,
+    givenUpInches: Math.max(0, drawn - usable),
+    cars: carCapacity(0, usable, carLen),
+    scaleFeet: Math.round(inchesToScaleFeet(usable)),
+  };
+}
+
 /** How much of a car-spot span has no rail under it (#194). */
 export interface SpanOverhang {
   /** Inches the span runs past the track's near end (0 = it starts on track). */
@@ -1596,6 +1728,8 @@ export interface EditorTrack {
   /** Authored 2-D path (module-local inches) — a bent/rotated spur's real
    * shape. Absent = derive from the main + lane (#2d-track). */
   path?: BenchworkPoint[];
+  /** Measured usable length, real inches (#20). Absent = derived (#19). */
+  measuredUsableInches?: number;
 }
 
 /** A module_tracks row as loaded for the editor. */
@@ -2064,7 +2198,19 @@ export function stateToDoc(
         toPos: t.toPos,
         moduleTrackId: t.moduleTrackId,
         trackName: t.trackName || undefined,
-        capacityFeet: Math.round(inchesToScaleFeet(Math.abs(t.toPos - t.fromPos))),
+        // ⚠️ USABLE capacity, measured from the governing turnouts' CLEARANCE
+        // POINTS (#19) — not the drawn rail-to-rail length, which counts track
+        // a car can't stand on without fouling the route it diverged from.
+        // FMN-0040's 70″ siding is 21 cars drawn and 17 usable.
+        capacityFeet: usableCapacity({
+          fromPos: t.fromPos,
+          toPos: t.toPos,
+          governing: state.turnouts.filter((sw) => sw.divergeTrack === t.id),
+          measuredUsableInches: t.measuredUsableInches,
+        }).scaleFeet,
+        ...(typeof t.measuredUsableInches === "number" && t.measuredUsableInches >= 0
+          ? { measuredUsableInches: t.measuredUsableInches }
+          : {}),
         ...(state.loop && t.inLoop ? { inLoop: true } : {}),
         ...(t.path && t.path.length >= 2 ? { path: t.path } : {}),
       })),
@@ -2195,6 +2341,11 @@ export function docToState(
         ...(t.inLoop ? { inLoop: true } : {}),
         // Authored path kept as-drawn (a physical shape, not rescaled with length).
         ...(trackPath(t.path) ? { path: trackPath(t.path)! } : {}),
+        // A MEASURED length is a real-world fact about the physical track, so it
+        // rescales with the module exactly as its positions do (#20).
+        ...(typeof t.measuredUsableInches === "number" && Number.isFinite(t.measuredUsableInches)
+          ? { measuredUsableInches: sc(t.measuredUsableInches) }
+          : {}),
       });
     }
   }

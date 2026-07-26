@@ -86,6 +86,12 @@ import {
   flexUsage,
   spanOverhang,
   carCapacity,
+  usableCapacity,
+  clearancePointPastFrogInches,
+  CLEARANCE_SPACING_INCHES,
+  FREEMO_TRACK_SPACING_INCHES,
+  turnoutClosure,
+  leadInchesForSize,
   BUILT_IN_TRACK_PARTS,
   partExtent,
   leadInchesForSize,
@@ -3942,5 +3948,124 @@ describe("span overhang (#194)", () => {
     expect(o.onTrackInches).toBe(0);
     expect(o.afterInches).toBe(30); // measured from the track's far end
     expect(o.beforeInches).toBe(0);
+  });
+})
+
+// ── Usable capacity from the clearance point (#19/#20) ────────────────────────
+// Physical track length is not usable capacity: a car standing short of the
+// clearance point fouls the adjacent route. Capacity is measured from there.
+describe("usable capacity (#19/#20)", () => {
+  it("puts the clearance point where the routes reach one track spacing apart", () => {
+    // The defining distance IS the standard's track spacing — the distance at
+    // which two parallel tracks coexist — not a second, disagreeing constant.
+    expect(CLEARANCE_SPACING_INCHES).toBe(FREEMO_TRACK_SPACING_INCHES);
+    const cl = turnoutClosure(7, { leadInches: leadInchesForSize(7) });
+    const past = clearancePointPastFrogInches(7);
+    // At the clearance point the routes are exactly one spacing apart…
+    expect(cl.offsetAt(leadInchesForSize(7) + past)).toBeCloseTo(FREEMO_TRACK_SPACING_INCHES, 3);
+    // …and a shade before it, they are not.
+    expect(cl.offsetAt(leadInchesForSize(7) + past - 0.5)).toBeLessThan(FREEMO_TRACK_SPACING_INCHES);
+  });
+
+  it("reaches clearance later on a shallower frog", () => {
+    // A #10 diverges more gently, so it takes longer to get clear — which is
+    // exactly why the figure can't be one constant for every turnout.
+    const p = [5, 6, 7, 10].map((n) => clearancePointPastFrogInches(n));
+    for (let i = 1; i < p.length; i++) expect(p[i]).toBeGreaterThan(p[i - 1]);
+    expect(p[2]).toBeCloseTo(5.4, 1); // the #7, on our measured lead
+  });
+
+  it("a siding gives up its clearance point at BOTH ends", () => {
+    // FMN-0040's passing siding: 33 → 103 on the main, a #7 governing each end.
+    const u = usableCapacity({
+      fromPos: 33,
+      toPos: 103,
+      governing: [{ pos: 33, size: 7 }, { pos: 103, size: 7 }],
+    });
+    expect(u.drawnInches).toBe(70);
+    expect(u.usableInches).toBeCloseTo(70 - 2 * clearancePointPastFrogInches(7), 3);
+    expect(u.usableInches).toBeCloseTo(59.2, 1);
+    // The point of the whole exercise: the drawn figure overstates it.
+    expect(carCapacity(0, 70)).toBe(21);
+    expect(u.cars).toBe(17);
+  });
+
+  it("a spur gives up only the end its turnout governs", () => {
+    const u = usableCapacity({ fromPos: 20, toPos: 50, governing: [{ pos: 20, size: 7 }] });
+    expect(u.fromPos).toBeCloseTo(20 + clearancePointPastFrogInches(7), 3);
+    expect(u.toPos).toBe(50); // the far end is a rail end, not a turnout
+  });
+
+  it("governs the NEAREST end, whichever way the track was authored", () => {
+    // A spur running east→west is ordinary; its turnout is then at the HIGH end.
+    const west = usableCapacity({ fromPos: 50, toPos: 20, governing: [{ pos: 50, size: 7 }] });
+    expect(west.toPos).toBeCloseTo(50 - clearancePointPastFrogInches(7), 3);
+    expect(west.fromPos).toBe(20);
+    expect(west.usableInches).toBeCloseTo(
+      usableCapacity({ fromPos: 20, toPos: 50, governing: [{ pos: 20, size: 7 }] }).usableInches,
+      6,
+    );
+  });
+
+  it("an owner's measured length wins, and clearance is NOT taken off it again", () => {
+    // They measured the USABLE length — a bumper post short of the drawn end.
+    // Subtracting the clearance point again would double-count it.
+    const u = usableCapacity({
+      fromPos: 33,
+      toPos: 103,
+      governing: [{ pos: 33, size: 7 }, { pos: 103, size: 7 }],
+      measuredUsableInches: 55,
+    });
+    expect(u.usableInches).toBe(55);
+    expect(u.cars).toBe(carCapacity(0, 55));
+    expect(u.givenUpInches).toBe(15); // 70 drawn − 55 usable
+  });
+
+  it("a run swallowed whole by its clearance points holds nothing", () => {
+    const u = usableCapacity({
+      fromPos: 40,
+      toPos: 44,
+      governing: [{ pos: 40, size: 7 }, { pos: 44, size: 7 }],
+    });
+    expect(u.usableInches).toBe(0);
+    expect(u.cars).toBe(0);
+  });
+
+  it("stores the USABLE figure as capacityFeet, and round-trips a measured override", () => {
+    const s0 = emptyEditorState(120);
+    const st: typeof s0 = {
+      ...s0,
+      extraTracks: [
+        { id: "sid1", role: "siding", lane: -1, fromPos: 33, toPos: 103, moduleTrackId: null, trackName: "Passing siding" },
+        { id: "sp1", role: "spur", lane: -2, fromPos: 20, toPos: 50, moduleTrackId: null, trackName: "Spur", measuredUsableInches: 22 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 33, kind: "right", name: "", onTrack: MAIN_TRACK_ID, divergeTrack: "sid1", size: 7 },
+        { id: "sw2", pos: 103, kind: "right", name: "", onTrack: MAIN_TRACK_ID, divergeTrack: "sid1", size: 7 },
+        { id: "sw3", pos: 20, kind: "right", name: "", onTrack: "sid1", divergeTrack: "sp1", size: 7 },
+      ],
+    };
+    const doc = stateToDoc(st, "M");
+    const sid = doc.tracks.find((t) => t.id === "sid1")!;
+    const spur = doc.tracks.find((t) => t.id === "sp1")!;
+    // The siding stores USABLE feet, not the 933 its drawn 70″ would give.
+    expect(sid.capacityFeet).toBe(
+      usableCapacity({ fromPos: 33, toPos: 103, governing: [{ pos: 33, size: 7 }, { pos: 103, size: 7 }] }).scaleFeet,
+    );
+    expect(sid.capacityFeet).toBeLessThan(Math.round(inchesToScaleFeet(70)));
+    expect(sid.measuredUsableInches).toBeUndefined(); // nothing measured ⇒ not written
+    // The spur's measured override is stored and comes back.
+    expect(spur.measuredUsableInches).toBe(22);
+    expect(spur.capacityFeet).toBe(Math.round(inchesToScaleFeet(22)));
+    expect(docToState(doc, 120).extraTracks.find((t) => t.id === "sp1")!.measuredUsableInches).toBe(22);
+    // …and rescales with the module, like every other real-world length.
+    expect(docToState(doc, 60).extraTracks.find((t) => t.id === "sp1")!.measuredUsableInches).toBe(11);
+  });
+
+  it("with no governing turnout, usable IS the drawn length", () => {
+    const u = usableCapacity({ fromPos: 0, toPos: 48 });
+    expect(u.usableInches).toBe(48);
+    expect(u.drawnInches).toBe(48);
+    expect(u.givenUpInches).toBe(0);
   });
 })
