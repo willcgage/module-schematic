@@ -635,6 +635,10 @@ export interface ModuleFootprintInput {
   /** A balloon / return loop — the centre-line turns back on itself, so its far
    * end is the THROAT, not an endplate; only endplate A's face is emitted (#loop). */
   loop?: boolean;
+  /** Axial endplate configs (A first, then B), same as
+   * {@link ModuleGeometryInput.endplateConfigs}. `"none"` at B means the module
+   * presents no far endplate, so no face is emitted there (#184/#191). */
+  endplateConfigs?: ("single" | "double" | "none" | null | undefined)[];
 }
 
 export interface OutlineFace {
@@ -1219,9 +1223,10 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   return {
     centerline,
     band: benchworkBand(centerline, widthA, widthB, offA, offB),
-    // A loop's centre-line ends at the throat, not a far endplate — keep only
-    // endplate A's face (the far face would be a spurious plate at the throat).
-    endplateFaces: input.loop
+    // Only emit a face where the module actually presents one. A loop's
+    // centre-line ends at the THROAT, and an end of the line / pocket simply
+    // stops — a far face there is a plate the module hasn't got (#191).
+    endplateFaces: hasNoFarEndplate(input)
       ? endplateFaceSegments(centerline, widthA, widthB, offA, offB).slice(0, 1)
       : endplateFaceSegments(centerline, widthA, widthB, offA, offB),
     outline: sectionOutlines.length || !authored ? null : sampleBenchworkOutline(authored),
@@ -1330,6 +1335,34 @@ const round3 = (n: number) => Math.round(n * 1000) / 1000;
 function endplateWidthFor(widths: Record<string, number> | undefined, id: string): number {
   const w = widths?.[id];
   return typeof w === "number" && w > 0 ? w : FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES;
+}
+
+/**
+ * Whether a module presents NO far endplate — one conforming face only.
+ *
+ * ⭐ THE single definition. Three places had grown their own answer to this and
+ * drifted: `deriveEndplatePoses` (which knew about `dead_end` and `"none"`), the
+ * operations preview's end label, and `moduleFootprint`'s endplate faces — the
+ * last two using "is it a loop?" as a stand-in for "has it got two ends?", which
+ * was true until #184 and silently wrong after. Anything asking this must call
+ * THIS.
+ *
+ * Three ways to have one end, and they are genuinely different things: the
+ * geometry is a dead end; it's a balloon loop, whose far end is the throat and
+ * not a plate at all; or the owner said this end has no plate, which is how an
+ * *end of the line* or a *pocket* is authored — ordinary straight boards that
+ * simply stop, so no geometry type would ever say it for them.
+ */
+export function hasNoFarEndplate(input: {
+  geometryType?: string | null;
+  loop?: boolean;
+  endplateConfigs?: ("single" | "double" | "none" | null | undefined)[];
+}): boolean {
+  return (
+    input.geometryType === "dead_end" ||
+    input.loop === true ||
+    input.endplateConfigs?.[1] === "none"
+  );
 }
 
 /**
@@ -4385,17 +4418,9 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
     }),
   );
 
-  // Endplate B — unless the module presents only ONE face. Three ways to say so,
-  // and they're different things: the geometry is a dead end; it's a balloon
-  // loop (it turns back on itself, so the chain's end lands near the throat, not
-  // a real far endplate); or the owner simply said this end has no plate, which
-  // is how an *end of the line* or a *pocket* is authored — those are ordinary
-  // straight boards that just stop, so no geometry type would ever say it for
-  // them (#184).
-  const noB =
-    geo.geometryType === "dead_end" ||
-    geo.loop === true ||
-    geo.endplateConfigs?.[1] === "none";
+  // Endplate B — unless the module presents only ONE face. See
+  // hasNoFarEndplate for the three ways to say so and why they differ (#184).
+  const noB = hasNoFarEndplate(geo);
   // A sectioned module's real end is where its boards finish, which no single
   // module-level geometry can predict — chain them and read the last point and
   // its closing tangent (#108).

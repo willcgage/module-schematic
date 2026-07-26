@@ -52,6 +52,7 @@ import {
   MAIN2_TRACK_ID,
   deriveEndplatePoses,
   poseNeedsManual,
+  hasNoFarEndplate,
   poseOverridesFromDoc,
   endplateLead,
   trackMeetsEndplateIssues,
@@ -1565,6 +1566,34 @@ describe("endplate poses (#175)", () => {
       }),
     ).toBeNull();
     expect(partExtent(null)).toBeNull();
+  });
+
+  it("a single-ended module draws ONE endplate face, not two (#191)", () => {
+    // The footprint used to trim to one face only for a loop, using "is it a
+    // loop?" as a stand-in for "has it got two ends?" — so a pocket drew a plate
+    // at an end it hasn't got. hasNoFarEndplate is now the single answer.
+    const base = { lengthInches: 24, geometryType: "straight" } as const;
+    expect(moduleFootprint({ ...base }).endplateFaces).toHaveLength(2);
+    expect(
+      moduleFootprint({ ...base, endplateConfigs: ["single", "none"] }).endplateFaces,
+    ).toHaveLength(1);
+    expect(moduleFootprint({ ...base, loop: true }).endplateFaces).toHaveLength(1);
+    // ⚠️ A `dead_end` GEOMETRY draws NO faces at all, which is a separate
+    // pre-existing quirk, not this fix: moduleCenterline returns a single point
+    // for it, so there's no direction to build a face from — and a module with a
+    // one-point centre-line has no length either. Pinned as-is so the oddity is
+    // recorded rather than hidden; authoring a single-ended module goes through
+    // `endplateConfigs` above, which works.
+    expect(
+      moduleFootprint({ lengthInches: 24, geometryType: "dead_end" }).endplateFaces,
+    ).toHaveLength(0);
+
+    // …and the predicate itself, since three places now share it.
+    expect(hasNoFarEndplate({ geometryType: "straight" })).toBe(false);
+    expect(hasNoFarEndplate({ geometryType: "dead_end" })).toBe(true);
+    expect(hasNoFarEndplate({ loop: true })).toBe(true);
+    expect(hasNoFarEndplate({ endplateConfigs: ["single", "none"] })).toBe(true);
+    expect(hasNoFarEndplate({ endplateConfigs: ["single", "double"] })).toBe(false);
   });
 
   it("a module can present ONE endplate — an end of the line or a pocket (#184)", () => {
