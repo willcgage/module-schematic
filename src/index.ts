@@ -3054,6 +3054,25 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     },
   },
   {
+    // Will Gage, 2026-07-26: "2057 is 3.5, 2056 is 2.5" — the two Atlas Code 55
+    // wyes are different FROG NUMBERS, not a left/right pair of one part. The
+    // 2056 half of that confirms the entry above; this is the one we didn't have.
+    //
+    // No lead. The #2.5's is `derived` from a per-frog rule its own note records
+    // as refuted, so it rests on nothing — repeating that for a second part
+    // would be exactly how a number nobody checked becomes two. Without one,
+    // `leadInchesForSize` interpolates across the MEASURED parts at the wye's
+    // effective frog (3.5 × 2 = 7), which lands on the measured #7.
+    id: "atlas-c55-n-wye-35",
+    manufacturer: "Atlas",
+    line: "Code 55",
+    scale: "N",
+    name: "#3.5 Wye",
+    kind: "wye",
+    partNumbers: { single: "2057" },
+    frogNumber: 3.5,
+  },
+  {
     id: "atlas-c55-n-curved-21-15",
     manufacturer: "Atlas",
     line: "Code 55",

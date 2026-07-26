@@ -86,6 +86,9 @@ import {
   flexUsage,
   spanOverhang,
   carCapacity,
+  BUILT_IN_TRACK_PARTS,
+  partExtent,
+  leadInchesForSize,
   resizeFlexPiece,
   flexParts,
   flexPartFor,
@@ -3854,6 +3857,27 @@ describe("flex track pieces (#193)", () => {
     // A TURNOUT slug is not a flex product, even though it's in the library.
     expect(flexPartFor("atlas-c55-n-7")!.id).toBe(DEFAULT_FLEX_PART_ID);
     expect(flexParts().map((p) => p.id).sort()).toEqual(["atlas-c55-n-flex", "me-c55-n-flex"]);
+  });
+
+  it("knows BOTH Atlas wyes apart, by their moulded numbers", () => {
+    // Will Gage, 2026-07-26: "2057 is 3.5, 2056 is 2.5". They are two different
+    // FROG NUMBERS, not a left/right pair — a wye has no hand, both legs
+    // diverge. Pinned because the identification came from someone holding the
+    // parts, and the library had only one of them.
+    const wyes = BUILT_IN_TRACK_PARTS.filter((p) => p.kind === "wye");
+    expect(wyes.map((w) => [w.partNumbers?.single, w.frogNumber])).toEqual([
+      ["2056", 2.5],
+      ["2057", 3.5],
+    ]);
+    // Neither is measured, and the #3.5 carries NO lead on purpose: the #2.5's
+    // is derived from a rule since refuted, and a matching figure here would
+    // turn one unchecked number into two.
+    const w35 = wyes.find((w) => w.frogNumber === 3.5)!;
+    expect(w35.lead).toBeUndefined();
+    expect(partExtent(w35)).toBeNull();
+    // Without one, the lead interpolates across the MEASURED parts at the wye's
+    // effective frog (3.5 x 2 = 7) — landing on the measured #7, not a guess.
+    expect(leadInchesForSize(7)).toBeCloseTo(3.59375);
   });
 
   it("round-trips a track's product and cuts through the doc", () => {
