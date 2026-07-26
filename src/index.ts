@@ -3132,6 +3132,15 @@ export interface TrackPart {
   frogOffset?: PartDimension;
   /** End-to-end length of the part. */
   overallLength?: PartDimension;
+  /** Frog apex → the end of the diverging rail, measured ALONG that rail. The
+   * independent cross-check on {@link frogOffset}: it must be slightly LONGER
+   * than the axial `overallLength − frogOffset`, because the rail is the
+   * hypotenuse of the angle it leaves at. A reading that makes that difference
+   * negative means a mis-read frog — which is exactly how the 2057 wye's frog
+   * was caught (see its note). Too insensitive to recover the angle from — at
+   * these angles ¹⁄₃₂″ of slop swings the implied half-angle by 6° — so use it
+   * to falsify a frog position, never to derive one. */
+  divergingLength?: PartDimension;
   /** Diverging route radius (straight turnouts). */
   divergingRadius?: PartDimension;
   /** Curved turnouts: the two concentric radii. */
@@ -3168,6 +3177,15 @@ export const CODE55_RAIL_HEIGHT_INCHES = 0.055;
  *     #5     1¾″      4.75″     6.00″     3.00000″   1.25″       0.2500
  *     #7     ⁵⁄₈″     4⁷⁄₃₂″    6.00″     3.59375″   1.78125″    0.2545
  *     #10    ⁹⁄₁₆″    5.50″     8.00″     4.93750″   2.50″       0.2500
+ *     wye    points   frog V    overall   lead       past frog   diverging rail
+ *     #2.5   1⁵⁄₈″    4⅛″       6.50″     2.50000″   2.375″      2.4375″
+ *     #3.5   ¾″       3⁵⁄₃₂″    5.00″     2.40625″   1.84375″    1.9375″
+ *
+ * ⚠️ THE WYES ARE NOT ON THE ÷N TREND AND MUST NOT BE INTERPOLATED WITH THE
+ * TURNOUTS. lead ÷ N is 1.00 and 0.69 against the turnouts' flat 0.25, and the
+ * #2.5 is the LONGER part despite the sharper frog. Every size lookup here
+ * filters `kind === "turnout"`, which is what keeps them out — do not "fix"
+ * that filter to include wyes.
  *
  * Every one of these is Will Gage's, off a physical part, frog taken at the V.
  * ⚠️ The #7 lead SUPERSEDES Steve Branton's 3⅜″ (#173) — the library's founding
@@ -3354,9 +3372,39 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     partNumbers: { single: "2056" },
     frogNumber: 2.5,
     lead: {
-      inches: 2.5 * TURNOUT_LEAD_INCHES_PER_FROG,
-      source: "derived",
-      note: "scaled from the measured #7 by frog number — not measured",
+      inches: 2.5,
+      source: "measured",
+      note:
+        "Will Gage, physical Atlas 2056, 2026-07-26: points at 1⁵⁄₈″, frog at 4⅛″ ⇒ " +
+        "2.5″ — the difference of the two offsets, per the rule above. " +
+        "⚠️ RETIRES a `derived` 1.205″ (2.5 × TURNOUT_LEAD_INCHES_PER_FROG) — the " +
+        "real lead is more than DOUBLE it. Third independent refutation of the " +
+        "per-frog rule, and the largest: at low N it is not merely mis-sloped, " +
+        "it is nowhere near.",
+    },
+    pointsOffset: {
+      inches: 1.625,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2056 — end of tie strip to point tips (1¹⁰⁄₁₆″)",
+    },
+    frogOffset: {
+      inches: 4.125,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2056 — tie end to the apex of the V (4²⁄₁₆″)",
+    },
+    overallLength: {
+      inches: 6.5,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2056 — end to end",
+    },
+    divergingLength: {
+      inches: 2.4375,
+      source: "measured",
+      note:
+        "Will Gage, physical Atlas 2056 — frog to the end of each diverging rail " +
+        "(2⁷⁄₁₆″, both legs equal). ✔ CROSS-CHECKS the frog: axial past-frog is " +
+        "6.5 − 4.125 = 2.375″, and the rail is ¹⁄₁₆″ longer than its own " +
+        "projection, which is the right sign and the right order of magnitude.",
     },
   },
   {
@@ -3364,11 +3412,17 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     // wyes are different FROG NUMBERS, not a left/right pair of one part. The
     // 2056 half of that confirms the entry above; this is the one we didn't have.
     //
-    // No lead. The #2.5's is `derived` from a per-frog rule its own note records
-    // as refuted, so it rests on nothing — repeating that for a second part
-    // would be exactly how a number nobody checked becomes two. Without one,
-    // `leadInchesForSize` interpolates across the MEASURED parts at the wye's
-    // effective frog (3.5 × 2 = 7), which lands on the measured #7.
+    // Fully measured 2026-07-26, after one reading was caught and re-read.
+    //
+    // ⚠️ WORKED EXAMPLE OF WHY THIS LIBRARY CROSS-CHECKS. The frog first came in
+    // at 5⁵⁄₃₂″, which is PAST the part's own 5″ overall length — the apex would
+    // have sat beyond the end of the moulding. Two independent lines said ~3⅛″:
+    //   · points ¾″ + points→frog 2⅜″           = 3.125″
+    //   · overall 5″ − diverging rail 1³⁰⁄₃₂″    ≈ 3.06″ axial
+    // Queried, and Will re-read it as 3⁵⁄₃₂″ — a leading-digit slip, exactly what
+    // the arithmetic implied. That re-read is the number recorded here; it was
+    // NOT inferred. Had it been taken at face value the wye would have drawn its
+    // frog off the end of itself.
     id: "atlas-c55-n-wye-35",
     manufacturer: "Atlas",
     line: "Code 55",
@@ -3377,6 +3431,49 @@ export const ATLAS_CODE55_N: TrackPart[] = [
     kind: "wye",
     partNumbers: { single: "2057" },
     frogNumber: 3.5,
+    lead: {
+      inches: 2.40625,
+      source: "measured",
+      note:
+        "Will Gage, physical Atlas 2057, 2026-07-26: points at ¾″, frog at 3⁵⁄₃₂″ ⇒ " +
+        "2.40625″ — the difference of the two offsets, per the rule above. His " +
+        "direct points→frog reading was 2⅜″, ¹⁄₃₂″ short; the offsets win. " +
+        "⚠️ RETIRES the reasoning in this entry's original note, which left the " +
+        "lead unset so `leadInchesForSize` would interpolate at the wye's " +
+        "effective frog (3.5 × 2 = 7) and land on the measured #7's 3.59375″. " +
+        "That substitution was 49% over.",
+    },
+    pointsOffset: {
+      inches: 0.75,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2057 — end of tie strip to point tips (¾″)",
+    },
+    frogOffset: {
+      inches: 3.15625,
+      source: "measured",
+      note:
+        "Will Gage, physical Atlas 2057 — tie end to the apex of the V (3⁵⁄₃₂″). " +
+        "This is his RE-READ after the first reading (5⁵⁄₃₂″) was queried for " +
+        "landing past the part's 5″ end; see the comment above this entry.",
+    },
+    overallLength: {
+      inches: 5,
+      source: "measured",
+      note: "Will Gage, physical Atlas 2057 — end to end",
+    },
+    divergingLength: {
+      inches: 1.9375,
+      source: "measured",
+      note:
+        "Will Gage, physical Atlas 2057 — frog to the end of each diverging rail " +
+        "(1³⁰⁄₃₂″, both legs equal). ✔ THE READING THAT CAUGHT THE BAD FROG: " +
+        "against the first 5⁵⁄₃₂″ the axial past-frog is NEGATIVE, which a 1.9375″ " +
+        "rail flatly contradicts. Against the re-read 3⁵⁄₃₂″ it is 5 − 3.15625 = " +
+        "1.84375″, so the rail runs ³⁄₃₂″ longer than its own projection — right " +
+        "sign, same order as the 2056's ¹⁄₁₆″. (The two differ because this is a " +
+        "cos() residual on a small angle, which is why the field doc says not to " +
+        "read an angle back out of it.)",
+    },
   },
   {
     id: "atlas-c55-n-curved-21-15",

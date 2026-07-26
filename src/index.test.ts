@@ -2805,7 +2805,10 @@ describe("track parts library (#179 stage 3)", () => {
     }
   });
 
-  it("every straight turnout lead is MEASURED — only the wye is still derived", () => {
+  // Was "only the wye is still derived". Both wyes were measured 2026-07-26, so
+  // NOT ONE lead in the library is derived any more — which is a stronger claim
+  // than the old one, and the one worth defending.
+  it("every lead in the library is MEASURED — none is derived", () => {
     expect(trackPart("atlas-c55-n-5")!.lead).toMatchObject({
       inches: 3.0,
       source: "measured",
@@ -2818,7 +2821,29 @@ describe("track parts library (#179 stage 3)", () => {
       inches: 4.9375,
       source: "measured",
     });
-    expect(trackPart("atlas-c55-n-wye")!.lead!.source).toBe("derived");
+    expect(trackPart("atlas-c55-n-wye")!.lead).toMatchObject({
+      inches: 2.5,
+      source: "measured",
+    });
+    expect(trackPart("atlas-c55-n-wye-35")!.lead).toMatchObject({
+      inches: 2.40625,
+      source: "measured",
+    });
+    for (const p of BUILT_IN_TRACK_PARTS) {
+      if (p.lead) expect(p.lead.source).toBe("measured");
+    }
+  });
+
+  // The 2056 measurement is the per-frog rule's worst case, and the reason the
+  // wyes must never be interpolated with the turnouts: the rule predicts 1.205″
+  // against a real 2.5″. Every earlier refutation was a matter of slope; this
+  // one is a factor of two.
+  it("the retired per-frog rule is off by more than 2x on the #2.5 wye", () => {
+    const wye = trackPart("atlas-c55-n-wye")!;
+    expect(wye.lead!.inches / (2.5 * TURNOUT_LEAD_INCHES_PER_FROG)).toBeGreaterThan(2);
+    // lead ÷ N: the turnouts sit near 0.25, the wyes nowhere near it.
+    expect(wye.lead!.inches / 2.5).toBeCloseTo(1.0, 2);
+    expect(trackPart("atlas-c55-n-wye-35")!.lead!.inches / 3.5).toBeCloseTo(0.6875, 3);
   });
 
   // The whole reason the library exists. Lead-per-frog FALLS with N, so the
@@ -2861,11 +2886,45 @@ describe("track parts library (#179 stage 3)", () => {
 
   // Only `measured` leads form the basis — interpolating through a derived value
   // would launder a guess into the sizes either side of it.
+  // The built-in library no longer HAS a derived lead to use as the fixture (the
+  // wye's was retired when Will measured it), so inject one. Testing against a
+  // synthetic part is the point: the rule must hold for whatever gets added
+  // next, not just for the one part that happened to be derived in July 2026.
   it("ignores derived leads when interpolating", () => {
-    const wye = trackPart("atlas-c55-n-wye")!;
-    expect(wye.lead!.source).toBe("derived");
-    // The wye is N=2.5 and derived; it must not anchor the low end.
-    expect(leadInchesForSize(4)).toBeGreaterThan(2.5);
+    const bogus: TrackPart = {
+      id: "test-derived-4",
+      manufacturer: "Test",
+      line: "Code 55",
+      scale: "N",
+      name: "#4 (derived lead)",
+      kind: "turnout",
+      frogNumber: 4,
+      lead: { inches: 0.1, source: "derived" },
+    };
+    const withBogus = [...BUILT_IN_TRACK_PARTS, bogus];
+    // An exact part match still wins — that path doesn't consult provenance.
+    expect(leadInchesForSize(4, withBogus)).toBeCloseTo(0.1, 6);
+    // ...but it must NOT drag the sizes either side of it toward 0.1in.
+    expect(leadInchesForSize(4.5, withBogus)).toBeCloseTo(leadInchesForSize(4.5), 6);
+    expect(leadInchesForSize(6, withBogus)).toBeCloseTo(leadInchesForSize(6), 6);
+    expect(leadInchesForSize(4.5, withBogus)).toBeGreaterThan(2.5);
+  });
+
+  // Both wyes are `kind: "wye"`, and every size lookup filters to "turnout".
+  // Their leads are wildly off the turnout trend (2.5in at N=2.5), so if that
+  // filter ever slipped, low-N interpolation would move a long way.
+  it("wyes never enter the turnout interpolation basis", () => {
+    for (const n of [2.5, 3, 3.5, 4, 5, 7, 10]) {
+      const noWyes = BUILT_IN_TRACK_PARTS.filter((p) => p.kind !== "wye");
+      expect(leadInchesForSize(n, noWyes), `lead ${n}`).toBeCloseTo(
+        leadInchesForSize(n),
+        6,
+      );
+    }
+    expect(turnoutPartForSize(2.5)!.kind).toBe("turnout");
+    // A #2.5 turnout does not exist, so no extent may be claimed for one even
+    // though a #2.5 WYE is now fully measured.
+    expect(partExtentForSize(2.5)).toBeNull();
   });
 
   // lead is the difference of two measured positions, not an independent datum.
@@ -3878,15 +3937,58 @@ describe("flex track pieces (#193)", () => {
       ["2056", 2.5],
       ["2057", 3.5],
     ]);
-    // Neither is measured, and the #3.5 carries NO lead on purpose: the #2.5's
-    // is derived from a rule since refuted, and a matching figure here would
-    // turn one unchecked number into two.
+    // BOTH are now fully measured (Will Gage, 2026-07-26) — which is what makes
+    // a wye claim a real body, so #193's flex stops running straight through it.
+    const w25 = wyes.find((w) => w.frogNumber === 2.5)!;
     const w35 = wyes.find((w) => w.frogNumber === 3.5)!;
-    expect(w35.lead).toBeUndefined();
-    expect(partExtent(w35)).toBeNull();
-    // Without one, the lead interpolates across the MEASURED parts at the wye's
-    // effective frog (3.5 x 2 = 7) — landing on the measured #7, not a guess.
-    expect(leadInchesForSize(7)).toBeCloseTo(3.59375);
+    expect(partExtent(w25)).toEqual({
+      behindPoints: 1.625,
+      aheadOfPoints: 4.875,
+      pastFrog: 2.375,
+    });
+    expect(partExtent(w35)).toEqual({
+      behindPoints: 0.75,
+      aheadOfPoints: 4.25,
+      pastFrog: 1.84375,
+    });
+  });
+
+  // The frog apex must fall INSIDE the moulding. The 2057 first came in at
+  // 5 5/32in against a 5in overall length, which would have drawn its frog off
+  // the end of itself; a re-read gave 3 5/32in. Cheap, total, and it caught a
+  // real one — so it guards every part, not just that one.
+  it("no part's frog or points sit outside its own overall length", () => {
+    for (const p of BUILT_IN_TRACK_PARTS) {
+      const overall = p.overallLength?.inches;
+      if (overall == null) continue;
+      if (p.frogOffset) expect(p.frogOffset.inches, `${p.id} frog`).toBeLessThan(overall);
+      if (p.pointsOffset) {
+        expect(p.pointsOffset.inches, `${p.id} points`).toBeLessThan(overall);
+      }
+      if (p.frogOffset && p.pointsOffset) {
+        expect(p.frogOffset.inches, `${p.id} frog after points`).toBeGreaterThan(
+          p.pointsOffset.inches,
+        );
+      }
+    }
+  });
+
+  // A diverging rail is the hypotenuse of the angle it leaves at, so it must be
+  // LONGER than the axial distance it covers — and not absurdly so. This is the
+  // check that falsified the 2057's first frog reading (it made the axial
+  // distance negative).
+  it("each diverging rail is longer than its own axial projection", () => {
+    const measured = BUILT_IN_TRACK_PARTS.filter(
+      (p) => p.divergingLength && p.overallLength && p.frogOffset,
+    );
+    expect(measured.length).toBeGreaterThan(0);
+    for (const p of measured) {
+      const axial = p.overallLength!.inches - p.frogOffset!.inches;
+      expect(axial, `${p.id} axial past-frog`).toBeGreaterThan(0);
+      expect(p.divergingLength!.inches, `${p.id} rail vs axial`).toBeGreaterThan(axial);
+      // Within 15%: past that the frog or the rail is misread, not angled.
+      expect(p.divergingLength!.inches / axial, `${p.id} ratio`).toBeLessThan(1.15);
+    }
   });
 
   it("round-trips a track's product and cuts through the doc", () => {
