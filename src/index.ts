@@ -4218,6 +4218,8 @@ export interface StoredTrackPart {
   frogOffsetSource?: string | null;
   overallLengthInches?: number | null;
   overallLengthSource?: string | null;
+  divergingLengthInches?: number | null;
+  divergingLengthSource?: string | null;
   leadInches?: number | null;
   leadSource?: string | null;
   outerRadiusInches?: number | null;
@@ -4289,6 +4291,8 @@ export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
   if (frog) part.frogOffset = frog;
   const overall = dim(row.overallLengthInches, row.overallLengthSource);
   if (overall) part.overallLength = overall;
+  const diverging = dim(row.divergingLengthInches, row.divergingLengthSource);
+  if (diverging) part.divergingLength = diverging;
   if (lead) part.lead = lead;
   const outer = dim(row.outerRadiusInches, row.radiusSource);
   const inner = dim(row.innerRadiusInches, row.radiusSource);
@@ -4317,6 +4321,17 @@ export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
  *
  * The built-ins remain the floor: a part nobody has stored still resolves, so
  * geometry keeps working with no database at all.
+ *
+ * ⛔ THE TRAP THIS CREATES, and it has already been sprung once. Replacement is
+ * WHOLESALE, so a stored row that is merely INCOMPLETE deletes every dimension
+ * the built-in had. When both Atlas wyes were measured in 0.78.0 their stored
+ * rows still held null offsets from the original seed — so in production the
+ * new measurements were invisible and the 2056 still carried a `derived` lead
+ * the release had just retired. Nothing failed; the parts simply had no
+ * dimensions, which is indistinguishable from never having measured them.
+ *
+ * **Measuring a built-in is therefore not finished until the stored row is
+ * updated too.** Adding a dimension here and stopping ships nothing.
  */
 export function mergeStoredParts(
   stored: StoredTrackPart[],

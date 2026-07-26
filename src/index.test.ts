@@ -1660,6 +1660,67 @@ describe("endplate poses (#175)", () => {
     expect(leadInchesForSize(6, merged)).toBeCloseTo(3.5, 6);
   });
 
+  // ⛔ The flip side of that, and a real incident: replacement is WHOLESALE, so
+  // an INCOMPLETE stored row silently deletes dimensions the built-in had. When
+  // the Atlas wyes were measured in 0.78.0 their seeded rows still held null
+  // offsets, so production saw no measurements at all — nothing failed, the
+  // parts just looked unmeasured. Pinned so the behaviour is a decision rather
+  // than a surprise, and so anyone measuring a built-in is told to update the
+  // stored row too.
+  it("an INCOMPLETE stored row erases the built-in's dimensions", () => {
+    const before = trackPart("atlas-c55-n-wye")!;
+    expect(before.frogOffset?.inches).toBe(4.125);
+    expect(before.lead?.source).toBe("measured");
+
+    const merged = mergeStoredParts([
+      {
+        slug: "atlas-c55-n-wye",
+        manufacturer: "Atlas",
+        line: "Code 55",
+        name: "#2.5 Wye",
+        kind: "wye",
+        frogNumber: 2.5,
+        // …every offset null, exactly as the original seed left them.
+      },
+    ]);
+    const after = merged.find((p) => p.id === "atlas-c55-n-wye")!;
+    expect(after.frogOffset).toBeUndefined();
+    expect(after.pointsOffset).toBeUndefined();
+    expect(after.overallLength).toBeUndefined();
+    // …so the wye claims no body again, and flex runs straight through it.
+    expect(partExtent(after)).toBeNull();
+  });
+
+  it("carries divergingLength through the stored round-trip", () => {
+    const merged = mergeStoredParts([
+      {
+        slug: "atlas-c55-n-wye-35",
+        manufacturer: "Atlas",
+        line: "Code 55",
+        name: "#3.5 Wye",
+        kind: "wye",
+        frogNumber: 3.5,
+        pointsOffsetInches: 0.75,
+        pointsOffsetSource: "measured",
+        frogOffsetInches: 3.15625,
+        frogOffsetSource: "measured",
+        overallLengthInches: 5,
+        overallLengthSource: "measured",
+        divergingLengthInches: 1.9375,
+        divergingLengthSource: "measured",
+      },
+    ]);
+    const p = merged.find((x) => x.id === "atlas-c55-n-wye-35")!;
+    expect(p.divergingLength).toMatchObject({ inches: 1.9375, source: "measured" });
+    // The lead still comes from the two offsets, not its own column.
+    expect(p.lead?.inches).toBeCloseTo(2.40625, 6);
+    expect(partExtent(p)).toEqual({
+      behindPoints: 0.75,
+      aheadOfPoints: 4.25,
+      pastFrog: 1.84375,
+    });
+  });
+
   it("pastFrogInchesForSize interpolates like the lead does, and stays bounded", () => {
     // Measured: #5 = 1.25″, #7 = 1.78125″, #10 = 2.5″ past the frog.
     expect(pastFrogInchesForSize(5)).toBeCloseTo(1.25, 6);
