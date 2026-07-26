@@ -82,7 +82,17 @@ import {
   type PartSegment,
   type ReturnLoopShape,
   type ModuleSchematicDoc,
+  flexPieces,
+  flexUsage,
+  resizeFlexPiece,
+  flexParts,
+  flexPartFor,
+  maxFlexPieceInches,
+  DEFAULT_FLEX_PART_ID,
 } from "./index";
+
+/** Round to hundredths for readable span/length assertions. */
+const round2 = (v: number) => Math.round(v * 100) / 100;
 
 describe("asModuleSchematic", () => {
   it("accepts a well-formed doc and rejects everything else", () => {
@@ -3647,5 +3657,226 @@ describe("returnLoop geometry (wye-throated return loop)", () => {
     expect(doc.outlineInner?.length).toBe(g.outlineInner.length);
     const back = docToState(doc, 48);
     expect(back.outlineInner.length).toBe(g.outlineInner.length);
+  });
+})
+
+// ── Flex track in pieces (#193) ────────────────────────────────────────────────
+// Everything that isn't a turnout or a crossing is flex, flex comes in lengths
+// with a maximum, and where two lengths meet is a rail joint. A 96″ main isn't
+// one piece of track — it's four lengths of Atlas flex with three joints in it.
+describe("flex track pieces (#193)", () => {
+  const spans = (ps: ReturnType<typeof flexPieces>) =>
+    ps.map((p) => `${round2(p.fromPos)}–${round2(p.toPos)}`);
+  const lens = (ps: ReturnType<typeof flexPieces>) => ps.map((p) => round2(p.lengthInches));
+
+  it("cuts a clear run into full lengths with the remainder at the end", () => {
+    // How you actually lay it: full lengths off the roll, then cut the last one.
+    const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 });
+    expect(lens(p)).toEqual([30, 30, 30, 6]);
+    expect(spans(p)).toEqual(["0–30", "30–60", "60–90", "90–96"]);
+    expect(p.every((x) => !x.overlong)).toBe(true);
+  });
+
+  it("a run shorter than one length is a single piece", () => {
+    expect(lens(flexPieces({ fromPos: 0, toPos: 18, maxPieceInches: 30 }))).toEqual([18]);
+    // …and exactly one length is ONE piece, not two with a zero-length tail.
+    expect(lens(flexPieces({ fromPos: 0, toPos: 30, maxPieceInches: 30 }))).toEqual([30]);
+    expect(lens(flexPieces({ fromPos: 0, toPos: 36, maxPieceInches: 36 }))).toEqual([36]);
+  });
+
+  it("gives up the stretch a turnout occupies, and joints either side of it", () => {
+    // The turnout is the part; the flex meets it at a rail joint on each side —
+    // the same joint #189 draws where a switch meets the track past it.
+    const p = flexPieces({
+      fromPos: 0,
+      toPos: 48,
+      maxPieceInches: 30,
+      occupied: [{ fromPos: 20, toPos: 26 }], // a 6″ #7
+    });
+    expect(spans(p)).toEqual(["0–20", "26–48"]);
+    expect(p[0].toEnd).toBe("part"); // butts the turnout
+    expect(p[1].fromEnd).toBe("part");
+    expect(p[0].fromEnd).toBe("runEnd"); // …and the endplate at the other
+    expect(p[1].toEnd).toBe("runEnd");
+  });
+
+  it("merges overlapping part bodies so a crossover doesn't carve the same inch twice", () => {
+    const p = flexPieces({
+      fromPos: 0,
+      toPos: 40,
+      maxPieceInches: 30,
+      occupied: [
+        { fromPos: 10, toPos: 18 },
+        { fromPos: 14, toPos: 22 }, // overlaps the first
+      ],
+    });
+    expect(spans(p)).toEqual(["0–10", "22–40"]);
+  });
+
+  it("cuts each gap on its own, so a long gap past a turnout still gets joints", () => {
+    const p = flexPieces({
+      fromPos: 0,
+      toPos: 96,
+      maxPieceInches: 30,
+      occupied: [{ fromPos: 10, toPos: 16 }],
+    });
+    // 0–10 fits; 16–96 is 80″ ⇒ 30 + 30 + 20.
+    expect(spans(p)).toEqual(["0–10", "16–46", "46–76", "76–96"]);
+  });
+
+  it("authored cuts are the ONLY joints — a deliberate cut isn't re-derived", () => {
+    // The owner moved the cut to 33 so the joint clears something at 30.
+    const p = flexPieces({ fromPos: 0, toPos: 60, maxPieceInches: 30, cuts: [33] });
+    expect(spans(p)).toEqual(["0–33", "33–60"]);
+    // 33 > 30, so it can't come off one length — say so rather than re-cutting it.
+    expect(p[0].overlong).toBe(true);
+    expect(p[1].overlong).toBe(false);
+  });
+
+  it("an EMPTY authored list means one uncut piece, not 'derive them'", () => {
+    // The distinction absent-vs-empty is the whole reason cuts is nullable.
+    expect(lens(flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30, cuts: [] }))).toEqual([96]);
+    expect(lens(flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 }))).toEqual([30, 30, 30, 6]);
+  });
+
+  it("ignores authored cuts that fall inside a part, or outside the run", () => {
+    const p = flexPieces({
+      fromPos: 0,
+      toPos: 48,
+      maxPieceInches: 30,
+      occupied: [{ fromPos: 20, toPos: 26 }],
+      cuts: [-5, 10, 23, 40, 90], // −5 and 90 are off the run; 23 is inside the turnout
+    });
+    expect(spans(p)).toEqual(["0–10", "10–20", "26–40", "40–48"]);
+  });
+
+  it("balances the last two rather than leaving a sliver", () => {
+    // 72.1″ of 36″ flex is 36 + 36 + 0.1 — and a tenth of an inch isn't a piece
+    // of track, it's an offcut. Real: FMN-0073's Main 2 in Micro Engineering.
+    const p = flexPieces({ fromPos: 0, toPos: 72.1, maxPieceInches: 36 });
+    expect(lens(p)).toEqual([36, 18.05, 18.05]);
+    expect(p.every((x) => !x.overlong)).toBe(true);
+    // A 6″ tail off a 30″ length IS a real piece — leave it alone.
+    expect(lens(flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 }))).toEqual([30, 30, 30, 6]);
+    // Two pieces where the second would be a sliver: split the pair evenly.
+    expect(lens(flexPieces({ fromPos: 0, toPos: 30.4, maxPieceInches: 30 }))).toEqual([15.2, 15.2]);
+  });
+
+  it("a crossing breaks the run without claiming a length it hasn't got", () => {
+    // We've measured no crossing part, so its extent is a zero-length break: the
+    // run stops and starts there — a rail joint — but no inches are taken.
+    const p = flexPieces({
+      fromPos: 0,
+      toPos: 40,
+      maxPieceInches: 30,
+      occupied: [{ fromPos: 18, toPos: 18 }],
+    });
+    expect(spans(p)).toEqual(["0–18", "18–40"]);
+    expect(p[0].toEnd).toBe("part");
+    expect(p[1].fromEnd).toBe("part");
+    expect(flexUsage(p).totalInches).toBeCloseTo(40); // nothing lost to it
+  });
+
+  it("a run with no length, or swallowed whole by a part, has no flex in it", () => {
+    expect(flexPieces({ fromPos: 12, toPos: 12, maxPieceInches: 30 })).toEqual([]);
+    expect(
+      flexPieces({ fromPos: 0, toPos: 6, maxPieceInches: 30, occupied: [{ fromPos: 0, toPos: 6 }] }),
+    ).toEqual([]);
+  });
+
+  it("reads the same run either way round", () => {
+    const fwd = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 });
+    const back = flexPieces({ fromPos: 96, toPos: 0, maxPieceInches: 30 });
+    expect(spans(back)).toEqual(spans(fwd));
+  });
+
+  it("reports what a run costs to build", () => {
+    const p = flexPieces({
+      fromPos: 0,
+      toPos: 96,
+      maxPieceInches: 30,
+      occupied: [{ fromPos: 20, toPos: 26 }],
+    });
+    const u = flexUsage(p);
+    expect(u.totalInches).toBeCloseTo(90); // 96 less the 6″ turnout
+    expect(u.pieces).toBe(u.pieces); // whatever the cut needs
+    expect(u.overlong).toBe(0);
+  });
+
+  it("resizing a piece moves its joint and its neighbour takes the difference", () => {
+    const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 }); // 30/30/30/6
+    // Piece 1 to 20″ ⇒ its neighbour gains the 10.
+    const cuts = resizeFlexPiece(p, 0, 20)!;
+    expect(cuts).toEqual([20, 60, 90]);
+    expect(lens(flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30, cuts }))).toEqual([
+      20, 40, 30, 6,
+    ]);
+    // The run never grows: whatever the pair was, it stays.
+    const before = p[0].lengthInches + p[1].lengthInches;
+    const after = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30, cuts });
+    expect(after[0].lengthInches + after[1].lengthInches).toBeCloseTo(before);
+  });
+
+  it("clamps a resize to the pair rather than reordering the cuts", () => {
+    const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 });
+    // Asking for 70 when the pair is only 60 — the old inline version sorted the
+    // new cut past its neighbour and handed back a DIFFERENT piece silently.
+    const cuts = resizeFlexPiece(p, 0, 70)!;
+    expect(cuts).toEqual([59, 60, 90]);
+    const after = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30, cuts });
+    expect(after[0].lengthInches).toBeCloseTo(59); // clamped, still ordered
+    expect(after[1].lengthInches).toBeCloseTo(1);
+    // …and it can't be driven to zero from the other side either.
+    expect(resizeFlexPiece(p, 0, -5)).toEqual([1, 60, 90]);
+  });
+
+  it("won't resize a piece that butts a part or the end of the run", () => {
+    const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 });
+    expect(resizeFlexPiece(p, 3, 10)).toBeNull(); // last piece → the endplate
+    const withSwitch = flexPieces({
+      fromPos: 0,
+      toPos: 48,
+      maxPieceInches: 30,
+      occupied: [{ fromPos: 20, toPos: 26 }],
+    });
+    expect(withSwitch[0].toEnd).toBe("part");
+    expect(resizeFlexPiece(withSwitch, 0, 10)).toBeNull();
+  });
+
+  it("knows the two products, and falls back rather than leaving track unbuilt", () => {
+    expect(maxFlexPieceInches("atlas-c55-n-flex")).toBe(30);
+    expect(maxFlexPieceInches("me-c55-n-flex")).toBe(36);
+    // Unknown or unset ⇒ the default, because every inch of track IS some product.
+    expect(maxFlexPieceInches(undefined)).toBe(30);
+    expect(maxFlexPieceInches("no-such-part")).toBe(30);
+    // A TURNOUT slug is not a flex product, even though it's in the library.
+    expect(flexPartFor("atlas-c55-n-7")!.id).toBe(DEFAULT_FLEX_PART_ID);
+    expect(flexParts().map((p) => p.id).sort()).toEqual(["atlas-c55-n-flex", "me-c55-n-flex"]);
+  });
+
+  it("round-trips a track's product and cuts through the doc", () => {
+    const s = emptyEditorState(96);
+    const st: typeof s = {
+      ...s,
+      flexByTrack: { [MAIN_TRACK_ID]: { partId: "me-c55-n-flex", cuts: [36, 72] } },
+    };
+    const doc = stateToDoc(st, "M");
+    const main = doc.tracks.find((t) => t.id === MAIN_TRACK_ID)!;
+    expect(main.flexPartId).toBe("me-c55-n-flex");
+    expect(main.flexCuts).toEqual([36, 72]);
+    expect(docToState(doc, 96).flexByTrack[MAIN_TRACK_ID]).toEqual({
+      partId: "me-c55-n-flex",
+      cuts: [36, 72],
+    });
+    // A track nobody has chosen for stays absent — not written as a default.
+    expect(doc.tracks.every((t) => t.id === MAIN_TRACK_ID || t.flexPartId === undefined)).toBe(true);
+  });
+
+  it("rescales cuts with the module, like every other position along the run", () => {
+    // A joint 30″ along a 96″ main is 15″ along the same main halved — leaving it
+    // at 30 would put it somewhere else entirely on the board.
+    const s = emptyEditorState(96);
+    const doc = stateToDoc({ ...s, flexByTrack: { [MAIN_TRACK_ID]: { cuts: [30, 60] } } }, "M");
+    expect(docToState(doc, 48).flexByTrack[MAIN_TRACK_ID].cuts).toEqual([15, 30]);
   });
 })

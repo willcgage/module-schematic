@@ -125,6 +125,14 @@ export interface SchematicTrack {
    * the main centre-line + lane, as before. Physical view only; the operations
    * view stays positional (#2d-track). */
   path?: BenchworkPoint[] | null;
+  /** The flex product this run is laid with — a slug from the parts library
+   * (#193). Absent = the default. Per TRACK, so a module can have its mains in
+   * one product and a siding in another. */
+  flexPartId?: string | null;
+  /** Authored rail joints, inches along this run. Absent = derived from the
+   * product's maximum piece length. Present = these are the ONLY joints, so an
+   * owner's deliberate cut survives a change elsewhere on the module. */
+  flexCuts?: number[] | null;
 }
 export interface SchematicTurnout {
   id: string;
@@ -1654,6 +1662,16 @@ export interface EditorState {
   branches: EditorBranch[];
   /** Manual endplate pose overrides by endplate id (#175 phase 1b). */
   poseOverrides: Record<string, { x: number; y: number; heading: number }>;
+  /**
+   * Flex track settings by TRACK id (#193) — which product a run is laid with,
+   * and where the owner has decided its rail joints fall.
+   *
+   * One map rather than fields, because the MAINS aren't `extraTracks` (the main
+   * IS the centre-line), so per-track settings would otherwise need a separate
+   * pair of fields for Main 1 and Main 2 — four ways to say one thing. Round-trips
+   * onto each track in the doc, where it's self-describing for Free-Dispatcher.
+   */
+  flexByTrack: Record<string, { partId?: string; cuts?: number[] }>;
   /** Authored endplate face widths by endplate id, inches (Free-moN 12″ min,
    * 24″ recommended). Absent id = the recommended default. */
   endplateWidths: Record<string, number>;
@@ -1697,6 +1715,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     crossings: [],
     branches: [],
     poseOverrides: {},
+    flexByTrack: {},
     endplateWidths: {},
     endplateTrackOffsets: {},
     outline: [],
@@ -1883,6 +1902,25 @@ function withWidths(
   });
 }
 
+/**
+ * Attach each track's flex settings (#193). Only what the owner has actually
+ * chosen is written: an absent product means the default, and absent cuts mean
+ * "derive them", which is a different thing from an empty list (that would mean
+ * "one uncut piece, however long the run is").
+ */
+function withFlex(state: EditorState, tracks: SchematicTrack[]): SchematicTrack[] {
+  return tracks.map((t) => {
+    const f = state.flexByTrack?.[t.id];
+    if (!f) return t;
+    const cuts = f.cuts?.filter((c) => Number.isFinite(c)).sort((a, b) => a - b);
+    return {
+      ...t,
+      ...(f.partId ? { flexPartId: f.partId } : {}),
+      ...(cuts ? { flexCuts: cuts } : {}),
+    };
+  });
+}
+
 /** Assemble a spec-conformant doc from the editor state. */
 export function stateToDoc(
   state: EditorState,
@@ -1943,7 +1981,10 @@ export function stateToDoc(
       state.endplateWidths,
       state.endplateTrackOffsets,
     ),
-    tracks: [
+    // Flex settings are attached to every track at once, at the end — the array
+    // below has half a dozen branches and adding two fields to each of them is
+    // how they'd end up disagreeing (#193).
+    tracks: withFlex(state, [
       state.loop
         ? // The main runs the lead from A and turns back at the balloon.
           { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, fromPos: 0, toPos: state.lengthInches }
@@ -1983,7 +2024,7 @@ export function stateToDoc(
         ...(state.loop && t.inLoop ? { inLoop: true } : {}),
         ...(t.path && t.path.length >= 2 ? { path: t.path } : {}),
       })),
-    ],
+    ]),
     turnouts: state.turnouts.map((t) => ({
       id: t.id,
       pos: t.pos,
@@ -2165,6 +2206,19 @@ export function docToState(
     if (typeof e.trackOffsetInches === "number" && Number.isFinite(e.trackOffsetInches))
       endplateTrackOffsets[e.id] = e.trackOffsetInches;
   }
+  // Flex settings by track id (#193). Cuts are positions ALONG the run, so they
+  // rescale with the module exactly as fromPos/toPos do — a rescaled module
+  // whose joints stayed put would have them landing in different places.
+  const flexByTrack: Record<string, { partId?: string; cuts?: number[] }> = {};
+  for (const t of d!.tracks ?? []) {
+    const partId = typeof t.flexPartId === "string" && t.flexPartId ? t.flexPartId : undefined;
+    // An EMPTY authored list is meaningful — "no joints, one uncut piece" — and
+    // is a different statement from absent, which means "derive them".
+    const cuts = Array.isArray(t.flexCuts)
+      ? t.flexCuts.filter((c) => Number.isFinite(c)).map(sc).sort((a, b) => a - b)
+      : undefined;
+    if (partId || cuts) flexByTrack[t.id] = { ...(partId ? { partId } : {}), ...(cuts ? { cuts } : {}) };
+  }
   // Benchwork outline — module-local inches, kept as authored (a physical board
   // shape, not rescaled with the mainline length); per-edge bulge preserved.
   const outline = (d!.outline ?? [])
@@ -2210,6 +2264,7 @@ export function docToState(
       trackId: ep.trackId ?? null,
     })),
     poseOverrides,
+    flexByTrack,
     endplateWidths,
     endplateTrackOffsets,
     outline,
@@ -2696,7 +2751,10 @@ export interface TrackPart {
   line: string;
   scale: "N";
   name: string;
-  kind: "turnout" | "wye" | "curved-turnout" | "crossing";
+  /** `flex` is track sold by the length rather than as a fixed geometry — its
+   * {@link overallLength} is the LONGEST piece you can lay from it, not a shape
+   * (#193). */
+  kind: "turnout" | "wye" | "curved-turnout" | "crossing" | "flex";
   /** Manufacturer part numbers by hand, where the part has a hand. */
   partNumbers?: { left?: string; right?: string; single?: string };
   /** Frog number N (the 1:N ratio). Definitional, so no provenance needed. */
@@ -2964,12 +3022,344 @@ export const ATLAS_CODE55_N: TrackPart[] = [
   },
 ];
 
+/**
+ * Flex track — the stuff every run that isn't a turnout or a crossing is made
+ * of (#193). A length of flex has no fixed geometry, so the only dimension it
+ * carries is **how long a piece you can lay from one**: past that you have
+ * another length, with a rail joint between them.
+ *
+ * ⚠️ These lengths are the NOMINAL PRODUCT LENGTHS as reported by Will Gage
+ * (2026-07-26), not values read off a spec sheet or measured. They are what the
+ * product is sold as — "30 inch flex track" — which is exactly the number a
+ * builder plans cuts against, so they're recorded as `manufacturer` with the
+ * source named. Correct them if a listing says otherwise.
+ *
+ * No part numbers here: I don't have them confirmed, and a wrong part number is
+ * worse than none — someone would order against it.
+ */
+export const FLEX_TRACK_PARTS: TrackPart[] = [
+  {
+    id: "atlas-c55-n-flex",
+    manufacturer: "Atlas",
+    line: "Code 55",
+    scale: "N",
+    name: "Code 55 Flex Track",
+    kind: "flex",
+    overallLength: {
+      inches: 30,
+      source: "manufacturer",
+      note: "nominal product length, reported by Will Gage 2026-07-26",
+    },
+  },
+  {
+    id: "me-c55-n-flex",
+    manufacturer: "Micro Engineering",
+    line: "Code 55",
+    scale: "N",
+    name: "Code 55 Flex Track",
+    kind: "flex",
+    overallLength: {
+      inches: 36,
+      source: "manufacturer",
+      note: "nominal product length, reported by Will Gage 2026-07-26",
+    },
+  },
+];
+
+/** What a track is laid with when nobody has said — the commonest N-scale flex. */
+export const DEFAULT_FLEX_PART_ID = "atlas-c55-n-flex";
+
 /** Every built-in part, across manufacturers. */
-export const BUILT_IN_TRACK_PARTS: TrackPart[] = [...ATLAS_CODE55_N];
+export const BUILT_IN_TRACK_PARTS: TrackPart[] = [...ATLAS_CODE55_N, ...FLEX_TRACK_PARTS];
+
+/** Every flex product a track can be laid with. */
+export function flexParts(library = BUILT_IN_TRACK_PARTS): TrackPart[] {
+  return library.filter((p) => p.kind === "flex");
+}
+
+/**
+ * The flex product a track is laid with, falling back to the default rather
+ * than to nothing: every non-turnout inch of track IS some product, and a run
+ * whose owner hasn't chosen still gets cut into buyable lengths.
+ */
+export function flexPartFor(
+  id: string | null | undefined,
+  library = BUILT_IN_TRACK_PARTS,
+): TrackPart | null {
+  const chosen = id ? library.find((p) => p.id === id && p.kind === "flex") : null;
+  return chosen ?? library.find((p) => p.id === DEFAULT_FLEX_PART_ID) ?? flexParts(library)[0] ?? null;
+}
+
+/** How long a single piece of this product can be, inches. */
+export function maxFlexPieceInches(
+  id: string | null | undefined,
+  library = BUILT_IN_TRACK_PARTS,
+): number {
+  return flexPartFor(id, library)?.overallLength?.inches ?? 30;
+}
 
 /** Look a part up by its slug. */
 export function trackPart(id: string, library = BUILT_IN_TRACK_PARTS): TrackPart | null {
   return library.find((p) => p.id === id) ?? null;
+}
+
+/** One length of flex track in a run — a real object you could pick up (#193). */
+export interface FlexPiece {
+  /** Position in the run, west to east. Stable enough to select and label by. */
+  index: number;
+  /** Inches along the RUN, not the module — the same coordinate turnouts,
+   * industries and signals use, so a piece can be placed without a second
+   * geometry to keep in step. */
+  fromPos: number;
+  toPos: number;
+  lengthInches: number;
+  /** Longer than the product allows. Only reachable from AUTHORED cuts, or from
+   * a run that grew after they were authored — which is precisely when someone
+   * needs telling. */
+  overlong: boolean;
+  /** What this piece butts against at each end: another piece, a part (turnout
+   * or crossing), or the end of the run. */
+  fromEnd: FlexPieceEnd;
+  toEnd: FlexPieceEnd;
+}
+
+/** What a flex piece meets at one of its ends. */
+export type FlexPieceEnd = "piece" | "part" | "runEnd";
+
+/**
+ * A stretch of a run that is NOT flex — a turnout's or a crossing's own body.
+ *
+ * A **zero-length** span is meaningful: it's a break in the run at a point whose
+ * own length we don't know. That's a crossing today — the run stops and starts
+ * there, giving a rail joint, but we've measured no crossing part so claiming an
+ * extent for it would be inventing one.
+ */
+export interface OccupiedSpan {
+  fromPos: number;
+  toPos: number;
+}
+
+/** Positions closer than this are the same position — a cut can't be a hair
+ * from a turnout's end and mean anything different from being on it. */
+const FLEX_EPS = 1e-6;
+
+/**
+ * Shorter than this and it isn't a piece of track, it's an offcut — nobody
+ * joints a tenth of an inch on. Full lengths from the start of a gap can leave
+ * one (72.1″ of 36″ flex leaves 0.1″), so the last two get balanced instead.
+ * A 6″ tail off a 30″ length is a real piece and is left alone.
+ */
+const FLEX_MIN_PIECE_INCHES = 1;
+
+/**
+ * Cut a run into lengths of flex track.
+ *
+ * The model (#193): everything that isn't a turnout or a crossing is flex, flex
+ * comes in pieces of a maximum length, and where two pieces meet is a rail
+ * joint — the same joint a turnout makes with the track past it (#189). A 96″
+ * main isn't one piece of track; it's four lengths of Atlas flex with three
+ * joints in it, which is what someone actually buys and lays.
+ *
+ * Pieces are **spans of the run**, not free-floating geometry. That's deliberate:
+ * `pos` — inches along the run — is what every turnout, industry and signal is
+ * placed in, so a piece that carried its own shape would be a second geometry to
+ * keep in step with the first. As spans they get identity, a length you can
+ * change, and ends that meet their neighbours by construction.
+ *
+ * `cuts` is the owner's authoring and is **complete when present**: those are
+ * the only joints, and a piece that ends up too long is flagged rather than
+ * silently re-cut. Absent, the cuts are derived — full lengths from the start of
+ * each gap, remainder at the end, which is how you lay it. That's what lets
+ * every existing module arrive already cut up without anyone touching it.
+ */
+export function flexPieces(input: {
+  fromPos: number;
+  toPos: number;
+  /** Longest single piece of the product this run is laid with. */
+  maxPieceInches: number;
+  /** Stretches the run gives up to parts — turnout bodies, crossings. */
+  occupied?: OccupiedSpan[] | null;
+  /** Authored joint positions, inches along the run. Absent = derive. */
+  cuts?: number[] | null;
+}): FlexPiece[] {
+  const lo = Math.min(input.fromPos, input.toPos);
+  const hi = Math.max(input.fromPos, input.toPos);
+  if (!(hi - lo > FLEX_EPS)) return [];
+  const max = input.maxPieceInches > FLEX_EPS ? input.maxPieceInches : Infinity;
+
+  // The run minus the parts sitting in it. Overlapping bodies are merged first
+  // so a crossover's two turnouts don't carve the same inch twice.
+  const blocks = (input.occupied ?? [])
+    .map((s) => ({
+      from: Math.max(lo, Math.min(s.fromPos, s.toPos)),
+      to: Math.min(hi, Math.max(s.fromPos, s.toPos)),
+    }))
+    // Zero-length spans are KEPT — they're breaks at a point of unknown extent
+    // (a crossing), and they still end one piece and start the next.
+    .filter((s) => s.to - s.from >= -FLEX_EPS && s.from < hi + FLEX_EPS && s.to > lo - FLEX_EPS)
+    .sort((a, b) => a.from - b.from);
+  const merged: { from: number; to: number }[] = [];
+  for (const b of blocks) {
+    const last = merged[merged.length - 1];
+    if (last && b.from <= last.to + FLEX_EPS) last.to = Math.max(last.to, b.to);
+    else merged.push({ ...b });
+  }
+  const gaps: { from: number; to: number }[] = [];
+  let cursor = lo;
+  for (const b of merged) {
+    if (b.from - cursor > FLEX_EPS) gaps.push({ from: cursor, to: b.from });
+    cursor = Math.max(cursor, b.to);
+  }
+  if (hi - cursor > FLEX_EPS) gaps.push({ from: cursor, to: hi });
+
+  const authored = input.cuts != null;
+  const out: FlexPiece[] = [];
+  for (const g of gaps) {
+    // Where this gap gets cut. Authored cuts inside it win outright; otherwise
+    // full lengths from its start, remainder at the end.
+    let inner: number[];
+    if (authored) {
+      inner = [...new Set(input.cuts!)]
+        .filter((c) => c > g.from + FLEX_EPS && c < g.to - FLEX_EPS)
+        .sort((a, b) => a - b);
+    } else {
+      inner = [];
+      for (let at = g.from + max; at < g.to - FLEX_EPS; at += max) inner.push(at);
+      // A sliver at the end isn't a piece. Split the last two evenly instead —
+      // both stay under the maximum, because together they're at most one full
+      // length plus a sliver.
+      const tail = g.to - (inner[inner.length - 1] ?? g.from);
+      if (inner.length && tail < FLEX_MIN_PIECE_INCHES) {
+        const start = inner.length >= 2 ? inner[inner.length - 2] : g.from;
+        inner[inner.length - 1] = start + (g.to - start) / 2;
+      }
+    }
+    const bounds = [g.from, ...inner, g.to];
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const from = bounds[i];
+      const to = bounds[i + 1];
+      out.push({
+        index: out.length,
+        fromPos: from,
+        toPos: to,
+        lengthInches: to - from,
+        overlong: to - from > max + FLEX_EPS,
+        // The run's own ends are runEnd; anything else is a part body, except
+        // where a cut put a neighbouring piece there.
+        fromEnd: i > 0 ? "piece" : from <= lo + FLEX_EPS ? "runEnd" : "part",
+        toEnd:
+          i < bounds.length - 2 ? "piece" : to >= hi - FLEX_EPS ? "runEnd" : "part",
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Which way a turnout faces along its host track: `+1` = its points look toward
+ * increasing pos, `-1` = the other way.
+ *
+ * ⭐ ONE definition. The canvas had this inline for drawing the leg, and the
+ * flex solver needs the same answer to know which side of `pos` the moulding
+ * extends — a turnout's body is NOT symmetric about its points (an Atlas #7 is
+ * about 0.9″ behind them and 5.1″ ahead), so getting the facing wrong moves a
+ * rail joint four inches (#193).
+ *
+ * The rule: the turnout faces the way its diverging track LEAVES, because that's
+ * where the frog is. `flipped` is the owner's override — rotating the part 180°
+ * faces the points the other way, which is the only thing that can be right for
+ * a siding pinned at a module end where the geometry reads ambiguously.
+ *
+ * `divergeFarPos` is whatever the caller can measure best: the canvas projects
+ * the diverging track's real far end back onto the main, the editor uses its
+ * authored extent. Same rule either way; only the precision of the input differs.
+ */
+export function turnoutFacing(input: {
+  pos: number;
+  /** Where the diverging track ends up, in the same coordinate as `pos`. */
+  divergeFarPos?: number | null;
+  flipped?: boolean;
+}): 1 | -1 {
+  const far = input.divergeFarPos;
+  const geometric =
+    typeof far === "number" && Number.isFinite(far)
+      ? (Math.sign(far - input.pos) as 1 | -1 | 0) || 1
+      : 1;
+  return (input.flipped ? -geometric : geometric) as 1 | -1;
+}
+
+/**
+ * The stretch of its host run a turnout's moulding occupies (#193) — what flex
+ * track has to stop short of on each side.
+ *
+ * Null when the part hasn't been measured, exactly as {@link partExtent} is:
+ * without a real length we don't know where the moulding stops, and a guessed
+ * body would put a rail joint on track nobody has checked.
+ */
+export function turnoutOccupiedSpan(input: {
+  pos: number;
+  extent: PartExtent | null | undefined;
+  facing: 1 | -1;
+}): OccupiedSpan | null {
+  const e = input.extent;
+  if (!e) return null;
+  const a = input.pos - input.facing * e.behindPoints;
+  const b = input.pos + input.facing * e.aheadOfPoints;
+  return { fromPos: Math.min(a, b), toPos: Math.max(a, b) };
+}
+
+/**
+ * Retype one piece's length: move the rail joint at its far end, and let its
+ * NEIGHBOUR take up the difference (#193).
+ *
+ * That's what cutting one piece longer actually does — the run doesn't grow, so
+ * the next piece gets shorter by the same amount. The pair's total is fixed,
+ * which is why the value is clamped to it: without that, asking for a length
+ * past the next joint silently reorders the cuts and you get back something you
+ * didn't ask for.
+ *
+ * Returns the run's COMPLETE new cut list (`flexCuts`), or null when the piece
+ * has no neighbour to trade with — the last piece in a gap butts a turnout or
+ * the endplate, and its length is set by what it meets, not by preference.
+ */
+export function resizeFlexPiece(
+  pieces: FlexPiece[],
+  index: number,
+  nextLengthInches: number,
+): number[] | null {
+  const piece = pieces[index];
+  const next = pieces[index + 1];
+  if (!piece || !next) return null;
+  if (piece.toEnd !== "piece") return null; // butts a part or the run's end
+  if (!Number.isFinite(nextLengthInches)) return null;
+  const pair = piece.lengthInches + next.lengthInches;
+  if (pair < 2 * FLEX_MIN_PIECE_INCHES) return null;
+  const want = Math.max(
+    FLEX_MIN_PIECE_INCHES,
+    Math.min(pair - FLEX_MIN_PIECE_INCHES, nextLengthInches),
+  );
+  const moved = piece.fromPos + want;
+  return pieces
+    .filter((p) => p.toEnd === "piece")
+    .map((p) => (p.index === index ? moved : p.toPos))
+    .map((v) => Math.round(v * 1000) / 1000)
+    .sort((a, b) => a - b);
+}
+
+/** What a run costs in flex, for someone about to order it (#193). */
+export function flexUsage(pieces: FlexPiece[]): {
+  /** How many separate lengths have to be cut. */
+  pieces: number;
+  /** Total flex laid, inches — the run minus whatever the parts occupy. */
+  totalInches: number;
+  /** Pieces the product can't actually supply in one length. */
+  overlong: number;
+} {
+  return {
+    pieces: pieces.length,
+    totalInches: pieces.reduce((a, p) => a + p.lengthInches, 0),
+    overlong: pieces.filter((p) => p.overlong).length,
+  };
 }
 
 /** Half an N-scale tie, inches — a 8′6″ tie is 102″ prototype, /160 ≈ 0.638″.
