@@ -616,10 +616,18 @@ export interface ModuleFootprintInput {
   /** Where each endplate's CENTRE sits relative to the main centre-line at that
    * end, inches (signed, along the +normal). Free-moN puts a **double**-track
    * plate's two tracks 9/16″ either side of its centre, so with Main 1 on the
-   * centre-line the plate centre is half a track spacing up — pass
-   * `FREEMO_TRACK_SPACING_INCHES / 2`. Single track crosses at the centre ⇒ 0
-   * (the default), and an off-centre track is a signed value. */
+   * centre-line the plate centre is half a track spacing toward Main 2. Single
+   * track crosses at the centre ⇒ 0, and an off-centre track is a signed value.
+   * {@link endplateCentreOffsetInches} computes it from what the owner authored.
+   *
+   * ⚠️ OMITTING an end no longer means 0 — it means "use §2.0", which is a
+   * straddle on a double end. Centring a double plate on Main 1 drew its pair
+   * wholly to one side, which is what the read-only and catalog views did by
+   * passing nothing at all (#190). Pass an explicit number to place a plate. */
   endplateTrackOffsets?: Record<string, number>;
+  /** Whether Main 2 runs BELOW Main 1 (`mainsSwapped`, #131). Only affects which
+   * way an unauthored double plate straddles. */
+  mainsSwapped?: boolean;
   /** Authored benchwork outline (module-local inches), or absent for the band. */
   outline?: BenchworkPoint[] | null;
   /** Authored benchwork HOLE — the inner boundary punched out of `outline` to
@@ -1196,8 +1204,17 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   const widthA = endplateWidthFor(input.endplateWidths, "A");
   const widthB = endplateWidthFor(input.endplateWidths, "B");
   const authored = benchworkOutline(input);
-  const offA = input.endplateTrackOffsets?.["A"] ?? 0;
-  const offB = input.endplateTrackOffsets?.["B"] ?? 0;
+  // Where each plate's CENTRE sits relative to Main 1. The DEFAULT is §2.0's
+  // geometry, not zero — a caller that says nothing about a double end still
+  // gets a plate its two tracks straddle (#190).
+  const offOf = (i: number, id: string) =>
+    input.endplateTrackOffsets?.[id] ??
+    endplateCentreOffsetInches({
+      config: input.endplateConfigs?.[i],
+      main2Below: input.mainsSwapped === true,
+    });
+  const offA = offOf(0, "A");
+  const offB = offOf(1, "B");
   // A module built from shaped sections IS its sections — the whole-module
   // outline stops speaking for it, so don't hand back both and leave renderers
   // to guess which wins (#96 phase 2).
@@ -1241,17 +1258,36 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
 }
 
 /**
- * The offset from the main centre-line to an endplate's CENTRE, inches — the
- * Free-moN geometry. A **double**-track end carries its two tracks 9/16″ either
- * side of the plate centre (§2.0 RP), and Main 1 sits on the centre-line, so the
- * plate centre is half a track spacing up. A single track crosses at the centre.
+ * Where an endplate's CENTRE sits relative to MAIN 1 — the renderer's framing,
+ * and the one number a drawing needs to place the plate.
+ *
+ * ⭐ THE single definition. Two callers had their own: the builder computed it
+ * inline (swap-aware), and the read-only/catalog footprint **passed nothing at
+ * all**, so every plate there was centred on Main 1 — a double end drew its pair
+ * entirely to one side of the plate instead of straddling it (#190).
+ *
+ * §2.0 puts a double end's two tracks 0.5625″ either side of the plate centre,
+ * so the plate centre is half a track spacing away from Main 1 — **toward Main
+ * 2**, which is why the swap matters: with Main 2 below, the plate centre is
+ * below too. An authored offset always wins (an off-centre end is legal since
+ * the 20220628 revision), and is given in the standard's own framing — Main 1's
+ * distance from the plate centre — so it comes back negated here.
  */
-export function endplateTrackOffsetFor(
-  config: TrackConfig | "none" | undefined,
-  authoredTrackOffset?: number | null,
-): number {
-  const v = -endplateTrackOffsetInches(authoredTrackOffset, config);
-  return v === 0 ? 0 : v; // never hand back -0 (it leaks into JSON and compares oddly)
+export function endplateCentreOffsetInches(input: {
+  config?: TrackConfig | "none" | null;
+  /** Main 1's signed distance from the plate centre, as authored. */
+  authoredTrackOffsetInches?: number | null;
+  /** Whether Main 2 runs below Main 1 (the mains are swapped). */
+  main2Below?: boolean;
+}): number {
+  // Simply the other framing of the same fact, so there is ONE default to get
+  // right rather than two that can disagree.
+  const v = -endplateTrackOffsetInches(
+    input.authoredTrackOffsetInches,
+    input.config ?? undefined,
+    input.main2Below,
+  );
+  return v === 0 ? 0 : v; // never hand back -0
 }
 
 /**
@@ -1263,15 +1299,23 @@ export function endplateTrackOffsetFor(
 export function endplateTrackOffsetInches(
   authored: number | null | undefined,
   config: TrackConfig | "none" | undefined,
+  /** Whether Main 2 runs BELOW Main 1 (the mains are swapped). The pair
+   * straddles the plate centre either way, so Main 1 sits on the side AWAY from
+   * Main 2 — low when Main 2 is high, high when it's low. Omitting this
+   * hard-coded "Main 2 is above", which is the assumption behind #190. */
+  main2Below = false,
 ): number {
   if (typeof authored === "number" && Number.isFinite(authored)) return authored;
-  return config === "double" ? -FREEMO_TRACK_SPACING_INCHES / 2 : 0;
+  if (config !== "double") return 0;
+  const half = FREEMO_TRACK_SPACING_INCHES / 2;
+  return main2Below ? half : -half;
 }
 
 /** A Free-moN conformance problem with an endplate's width/track placement. */
 export interface EndplateWidthIssue {
-  /** "narrow" = below the 12″ minimum; "clearance" = a track too near a fascia. */
-  code: "narrow" | "clearance";
+  /** "narrow" = below the 12″ minimum; "clearance" = a track too near a fascia;
+   * "offcentre" = a double end whose pair doesn't straddle the plate centre. */
+  code: "narrow" | "clearance" | "offcentre";
   /** Plain-language problem, for the author. */
   message: string;
   /** The width that would satisfy this rule, inches. */
@@ -1295,6 +1339,10 @@ export function checkEndplateWidth(input: {
   widthInches?: number | null;
   config?: TrackConfig | "none" | null;
   trackOffsetInches?: number | null;
+  /** Whether Main 2 runs BELOW Main 1 (the mains are swapped). Without it a
+   * double end's second track was assumed to be one spacing ABOVE Main 1, so a
+   * swapped pair was measured on the wrong side of the plate (#190). */
+  main2Below?: boolean;
 }): EndplateWidthIssue[] {
   const width = endplateWidthInches(input as { widthInches?: number | null });
   const issues: EndplateWidthIssue[] = [];
@@ -1310,9 +1358,16 @@ export function checkEndplateWidth(input: {
   // double end carries Main 2 one spacing further out, so check whichever of
   // the two sits nearest a fascia. Unauthored falls back to the §2.0 default,
   // which straddles the centre — so a plain double end still measures ±9/16″.
-  const off = endplateTrackOffsetInches(input.trackOffsetInches, input.config ?? undefined);
-  const centres =
-    input.config === "double" ? [off, off + FREEMO_TRACK_SPACING_INCHES] : [off];
+  const off = endplateTrackOffsetInches(
+    input.trackOffsetInches,
+    input.config ?? undefined,
+    input.main2Below,
+  );
+  // Main 2 sits one spacing from Main 1, on Main 2's OWN side — below when the
+  // mains are swapped. Assuming "above" put a swapped pair on the wrong side of
+  // the plate and demanded a wider end than the geometry needs (#190).
+  const second = off + (input.main2Below ? -1 : 1) * FREEMO_TRACK_SPACING_INCHES;
+  const centres = input.config === "double" ? [off, second] : [off];
   const worst = Math.max(...centres.map((c) => Math.abs(c)));
   const clearance = width / 2 - worst;
   if (clearance < FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES) {
@@ -1325,6 +1380,27 @@ export function checkEndplateWidth(input: {
         (off !== 0 ? " or move the track back toward the centre." : "."),
       requiredInches: required,
     });
+  }
+  // §2.0 puts a double end's two tracks 0.5625″ EITHER SIDE of the plate centre.
+  // Off-centre is legal — the 20220628 revision relaxed centring to a
+  // recommendation — but a pair sitting wholly to one side is worth saying out
+  // loud, because it's almost always an accident: an authored 0 reads as "centre
+  // Main 1", which pushes the whole pair off the plate's middle (#190).
+  if (input.config === "double") {
+    const mid = (off + second) / 2;
+    if (Math.abs(mid) > 0.01) {
+      issues.push({
+        code: "offcentre",
+        message:
+          `The two tracks sit ${round2(Math.abs(mid))}″ off the centre of this endplate. ` +
+          `The standard recommends they straddle it — Main 1 at ` +
+          `${round2((input.main2Below ? 1 : -1) * (FREEMO_TRACK_SPACING_INCHES / 2))}″. ` +
+          `Clear the offset to use that.`,
+        // Not a width problem — no wider plate fixes it — so hand back the
+        // width unchanged rather than imply one would.
+        requiredInches: width,
+      });
+    }
   }
   return issues;
 }

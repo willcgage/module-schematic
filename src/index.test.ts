@@ -45,8 +45,9 @@ import {
   N_CAR_LENGTH_INCHES,
   moduleFootprint,
   checkEndplateWidth,
-  endplateTrackOffsetFor,
+  endplateCentreOffsetInches,
   endplateTrackOffsetInches,
+  endplateCentreOffsetInches,
   moduleCenterline,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
@@ -584,6 +585,75 @@ describe("endplate width conformance (Free-moN §1.1 + §2.0)", () => {
     expect(checkEndplateWidth({ widthInches: 12, config: "double" })).toEqual([]);
   });
 
+  it("measures the second track on MAIN 2's side, not always above (#190)", () => {
+    // 10″ plate with Main 1 authored 4″ from the plate centre.
+    //   Main 2 ABOVE  → it sits at −2.875, i.e. back toward the centre, so the
+    //                   nearest-fascia track is MAIN 1 at 4       ⇒ 2 × (4 + 4)
+    //   Main 2 BELOW  → it runs further out to −5.125 and becomes
+    //                   the worst                                 ⇒ 2 × (5.125 + 4)
+    // Same authored number, different geometry — which is exactly what assuming
+    // "Main 2 is above" got wrong.
+    const up = checkEndplateWidth({ widthInches: 10, config: "double", trackOffsetInches: -4 });
+    const down = checkEndplateWidth({
+      widthInches: 10,
+      config: "double",
+      trackOffsetInches: -4,
+      main2Below: true,
+    });
+    expect(up.find((i) => i.code === "clearance")!.requiredInches).toBe(2 * (4 + 4));
+    expect(down.find((i) => i.code === "clearance")!.requiredInches).toBe(2 * (5.125 + 4));
+  });
+
+  it("says so when a double end's pair doesn't straddle the plate centre (#190)", () => {
+    // Unauthored: the pair straddles by construction, so nothing to report.
+    expect(
+      checkEndplateWidth({ widthInches: 24, config: "double" }).map((i) => i.code),
+    ).not.toContain("offcentre");
+    expect(
+      checkEndplateWidth({ widthInches: 24, config: "double", main2Below: true }).map(
+        (i) => i.code,
+      ),
+    ).not.toContain("offcentre");
+
+    // ⚠️ An authored 0 means "centre MAIN 1", which pushes the whole pair to one
+    // side — legal since the 20220628 revision relaxed centring, but almost
+    // always an accident, and it's what FMN-0068/0073/0075 were all storing.
+    const zero = checkEndplateWidth({
+      widthInches: 24,
+      config: "double",
+      trackOffsetInches: 0,
+    });
+    expect(zero.map((i) => i.code)).toContain("offcentre");
+    expect(zero.find((i) => i.code === "offcentre")!.message).toContain("0.56");
+    // …and it is NOT a clearance failure on a 24″ plate, so the two are distinct.
+    expect(zero.map((i) => i.code)).not.toContain("clearance");
+
+    // A single end is never "off-centre" in this sense — there's no pair.
+    expect(
+      checkEndplateWidth({ widthInches: 24, config: "single", trackOffsetInches: 0 }).map(
+        (i) => i.code,
+      ),
+    ).not.toContain("offcentre");
+  });
+
+  it("endplateCentreOffsetInches places the plate centre toward MAIN 2 (#190)", () => {
+    // The renderer's framing: where the plate's centre sits relative to Main 1.
+    expect(endplateCentreOffsetInches({ config: "single" })).toBe(0);
+    expect(endplateCentreOffsetInches({ config: "double" })).toBeCloseTo(0.5625, 6);
+    expect(endplateCentreOffsetInches({ config: "double", main2Below: true })).toBeCloseTo(
+      -0.5625,
+      6,
+    );
+    // An authored value wins, negated out of the standard's framing.
+    expect(
+      endplateCentreOffsetInches({ config: "double", authoredTrackOffsetInches: -2 }),
+    ).toBe(2);
+    // …including an explicit 0, which is what centres the pair off the plate.
+    expect(
+      endplateCentreOffsetInches({ config: "double", authoredTrackOffsetInches: 0 }),
+    ).toBe(0);
+  });
+
   it("flags a plate under the 12in minimum", () => {
     const issues = checkEndplateWidth({ widthInches: 10, config: "single" });
     expect(issues.map((i) => i.code)).toContain("narrow");
@@ -608,9 +678,14 @@ describe("endplate width conformance (Free-moN §1.1 + §2.0)", () => {
 
 describe("endplate track offset (double ends centre on the pair, #93)", () => {
   it("is half a track spacing for double, zero for single", () => {
-    expect(endplateTrackOffsetFor("double")).toBeCloseTo(0.5625);
-    expect(endplateTrackOffsetFor("single")).toBe(0);
-    expect(endplateTrackOffsetFor(undefined)).toBe(0);
+    const centre = (config?: "single" | "double" | "none", main2Below?: boolean) =>
+      endplateCentreOffsetInches({ config, main2Below });
+    expect(centre("double")).toBeCloseTo(0.5625);
+    expect(centre("single")).toBe(0);
+    expect(centre(undefined)).toBe(0);
+    // The plate centre follows MAIN 2's side, so swapping the mains puts it below.
+    expect(centre("double", true)).toBeCloseTo(-0.5625);
+    expect(centre("single", true)).toBe(0);
   });
 
   it("an authored offset wins over the recommended default", () => {
@@ -647,6 +722,37 @@ describe("endplate track offset (double ends centre on the pair, #93)", () => {
     // The face is still a full width across.
     const w = Math.abs(shifted.endplateFaces[0].p1.y - shifted.endplateFaces[0].p2.y);
     expect(w).toBeCloseTo(24);
+  });
+
+  // #190. The builder passed swap-aware offsets; the read-only and catalog views
+  // passed NOTHING, and an absent entry meant 0 — so every double plate there was
+  // centred on Main 1 and its pair sat wholly above it. The default now comes from
+  // §2.0, so a caller that only says "this end is double" still draws it right.
+  it("straddles an unauthored double end by default, either way round", () => {
+    const base = {
+      lengthInches: 48,
+      geometryType: "straight",
+      endplateConfigs: ["double", "double"] as const,
+    };
+    const mid = (fp: ReturnType<typeof moduleFootprint>, i: number) =>
+      (fp.endplateFaces[i].p1.y + fp.endplateFaces[i].p2.y) / 2;
+
+    // Main 2 above ⇒ the pair is at 0 and +1.125, so the plate centre is +0.5625.
+    const up = moduleFootprint({ ...base });
+    expect(mid(up, 0)).toBeCloseTo(0.5625);
+    expect(mid(up, 1)).toBeCloseTo(0.5625);
+    // Swapped ⇒ Main 2 runs below, and the plate centre goes with it.
+    const down = moduleFootprint({ ...base, mainsSwapped: true });
+    expect(mid(down, 0)).toBeCloseTo(-0.5625);
+
+    // A single end still crosses at the plate's centre…
+    const single = moduleFootprint({ ...base, endplateConfigs: ["single", "double"] });
+    expect(mid(single, 0)).toBeCloseTo(0);
+    // …and a given placement still wins per-end, including an explicit 0, which
+    // is how an owner centres a double plate on Main 1 on purpose (#93).
+    const placed = moduleFootprint({ ...base, endplateTrackOffsets: { A: 0 } });
+    expect(mid(placed, 0)).toBeCloseTo(0);
+    expect(mid(placed, 1)).toBeCloseTo(0.5625); // B unstated, so still §2.0
   });
 });
 
