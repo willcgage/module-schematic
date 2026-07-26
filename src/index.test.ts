@@ -84,6 +84,8 @@ import {
   type ModuleSchematicDoc,
   flexPieces,
   flexUsage,
+  spanOverhang,
+  carCapacity,
   resizeFlexPiece,
   flexParts,
   flexPartFor,
@@ -3878,5 +3880,43 @@ describe("flex track pieces (#193)", () => {
     const s = emptyEditorState(96);
     const doc = stateToDoc({ ...s, flexByTrack: { [MAIN_TRACK_ID]: { cuts: [30, 60] } } }, "M");
     expect(docToState(doc, 48).flexByTrack[MAIN_TRACK_ID].cuts).toEqual([15, 30]);
+  });
+})
+
+// ── An industry span running past its track (#194) ────────────────────────────
+describe("span overhang (#194)", () => {
+  it("reports nothing when the span fits", () => {
+    const o = spanOverhang({ fromPos: 12, toPos: 40, trackFromPos: 8, trackToPos: 45 });
+    expect(o.overhangInches).toBe(0);
+    expect(o.onTrackInches).toBe(28);
+  });
+
+  it("measures each end separately", () => {
+    // FMN-0013's "Team track": 29.8→41 authored on a siding running 30→39.
+    const o = spanOverhang({ fromPos: 29.8, toPos: 41, trackFromPos: 30, trackToPos: 39 });
+    expect(o.beforeInches).toBeCloseTo(0.2);
+    expect(o.afterInches).toBeCloseTo(2);
+    expect(o.onTrackInches).toBeCloseTo(9);
+    expect(o.overhangInches).toBeCloseTo(2.2);
+    // …and that's a car and a half of capacity with no rail under it.
+    expect(carCapacity(29.8, 41)).toBe(3);
+    expect(carCapacity(0, o.onTrackInches)).toBe(2);
+  });
+
+  it("doesn't care which way round either span was authored", () => {
+    // A siding running east-to-west is ordinary; so is a span typed end-first.
+    const fwd = spanOverhang({ fromPos: 10, toPos: 50, trackFromPos: 20, trackToPos: 40 });
+    const back = spanOverhang({ fromPos: 50, toPos: 10, trackFromPos: 40, trackToPos: 20 });
+    expect(back).toEqual(fwd);
+    expect(fwd.beforeInches).toBe(10);
+    expect(fwd.afterInches).toBe(10);
+    expect(fwd.onTrackInches).toBe(20);
+  });
+
+  it("a span entirely off its track has NO rail under it", () => {
+    const o = spanOverhang({ fromPos: 60, toPos: 70, trackFromPos: 10, trackToPos: 40 });
+    expect(o.onTrackInches).toBe(0);
+    expect(o.afterInches).toBe(30); // measured from the track's far end
+    expect(o.beforeInches).toBe(0);
   });
 })

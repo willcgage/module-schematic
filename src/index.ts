@@ -1491,6 +1491,50 @@ export function scaleFeetToInches(feet: number, ratio = N_SCALE_RATIO): number {
  * single constant every repo reads so a track's car count matches everywhere. */
 export const N_CAR_LENGTH_INCHES = 3.3;
 
+/** How much of a car-spot span has no rail under it (#194). */
+export interface SpanOverhang {
+  /** Inches the span runs past the track's near end (0 = it starts on track). */
+  beforeInches: number;
+  /** Inches it runs past the far end. */
+  afterInches: number;
+  /** The part of the span that IS on the track. */
+  onTrackInches: number;
+  /** Total overhang — `beforeInches + afterInches`. 0 = the span fits. */
+  overhangInches: number;
+}
+
+/**
+ * How far a car-spot span runs past the ends of the track it spots on (#194).
+ *
+ * An industry is a span with a start and an end, and its capacity is computed
+ * from those — but nothing checked that the span fits on the siding it's
+ * spotting. FMN-0013's "Team track" claims 29.8″ → 41″ on a track running
+ * 30″ → 39″: about a car and a half of capacity with no rail under it.
+ *
+ * Both spans are given in the same coordinate (inches along the module) and
+ * either may run "backwards" — a siding authored east-to-west is ordinary — so
+ * both are normalised first.
+ */
+export function spanOverhang(input: {
+  fromPos: number;
+  toPos: number;
+  trackFromPos: number;
+  trackToPos: number;
+}): SpanOverhang {
+  const lo = Math.min(input.fromPos, input.toPos);
+  const hi = Math.max(input.fromPos, input.toPos);
+  const tLo = Math.min(input.trackFromPos, input.trackToPos);
+  const tHi = Math.max(input.trackFromPos, input.trackToPos);
+  const before = Math.max(0, tLo - lo);
+  const after = Math.max(0, hi - tHi);
+  return {
+    beforeInches: before,
+    afterInches: after,
+    onTrackInches: Math.max(0, Math.min(hi, tHi) - Math.max(lo, tLo)),
+    overhangInches: before + after,
+  };
+}
+
 /** How many cars fit in a span, from its drawn length — the derived capacity a
  * siding or an industry spot holds (never typed). */
 export function carCapacity(
