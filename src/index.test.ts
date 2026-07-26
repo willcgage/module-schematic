@@ -900,10 +900,14 @@ describe("loop modules (single-endplate turnback)", () => {
     expect(docToState(doc, 120).extraTracks.find((t) => t.id === "t1")?.inLoop).toBe(true);
   });
 
-  it("a non-loop module never drops endplate B ('none' coerces to single)", () => {
+  it("'none' on a NON-loop module drops endplate B — it isn't loop-only (#184)", () => {
+    // ⚠️ REVERSES an earlier rule that read "a non-loop module never drops
+    // endplate B ('none' coerces to single)". That made a single-ended module
+    // impossible to author, which is wrong: an end of the line and a pocket both
+    // present one conforming face and simply stop. The standard governs the
+    // faces a module OFFERS for joining, never how many it must offer.
     const doc = stateToDoc({ ...emptyEditorState(96), configB: "none" }, "M");
-    expect(doc.endplates.map((e) => e.id)).toEqual(["A", "B"]);
-    expect(doc.endplates[1].tracks?.[0]?.config).toBe("single");
+    expect(doc.endplates.map((e) => e.id)).toEqual(["A"]);
   });
 });
 
@@ -1554,6 +1558,32 @@ describe("endplate poses (#175)", () => {
       }),
     ).toBeNull();
     expect(partExtent(null)).toBeNull();
+  });
+
+  it("a module can present ONE endplate — an end of the line or a pocket (#184)", () => {
+    // A straight board that simply stops. No geometry type says this (it isn't a
+    // dead_end curve or a loop); the owner says it, by giving end B no plate.
+    const doc = stateToDoc({ ...emptyEditorState(96), configB: "none" as const }, "M");
+    expect(doc.endplates.map((e) => e.id)).toEqual(["A"]);
+
+    const poses = deriveEndplatePoses({
+      lengthInches: 96,
+      geometryType: "straight",
+      endplateConfigs: ["single", "none"],
+    });
+    expect(poses.map((p) => p.id)).toEqual(["A"]);
+
+    // …and the ordinary two-ended module is untouched.
+    const two = stateToDoc(emptyEditorState(96), "M");
+    expect(two.endplates.map((e) => e.id)).toEqual(["A", "B"]);
+    expect(
+      deriveEndplatePoses({ lengthInches: 96, geometryType: "straight" }).map((p) => p.id),
+    ).toEqual(["A", "B"]);
+  });
+
+  it("a single-ended module still round-trips its own state", () => {
+    const doc = stateToDoc({ ...emptyEditorState(120), configB: "none" as const }, "M");
+    expect(docToState(doc, 120).configB).toBe("none");
   });
 
   it("poseNeedsManual flags wye and other only", () => {

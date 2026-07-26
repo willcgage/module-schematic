@@ -1499,9 +1499,11 @@ export interface EditorBranch {
    * draws track to it; the plate is placed first, connected later). */
   trackId?: string | null;
 }
-/** Endplate B on a loop module: a standard endplate makes the balloon an
- * INTERCHANGE (a second route connects at the loop, e.g. Seaford); "none"
- * makes it a pure turnback. Non-loop modules always have a real B. */
+/** Endplate B's configuration — or `"none"`, meaning **the module has no far
+ * endplate**: an end of the line, a pocket, or a loop's pure turnback. On a
+ * loop, a standard endplate B instead makes the balloon an INTERCHANGE (a second
+ * route connects there, e.g. Seaford). A module presents one conforming face,
+ * or two, or more; the standard governs the faces it offers, not how many (#184). */
 export type EndplateBConfig = TrackConfig | "none";
 
 export interface EditorState {
@@ -1785,18 +1787,22 @@ export function stateToDoc(
             ]
           : [
               { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
-              // Non-loop modules always have a real B ("none" never applies).
-              {
-                id: "B",
-                label: "East",
-                tracks: [
-                  {
-                    trackId: MAIN_TRACK_ID,
-                    lane: 0,
-                    config: state.configB === "none" ? "single" : state.configB,
-                  },
-                ],
-              },
+              // ⚠️ `configB: "none"` means the module HAS NO FAR ENDPLATE, and
+              // that is not loop-only (#184). An *end of the line* or a *pocket*
+              // presents one conforming face and the track simply stops. The
+              // standard governs the ends a module offers for joining; it never
+              // required a module to offer two. This used to coerce "none" to
+              // "single" and emit a B regardless, so a single-ended module was
+              // impossible to author.
+              ...(state.configB !== "none"
+                ? [
+                    {
+                      id: "B",
+                      label: "East",
+                      tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }],
+                    },
+                  ]
+                : []),
             ]),
         // Branch endplates C, D, … — junction connections at pos, off one side
         // (#170). A set can carry several (e.g. a second railroad through).
@@ -4266,8 +4272,10 @@ export interface ModuleGeometryInput {
   geometryType?: string | null;
   geometryDegrees?: number | null;
   geometryOffsetInches?: number | null;
-  /** Axial endplate configs (A first, then B). Missing → single. */
-  endplateConfigs?: ("single" | "double" | null | undefined)[];
+  /** Axial endplate configs (A first, then B). Missing → single. `"none"` at B
+   * means the module has no far endplate at all — an end of the line, a pocket,
+   * or a turnback (#184). */
+  endplateConfigs?: ("single" | "double" | "none" | null | undefined)[];
   /** Branch endplates (from the schematic doc, #170), positioned along the
    * mainline axis. */
   branches?: {
@@ -4350,10 +4358,17 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
     }),
   );
 
-  // Endplate B — unless the module is a dead end / turnback (single endplate).
-  // A dead-end has one plate; a balloon/return loop likewise (it turns back on
-  // itself, so the chain's end lands near the throat, not a real far endplate).
-  const noB = geo.geometryType === "dead_end" || geo.loop === true;
+  // Endplate B — unless the module presents only ONE face. Three ways to say so,
+  // and they're different things: the geometry is a dead end; it's a balloon
+  // loop (it turns back on itself, so the chain's end lands near the throat, not
+  // a real far endplate); or the owner simply said this end has no plate, which
+  // is how an *end of the line* or a *pocket* is authored — those are ordinary
+  // straight boards that just stop, so no geometry type would ever say it for
+  // them (#184).
+  const noB =
+    geo.geometryType === "dead_end" ||
+    geo.loop === true ||
+    geo.endplateConfigs?.[1] === "none";
   // A sectioned module's real end is where its boards finish, which no single
   // module-level geometry can predict — chain them and read the last point and
   // its closing tangent (#108).
