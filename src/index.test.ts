@@ -820,16 +820,23 @@ describe("loop modules (single-endplate turnback)", () => {
     expect(back.extraTracks).toHaveLength(1);
   });
 
-  it("moduleFeatures reports loop, from the flag or a single endplate", () => {
+  it("a loop is the AUTHORED flag only — one endplate no longer implies one (#191)", () => {
     const doc = stateToDoc({ ...emptyEditorState(96), loop: true }, "M");
     expect(moduleFeatures(doc).loop).toBe(true);
-    // legacy-ish doc without the flag but only one endplate
-    const implied: ModuleSchematicDoc = {
-      version: 1, lengthInches: 96,
+
+    // ⚠️ REVERSES an earlier rule that inferred a loop from `endplates.length
+    // === 1`. That was safe only while a turnback was the sole way to have one
+    // endplate; #184 made an end of the line / pocket present one too, so every
+    // single-ended module was being drawn as a balloon — bulb, "Entry" label and
+    // all. A loop is a loop because someone said so.
+    const oneEndplate: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 96,
       endplates: [{ id: "A" }],
       tracks: [{ id: "main", role: "main", lane: 0, fromPos: 0, toPos: 96 }],
     };
-    expect(moduleFeatures(implied).loop).toBe(true);
+    expect(moduleFeatures(oneEndplate).loop).toBe(false);
+
     // ordinary through module stays false
     expect(moduleFeatures(stateToDoc(emptyEditorState(96), "M")).loop).toBe(false);
   });
@@ -1581,9 +1588,15 @@ describe("endplate poses (#175)", () => {
     ).toEqual(["A", "B"]);
   });
 
-  it("a single-ended module still round-trips its own state", () => {
+  it("a single-ended module round-trips, and is NOT read as a loop (#191)", () => {
     const doc = stateToDoc({ ...emptyEditorState(120), configB: "none" as const }, "M");
-    expect(docToState(doc, 120).configB).toBe("none");
+    const back = docToState(doc, 120);
+    // No endplate B ⇒ "none", because the plate is absent — not because the
+    // module is a turnback. This round trip previously survived only via the
+    // loop misclassification.
+    expect(back.configB).toBe("none");
+    expect(back.loop).toBe(false);
+    expect(moduleFeatures(doc).loop).toBe(false);
   });
 
   it("poseNeedsManual flags wye and other only", () => {

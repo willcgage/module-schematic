@@ -1332,9 +1332,23 @@ function endplateWidthFor(widths: Record<string, number> | undefined, id: string
   return typeof w === "number" && w > 0 ? w : FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES;
 }
 
-/** Whether a doc is a single-endplate turnback (explicit flag or one endplate). */
+/**
+ * Whether a doc is a balloon loop — **the authored flag, and only that**.
+ *
+ * ⚠️ This used to ALSO infer a loop from `endplates.length === 1`, which was
+ * safe only while the sole way to have one endplate was to be a turnback. #184
+ * ended that: an *end of the line* or a *pocket* presents one conforming face
+ * too, so every single-ended module was silently classified as a loop — drawn
+ * with a bulb, its endplate A relabelled "Entry", and positions past the throat
+ * read as being inside a balloon that doesn't exist (#191).
+ *
+ * A loop is now only ever a loop because someone said so: the Loop checkbox and
+ * the return-loop generator both set `loop: true`. Checked before removing the
+ * inference — no stored doc relied on it (no module in the catalogue has one
+ * endplate without the flag, and none is `category:"loop"` or `dead_end`).
+ */
 export function isLoopDoc(doc: ModuleSchematicDoc): boolean {
-  return doc.loop === true || doc.endplates.length === 1;
+  return doc.loop === true;
 }
 
 export const MAIN_TRACK_ID = "main";
@@ -2070,8 +2084,14 @@ export function docToState(
     loopReturn: loop && d!.loopReturn === "main2" ? "main2" : "same",
     mainsSwapped: d!.mainsSwapped === true,
     configA: configOf("A"),
-    // On a loop, a missing B means pure turnback; present = interchange loop.
-    configB: loop && !hasB ? "none" : configOf("B"),
+    // NO ENDPLATE B ⇒ "none", whatever kind of module this is. On a loop that
+    // reads as a pure turnback (a present B makes it an interchange); on an end
+    // of the line or a pocket it simply means the module has one face (#184).
+    // ⚠️ This used to be `loop && !hasB`, so "none" only survived a round trip on
+    // a loop — which passed its test yesterday ONLY because a single-endplate
+    // module was still being misclassified as one (#191). The absence of the
+    // plate is the fact; why it's absent doesn't change what to read.
+    configB: hasB ? configOf("B") : "none",
     branches: branchEps.map((ep) => ({
       label: ep.label ?? "Branch",
       pos: sc(ep.at!.pos),
