@@ -66,6 +66,7 @@ import {
   turnoutPartForSize,
   partExtent,
   partExtentForSize,
+  pastFrogInchesForSize,
   storedPartToTrackPart,
   mergeStoredParts,
   leadInchesForSize,
@@ -1510,6 +1511,22 @@ describe("endplate poses (#175)", () => {
       pastFrog: 2.25,
     });
     expect(leadInchesForSize(6, merged)).toBeCloseTo(3.5, 6);
+  });
+
+  it("pastFrogInchesForSize interpolates like the lead does, and stays bounded", () => {
+    // Measured: #5 = 1.25″, #7 = 1.78125″, #10 = 2.5″ past the frog.
+    expect(pastFrogInchesForSize(5)).toBeCloseTo(1.25, 6);
+    expect(pastFrogInchesForSize(7)).toBeCloseTo(1.78125, 6);
+    expect(pastFrogInchesForSize(10)).toBeCloseTo(2.5, 6);
+    // A #6 sits between the #5 and the #7 — the same rule the lead already uses.
+    const six = pastFrogInchesForSize(6);
+    expect(six).toBeGreaterThan(1.25);
+    expect(six).toBeLessThan(1.78125);
+    // ⚠️ The whole point: a turnout is drawn a few inches past its frog, not the
+    // ~7″ the arrive-parallel leg used to run on a #7.
+    expect(pastFrogInchesForSize(7)).toBeLessThan(3);
+    // Never negative, however far out the extrapolation is pushed.
+    expect(pastFrogInchesForSize(1)).toBeGreaterThanOrEqual(0);
   });
 
   it("partExtent refuses to guess — length is packaging, not a function of N", () => {

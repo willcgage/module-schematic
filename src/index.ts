@@ -2937,6 +2937,51 @@ export function leadInchesForSize(size: number, library = BUILT_IN_TRACK_PARTS):
   return lo.lead + t * (hi.lead - lo.lead);
 }
 
+/**
+ * How far a turnout of this size keeps going PAST its frog — the rest of the
+ * moulding, after which the owner's flex track begins.
+ *
+ * The companion to {@link leadInchesForSize}, and it follows the same rule: an
+ * exact measured part wins, otherwise interpolate across the measured ones. Both
+ * numbers describe *how long to draw a turnout*, which is a question that always
+ * has to be answered — you cannot draw nothing — so a reasoned interpolation is
+ * the honest floor, and it is a far better answer than the alternative it
+ * replaced (running the diverging route until it arrived parallel with the track
+ * it fed, which was 10.79″ on a 6.00″ part).
+ *
+ * ⚠️ Do NOT confuse this with {@link partExtent}, which returns null rather than
+ * guess. The difference is what is being claimed. `partExtent` says "THIS part
+ * stops HERE" — a statement about a specific product, which may only be made
+ * from a measurement. This says "a turnout of about this frog number runs about
+ * this far past its frog", which is a drawing approximation and is labelled as
+ * one: renderers draw the part's boundary only where {@link partExtent} answers.
+ */
+export function pastFrogInchesForSize(
+  size: number,
+  library = BUILT_IN_TRACK_PARTS,
+): number {
+  const measured = library
+    .filter((p) => p.kind === "turnout" && p.frogNumber != null)
+    .map((p) => ({ n: p.frogNumber as number, ext: partExtent(p) }))
+    .filter((p): p is { n: number; ext: PartExtent } => p.ext != null)
+    .map((p) => ({ n: p.n, past: p.ext.pastFrog }))
+    .sort((a, b) => a.n - b.n);
+
+  // Nothing measured at all: fall back to the frog angle itself. A turnout
+  // whose rails have separated by about a gauge past the frog is short, but it
+  // is bounded and it never claims a length nobody has checked.
+  if (!measured.length) return RAIL_GAUGE_INCHES * size;
+  if (measured.length === 1) return measured[0].past;
+
+  let i: number;
+  if (size >= measured[measured.length - 1].n) i = measured.length - 2;
+  else i = Math.max(0, measured.findIndex((p) => p.n >= size) - 1);
+  const lo = measured[i];
+  const hi = measured[i + 1];
+  const t = (size - lo.n) / (hi.n - lo.n);
+  return Math.max(0, lo.past + t * (hi.past - lo.past));
+}
+
 /** One drawn piece of a part's geometry, in the part's own local frame. */
 export type PartSegment =
   | { kind: "straight"; x0: number; y0: number; x1: number; y1: number }
