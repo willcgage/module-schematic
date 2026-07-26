@@ -372,6 +372,36 @@ export interface SchematicSection {
   geometryDegrees?: number | null;
   /** Lateral jog, for offset sections. */
   geometryOffsetInches?: number | null;
+  /** This board's WEST end (the A side) — see {@link SectionEnd}. */
+  endA?: SectionEnd | null;
+  /** This board's EAST end (the B side). */
+  endB?: SectionEnd | null;
+}
+
+/**
+ * One end of a board (#130).
+ *
+ * Owner's question was *"how would I update my section joints to be endplates
+ * from within MR?"* — and until now nothing could say it: a section had a
+ * length, a shape and an outline, but nothing about its ends.
+ *
+ * ⚠️ **There is deliberately no "this is an endplate" flag.** An owner could
+ * tick it wrongly and the registry would then tell Free-Dispatcher that two
+ * boards will physically mate when they won't. The geometry decides — describe
+ * the end and {@link assessSectionEnd} works out whether it conforms.
+ *
+ * Absent means **not described**, which is an ordinary internal joint, not a
+ * failing endplate: the standard exempts internal boundaries from the
+ * end-interface rules (#96).
+ */
+export interface SectionEnd {
+  /** What this end presents. `"none"` = a closed end (a bumper). */
+  config?: TrackConfig | "none" | null;
+  /** Face width, inches. Absent = the recommended default. */
+  widthInches?: number | null;
+  /** Main 1's signed distance from the face centre — the standard's own
+   * framing, same as an endplate's (see {@link endplateTrackOffsetInches}). */
+  trackOffsetInches?: number | null;
 }
 
 /** The authored benchwork outline, or null when a module hasn't drawn one
@@ -413,8 +443,33 @@ export function moduleSections(
         ...(sec.geometryType ? { geometryType: sec.geometryType } : {}),
         ...(typeof deg === "number" && Number.isFinite(deg) ? { geometryDegrees: deg } : {}),
         ...(typeof off === "number" && Number.isFinite(off) ? { geometryOffsetInches: off } : {}),
+        // The board's two ends (#130). Written only when actually described —
+        // an absent end is an ordinary internal joint, and an empty object
+        // would claim the owner had said something about it.
+        ...(sectionEnd(sec.endA) ? { endA: sectionEnd(sec.endA)! } : {}),
+        ...(sectionEnd(sec.endB) ? { endB: sectionEnd(sec.endB)! } : {}),
       };
     });
+}
+
+/** Normalise one board end, or null when nothing was actually said about it
+ * (#130). Keeps `{}` and `{ config: null }` from round-tripping as a described
+ * end — see {@link SectionEnd}. */
+function sectionEnd(end: SectionEnd | null | undefined): SectionEnd | null {
+  if (!end) return null;
+  const config =
+    end.config === "single" || end.config === "double" || end.config === "none"
+      ? end.config
+      : null;
+  const w = end.widthInches;
+  const o = end.trackOffsetInches;
+  const out: SectionEnd = {
+    ...(config ? { config } : {}),
+    ...(typeof w === "number" && Number.isFinite(w) && w > 0 ? { widthInches: w } : {}),
+    // Signed, and 0 is meaningful ("explicitly centred", #93) — keep any finite.
+    ...(typeof o === "number" && Number.isFinite(o) ? { trackOffsetInches: o } : {}),
+  };
+  return Object.keys(out).length ? out : null;
 }
 
 /** Every section outline that's actually a shape, arc-sampled for drawing.
@@ -1621,6 +1676,106 @@ export function usableCapacity(input: {
     cars: carCapacity(0, usable, carLen),
     scaleFeet: Math.round(inchesToScaleFeet(usable)),
   };
+}
+
+/** What a board's end is, once the geometry has been asked (#130). */
+export interface SectionEndAssessment {
+  /** Has the owner described this end at all? Undescribed is an ordinary
+   * internal joint — exempt from the end-interface rules (#96) — not a failure. */
+  described: boolean;
+  /** Does it meet the standard's end-interface rules? Only a described end can. */
+  conforming: boolean;
+  /** Why it doesn't, when it doesn't. Empty for a conforming or undescribed end. */
+  issues: EndplateWidthIssue[];
+  /** The resolved values the assessment was made against. */
+  config: TrackConfig | "none";
+  widthInches: number;
+  trackOffsetInches: number;
+}
+
+/**
+ * Is this end of a board a standard endplate? (#130)
+ *
+ * ⭐ **Derived, never declared.** The issue is emphatic and the reason is good:
+ * a checkbox could be ticked wrongly, and the registry would then promise
+ * Free-Dispatcher a mating surface that doesn't exist. So the answer comes from
+ * the same rules {@link checkEndplateWidth} already applies to a module's own
+ * plates — §1.1's 12″ minimum, and §2.0's 4″ fascia clearance and 1.125″ pair.
+ *
+ * Two of the standard's conditions aren't checked because they can't be false
+ * here: track crosses the face **perpendicular** and a double end's two tracks
+ * sit **1.125″ apart** are both true by construction in this model. Inventing
+ * fields for them would be inventing ways to be wrong.
+ *
+ * An end with no config is **undescribed**, which is the ordinary case — most
+ * joints inside a module are just joints.
+ */
+export function assessSectionEnd(
+  end: SectionEnd | null | undefined,
+  opts: { main2Below?: boolean } = {},
+): SectionEndAssessment {
+  const config = (end?.config ?? "none") as TrackConfig | "none";
+  const widthInches = endplateWidthInches({ widthInches: end?.widthInches });
+  const trackOffsetInches = endplateTrackOffsetInches(
+    end?.trackOffsetInches,
+    config,
+    opts.main2Below,
+  );
+  // "Described" means the owner said what this end PRESENTS. A width alone
+  // doesn't make a joint an interface; a track configuration does.
+  const described = config === "single" || config === "double";
+  if (!described) {
+    return { described: false, conforming: false, issues: [], config, widthInches, trackOffsetInches };
+  }
+  const issues = checkEndplateWidth({
+    widthInches: end?.widthInches,
+    config,
+    trackOffsetInches: end?.trackOffsetInches,
+    main2Below: opts.main2Below,
+  });
+  return { described: true, conforming: issues.length === 0, issues, config, widthInches, trackOffsetInches };
+}
+
+/** Two board ends meeting at a joint, and whether that joint is a standard
+ * interface (#130). */
+export interface SectionJointAssessment {
+  west: SectionEndAssessment;
+  east: SectionEndAssessment;
+  /** Both ends conform AND present the same number of tracks — so these two
+   * boards could be separated and each used against any other module. */
+  standardInterface: boolean;
+  /** Plain-language reason it isn't one, or null when it is. */
+  reason: string | null;
+}
+
+/**
+ * Assess a joint — the two board ends that meet there (#130).
+ *
+ * ⚠️ Track COUNT is the only compatibility rule. Two conforming ends of
+ * differing face WIDTH still mate: the standard lets plates differ in width and
+ * be offset, so long as the track lines up. That's a deliberate non-check — see
+ * the note on endplate width authoring.
+ */
+export function assessSectionJoint(
+  west: SectionEnd | null | undefined,
+  east: SectionEnd | null | undefined,
+  opts: { main2Below?: boolean } = {},
+): SectionJointAssessment {
+  const w = assessSectionEnd(west, opts);
+  const e = assessSectionEnd(east, opts);
+  let reason: string | null = null;
+  if (!w.described || !e.described) {
+    reason = "an internal joint — neither end has been described as an interface";
+    if (w.described !== e.described)
+      reason = `only the ${w.described ? "west" : "east"} side is described as an endplate`;
+  } else if (!w.conforming || !e.conforming) {
+    const bad = !w.conforming ? w : e;
+    reason = bad.issues[0]?.message ?? "an end doesn't meet the standard";
+  } else if (w.config !== e.config) {
+    // Single↔double is the one real mismatch: the track counts don't line up.
+    reason = `${w.config} meets ${e.config} — the track counts differ`;
+  }
+  return { west: w, east: e, standardInterface: reason === null, reason };
 }
 
 /** How much of a car-spot span has no rail under it (#194). */

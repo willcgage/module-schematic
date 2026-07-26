@@ -86,6 +86,8 @@ import {
   flexUsage,
   spanOverhang,
   carCapacity,
+  assessSectionEnd,
+  assessSectionJoint,
   usableCapacity,
   clearancePointPastFrogInches,
   CLEARANCE_SPACING_INCHES,
@@ -4067,5 +4069,103 @@ describe("usable capacity (#19/#20)", () => {
     expect(u.usableInches).toBe(48);
     expect(u.drawnInches).toBe(48);
     expect(u.givenUpInches).toBe(0);
+  });
+})
+
+// ── A section's two ends (#130) ───────────────────────────────────────────────
+// Owner: "how would I update my section joints to be endplates from within MR?"
+// The answer is that you describe the end and the geometry decides — there is
+// deliberately no "this is an endplate" flag to tick wrongly.
+describe("section ends (#130)", () => {
+  it("an undescribed end is an internal joint, not a failing endplate", () => {
+    // Most joints inside a module are just joints, and the standard exempts
+    // them from the end-interface rules (#96). That's absence, not failure.
+    for (const end of [undefined, null, {}, { widthInches: 24 }, { config: "none" as const }]) {
+      const a = assessSectionEnd(end);
+      expect(a.described).toBe(false);
+      expect(a.conforming).toBe(false);
+      expect(a.issues).toEqual([]); // NOT flagged as wrong
+    }
+  });
+
+  it("a width alone doesn't make a joint an interface — a track config does", () => {
+    expect(assessSectionEnd({ widthInches: 24 }).described).toBe(false);
+    expect(assessSectionEnd({ config: "single" }).described).toBe(true);
+  });
+
+  it("a described end that meets the standard IS an endplate", () => {
+    const a = assessSectionEnd({ config: "single", widthInches: 24 });
+    expect(a.conforming).toBe(true);
+    expect(a.issues).toEqual([]);
+    // A double end straddles its pair by default, so it conforms untouched.
+    expect(assessSectionEnd({ config: "double", widthInches: 24 }).conforming).toBe(true);
+  });
+
+  it("applies the SAME rules a module's own plates get", () => {
+    // Too narrow (§1.1's 12″ minimum).
+    const narrow = assessSectionEnd({ config: "single", widthInches: 8 });
+    expect(narrow.described).toBe(true);
+    expect(narrow.conforming).toBe(false);
+    expect(narrow.issues.map((i) => i.code)).toContain("narrow");
+    // Track too near a fascia (§2.0's 4″).
+    const crowded = assessSectionEnd({ config: "single", widthInches: 12, trackOffsetInches: 5 });
+    expect(crowded.conforming).toBe(false);
+    expect(crowded.issues.map((i) => i.code)).toContain("clearance");
+  });
+
+  it("a joint is standard only when BOTH ends are", () => {
+    const good = { config: "single" as const, widthInches: 24 };
+    expect(assessSectionJoint(good, good).standardInterface).toBe(true);
+    expect(assessSectionJoint(good, good).reason).toBeNull();
+    // One side undescribed ⇒ not an interface, and the reason says which.
+    const half = assessSectionJoint(good, undefined);
+    expect(half.standardInterface).toBe(false);
+    expect(half.reason).toMatch(/only the west side/);
+    // One side too narrow ⇒ not an interface, and the reason is the real issue.
+    const narrow = assessSectionJoint(good, { config: "single", widthInches: 8 });
+    expect(narrow.standardInterface).toBe(false);
+    expect(narrow.reason).toMatch(/at least 12/);
+  });
+
+  it("track COUNT is the compatibility rule — differing WIDTHS still mate", () => {
+    // The standard lets plates differ in width and be offset, so long as the
+    // track lines up. A width-mismatch check would be inventing a rule.
+    const wide = { config: "single" as const, widthInches: 24 };
+    const narrowButLegal = { config: "single" as const, widthInches: 12 };
+    expect(assessSectionJoint(wide, narrowButLegal).standardInterface).toBe(true);
+    // Single meeting double is the real mismatch.
+    const dbl = { config: "double" as const, widthInches: 24 };
+    const mixed = assessSectionJoint(wide, dbl);
+    expect(mixed.standardInterface).toBe(false);
+    expect(mixed.reason).toMatch(/track counts differ/);
+  });
+
+  it("honours the swap, like every other endplate check", () => {
+    // A double end's recommended offset flips with mainsSwapped (#190), so an
+    // end authored for a swapped module must not read as off-centre.
+    expect(assessSectionEnd({ config: "double", widthInches: 24 }, { main2Below: true }).conforming).toBe(true);
+    const explicit = assessSectionEnd(
+      { config: "double", widthInches: 24, trackOffsetInches: 0.5625 },
+      { main2Below: true },
+    );
+    expect(explicit.conforming).toBe(true);
+  });
+
+  it("round-trips a section's ends through the doc", () => {
+    const s0 = emptyEditorState(96);
+    const st: typeof s0 = {
+      ...s0,
+      sections: [
+        { id: "sec1", lengthInches: 48, endA: { config: "single", widthInches: 24 }, endB: { config: "double" } },
+        { id: "sec2", lengthInches: 48 },
+      ],
+    };
+    const doc = stateToDoc(st, "M");
+    expect(doc.sections?.[0].endA).toEqual({ config: "single", widthInches: 24 });
+    expect(doc.sections?.[0].endB).toEqual({ config: "double" });
+    const back = docToState(doc, 96);
+    expect(back.sections[0].endA?.config).toBe("single");
+    expect(back.sections[0].endB?.config).toBe("double");
+    expect(back.sections[1].endA ?? null).toBeNull();
   });
 })
