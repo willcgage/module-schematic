@@ -33,6 +33,14 @@ export interface SchematicEndplate {
    * lengthInches). Renderers draw a named connector arrow (the CATS/US&S
    * off-band idiom) until branch spines land. */
   at?: { pos: number; side: "up" | "down" };
+  /** ⭐ THE ENDPLATE'S EDGE OF THE BENCHWORK (ADR 0001). When present it WINS
+   * over `pose` and over derivation, and position, heading and width are all
+   * read off the polygon — so they cannot drift apart from the board.
+   *
+   * `pose` remains for modules authored before this and for shapes with no
+   * benchwork polygon to bind to. Nothing is auto-converted: guessing which
+   * edge an owner's freehand pose meant would be inventing an intent. */
+  edge?: EndplateEdge | null;
   /** Manual pose override (#175 phase 1b) — the endplate's module-local track
    * point (x, y inches) + outward-normal heading (°). Hand-entered for shapes
    * the geometry fields can't derive (wye, freeform, loop); wins over
@@ -2156,6 +2164,9 @@ export interface EditorState {
   /** Authored per-endplate TRACK offsets by id — the primary track's signed
    * distance from the plate centre, inches. Absent id = the §2.0 default. */
   endplateTrackOffsets: Record<string, number>;
+  /** Endplate EDGE bindings by id (ADR 0001) — an endplate that is part of the
+   * benchwork. Wins over a pose; nothing is auto-converted from one. */
+  endplateEdges?: Record<string, EndplateEdge>;
   /** Benchwork footprint outline — polygon vertices in module-local inches
    * (endplate A's track point at the origin, mainline +x, perpendicular +y up).
    * Empty = no authored outline (fall back to the endplate-width band). */
@@ -2363,6 +2374,21 @@ function withPoses(
   );
 }
 
+/** Attach endplate EDGE bindings by id (ADR 0001).
+ *
+ * A binding is not an override — it says the endplate IS this edge of the
+ * benchwork, so position, heading and width are read off the board and cannot
+ * go stale. Written back verbatim; there is deliberately no conversion from a
+ * `pose`, because guessing which edge someone's freehand placement meant would
+ * be inventing their intent. */
+function withEdges(
+  endplates: SchematicEndplate[],
+  edges: Record<string, EndplateEdge> | undefined,
+): SchematicEndplate[] {
+  if (!edges) return endplates;
+  return endplates.map((e) => (edges[e.id] ? { ...e, edge: edges[e.id] } : e));
+}
+
 /** Attach authored endplate face widths by id; a non-positive/absent width is
  * left off so it falls back to the recommended default. */
 function withWidths(
@@ -2412,6 +2438,7 @@ export function stateToDoc(
     ...(state.loop && state.loopReturn === "main2" ? { loopReturn: "main2" as const } : {}),
     ...(state.mainsSwapped ? { mainsSwapped: true } : {}),
     endplates: withWidths(
+      withEdges(
       withPoses(
       [
         ...(state.loop
@@ -2455,7 +2482,7 @@ export function stateToDoc(
         })),
       ],
       state.poseOverrides,
-    ),
+    ), state.endplateEdges),
       state.endplateWidths,
       state.endplateTrackOffsets,
     ),
@@ -2700,7 +2727,17 @@ export function docToState(
   // not a position along the module).
   const endplateWidths: Record<string, number> = {};
   const endplateTrackOffsets: Record<string, number> = {};
+  // ⭐ Edge bindings (ADR 0001) — an endplate that IS part of the benchwork.
+  // Carried through unscaled: an edge index is a reference, not a dimension.
+  const endplateEdges: Record<string, EndplateEdge> = {};
   for (const e of d!.endplates ?? []) {
+    if (e.edge && Number.isFinite(e.edge.index) && e.edge.index >= 0)
+      endplateEdges[e.id] = {
+        index: Math.trunc(e.edge.index),
+        ...(e.edge.section ? { section: e.edge.section } : {}),
+        ...(Number.isFinite(e.edge.fromT as number) ? { fromT: e.edge.fromT } : {}),
+        ...(Number.isFinite(e.edge.toT as number) ? { toT: e.edge.toT } : {}),
+      };
     if (typeof e.widthInches === "number" && e.widthInches > 0)
       endplateWidths[e.id] = e.widthInches;
     // Signed, and 0 is meaningful (explicitly centred) — keep any finite value.
@@ -2768,6 +2805,7 @@ export function docToState(
     flexByTrack,
     endplateWidths,
     endplateTrackOffsets,
+    endplateEdges,
     outline,
     outlineInner,
     sectionBreaks: (d!.sectionBreaks ?? [])
@@ -5779,6 +5817,104 @@ export type GeometryType =
   | "wye"
   | "other";
 
+/**
+ * An endplate bound to a BENCHWORK EDGE (ADR 0001).
+ *
+ * Will Gage, 2026-07-26: *"Endplates are a part of the benchwork. We have
+ * separated them causing some challenges."* A {@link SchematicEndplate.pose} is
+ * a point floating in module space, so it can disagree with the board — and has:
+ * a junction plate landed on the module CENTRE LINE rather than the fascia, a
+ * derived pose written back silently PINNED a plate so it went stale when the
+ * length changed (which is the only reason `poseAuthored` exists), and a face
+ * drawn flat across a tapered edge is flush only at its midpoint.
+ *
+ * Bind it to an edge and none of those are expressible. Position, heading and
+ * WIDTH all come from the edge, so they cannot drift apart.
+ */
+export interface EndplateEdge {
+  /** The section whose outline owns this edge; absent = the module outline. */
+  section?: string | null;
+  /** Which edge: the segment from vertex `index` to vertex `index + 1`. */
+  index: number;
+  /** Optional span along that edge, 0…1. Absent = the whole edge — which is the
+   * common case, because a board's end IS the endplate. */
+  fromT?: number | null;
+  toT?: number | null;
+}
+
+/** What an {@link EndplateEdge} resolves to. Everything here is READ OFF the
+ * polygon; nothing is stored, so nothing can go stale. */
+export interface EndplateEdgePose {
+  x: number;
+  y: number;
+  /** The edge's OUTWARD normal, degrees. */
+  heading: number;
+  /** The span's length — the face's real width, not a separate number that
+   * might disagree with the board. */
+  widthInches: number;
+  /** The face's two ends. On a tapered board this follows the slope, which a
+   * stored pose + width could never do. */
+  face: [{ x: number; y: number }, { x: number; y: number }];
+}
+
+/**
+ * Resolve an endplate's edge binding against a benchwork polygon.
+ *
+ * ⚠️ REFUSES A CURVED EDGE. Free-moN §2.0 requires the track crossing an
+ * endplate to be perpendicular, straight and level for 4″ — so an endplate face
+ * is flat by the standard, and a bulged edge is not somewhere one can go. That
+ * is a rule, not a missing feature.
+ *
+ * Returns null when the edge doesn't exist or isn't usable, so a caller can say
+ * why rather than drawing something wrong.
+ */
+export function endplateEdgePose(
+  outline: BenchworkPoint[] | null | undefined,
+  edge: EndplateEdge,
+): EndplateEdgePose | null {
+  if (!outline || outline.length < 3) return null;
+  const n = outline.length;
+  const i = Math.trunc(edge.index);
+  if (!Number.isFinite(i) || i < 0 || i >= n) return null;
+  const p0 = outline[i];
+  const p1 = outline[(i + 1) % n];
+  if (p0.bulge) return null; // a curved fascia is not an endplate face
+
+  const t0 = Math.max(0, Math.min(1, edge.fromT ?? 0));
+  const t1 = Math.max(0, Math.min(1, edge.toT ?? 1));
+  const a = { x: p0.x + (p1.x - p0.x) * Math.min(t0, t1), y: p0.y + (p1.y - p0.y) * Math.min(t0, t1) };
+  const b = { x: p0.x + (p1.x - p0.x) * Math.max(t0, t1), y: p0.y + (p1.y - p0.y) * Math.max(t0, t1) };
+  const w = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!(w > 0)) return null;
+
+  // Outward = away from the polygon's centroid. Same rule `snapPoseToOutline`
+  // uses, so a dragged plate and a bound one agree on which way is out.
+  let cx = 0;
+  let cy = 0;
+  for (const v of outline) {
+    cx += v.x;
+    cy += v.y;
+  }
+  cx /= n;
+  cy /= n;
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const ex = (b.x - a.x) / w;
+  const ey = (b.y - a.y) / w;
+  let nx = ey;
+  let ny = -ex;
+  if ((mid.x - cx) * nx + (mid.y - cy) * ny < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  return {
+    x: mid.x,
+    y: mid.y,
+    heading: norm360((Math.atan2(ny, nx) * 180) / Math.PI),
+    widthInches: w,
+    face: [a, b],
+  };
+}
+
 export interface EndplatePose {
   /** Endplate id — "A"/"B" axial, "C"/"D"… branch. */
   id: string;
@@ -5791,6 +5927,13 @@ export interface EndplatePose {
   trackConfig: "single" | "double";
   /** Lateral track offsets from the crossing anchor (0 = centred single). */
   trackOffsets: number[];
+  /** Set when this pose came from an {@link EndplateEdge} — read off the
+   * benchwork rather than stored. Its width and face are the board's own. */
+  boundToEdge?: boolean;
+  /** The face's real width, when bound to an edge. */
+  widthInches?: number;
+  /** The face's two ends, when bound to an edge — follows a tapered board. */
+  face?: [{ x: number; y: number }, { x: number; y: number }];
   /** True when the pose was hand-entered, not derived (wye/loop/other). */
   manual?: boolean;
 }
@@ -5959,6 +6102,12 @@ export interface ModuleGeometryInput {
     side: "up" | "down";
     config?: "single" | "double" | null;
   }[];
+  /** ⭐ Endplate EDGE bindings by id (ADR 0001) — an endplate that is part of
+   * the benchwork rather than a point floating beside it. Wins over
+   * `poseOverrides` and over derivation. */
+  endplateEdges?: Record<string, EndplateEdge>;
+  /** The module's benchwork polygon, needed to resolve `endplateEdges`. */
+  outline?: BenchworkPoint[] | null;
   /** Hand-entered pose overrides by endplate id — win over derivation. */
   poseOverrides?: Record<string, { x: number; y: number; heading: number }>;
   /** Authored endplate FACE widths by id ("A"/"B"), inches — the board's depth.
@@ -6019,6 +6168,32 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
   const cfg = (i: number): "single" | "double" =>
     geo.endplateConfigs?.[i] === "double" ? "double" : "single";
   const withOverride = (p: EndplatePose): EndplatePose => {
+    // ⭐ AN EDGE BINDING WINS OVER EVERYTHING (ADR 0001). It is not an override
+    // in the sense a pose is — it is where the endplate IS, read off the board,
+    // so it can never go stale and can never sit somewhere the benchwork isn't.
+    // `manual` stays FALSE: nothing was hand-placed, and treating it as manual
+    // is what pinned plates and made them stop following the module (#182).
+    const bound = geo.endplateEdges?.[p.id];
+    if (bound) {
+      const outline =
+        (bound.section
+          ? geo.sections?.find((s) => s.id === bound.section)?.outline
+          : geo.outline) ?? geo.outline;
+      const e = endplateEdgePose(outline, bound);
+      if (e)
+        return {
+          ...p,
+          x: e.x,
+          y: e.y,
+          heading: e.heading,
+          widthInches: e.widthInches,
+          face: e.face,
+          boundToEdge: true,
+        };
+      // The edge named nothing usable — a curved fascia, or an outline that has
+      // since changed shape. Fall through rather than draw a lie; the caller can
+      // see `boundToEdge` is absent and say so.
+    }
     const o = geo.poseOverrides?.[p.id];
     return o ? { ...p, x: o.x, y: o.y, heading: norm360(o.heading), manual: true } : p;
   };

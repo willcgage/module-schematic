@@ -94,6 +94,7 @@ import {
   CLEARANCE_SPACING_INCHES,
   FREEMO_TRACK_SPACING_INCHES,
   partGeometry,
+  endplateEdgePose,
   partGeometryGap,
   partsPlaceable,
   laneOffsetAt,
@@ -4850,5 +4851,144 @@ describe("part geometry", () => {
       expect([first.x, first.y], p.id).toEqual([0, 0]);
       expect(first.angleDeg, p.id).toBe(180);
     }
+  });
+});
+
+
+// ─── Endplates are part of the benchwork (ADR 0001) ──────────────────────────
+// Will Gage: "Endplates are a part of the benchwork. We have separated them
+// causing some challenges." A pose floats in module space and can disagree with
+// the board. An edge binding cannot.
+describe("endplate bound to a benchwork edge", () => {
+  // A tapered board: 16" deep at the west end, 32" at the east.
+  const tapered = [
+    { x: 0, y: -8 }, { x: 0, y: 8 },
+    { x: 72, y: 16 }, { x: 72, y: -16 },
+  ];
+  const rect = [
+    { x: 0, y: -12 }, { x: 0, y: 12 }, { x: 96, y: 12 }, { x: 96, y: -12 },
+  ];
+
+  it("reads position, heading AND width off the edge — they cannot disagree", () => {
+    // Edge 0 of the rectangle is the WEST end: (0,-12) -> (0,12).
+    const e = endplateEdgePose(rect, { index: 0 })!;
+    expect(e.x).toBe(0);
+    expect(e.y).toBe(0);
+    expect(e.heading).toBe(180); // outward = west, away from the centroid
+    expect(e.widthInches).toBe(24); // the edge's own length; no separate number
+  });
+
+  it("faces outward on every edge, never into the board", () => {
+    const headings = [0, 1, 2, 3].map((index) => endplateEdgePose(rect, { index })!.heading);
+    expect(headings).toEqual([180, 90, 0, 270]);
+  });
+
+  // ⭐ The limitation reported on FMN-0077 — "the face draws flat while a
+  // tapered edge slopes, so it is flush only at its midpoint" — stops existing.
+  // The face IS the edge.
+  it("follows a tapered board's slope, instead of being flush only at its midpoint", () => {
+    const e = endplateEdgePose(tapered, { index: 1 })!; // the sloping north edge
+    expect(e.face[0]).toEqual({ x: 0, y: 8 });
+    expect(e.face[1]).toEqual({ x: 72, y: 16 });
+    // Its width is the SLOPING length, not the horizontal run.
+    expect(e.widthInches).toBeCloseTo(Math.hypot(72, 8), 9);
+    expect(e.widthInches).toBeGreaterThan(72);
+  });
+
+  it("takes a span of an edge when an endplate is narrower than the board", () => {
+    const e = endplateEdgePose(rect, { index: 0, fromT: 0.25, toT: 0.75 })!;
+    expect(e.widthInches).toBe(12);
+    expect(e.y).toBe(0);
+    expect(e.face).toEqual([{ x: 0, y: -6 }, { x: 0, y: 6 }]);
+  });
+
+  // ⚠️ Free-moN §2.0: the track crossing an endplate must be perpendicular,
+  // straight and level for 4". A curved fascia is not somewhere an endplate can
+  // be — that is the standard, not a missing feature.
+  it("refuses a curved edge rather than drawing a face that cannot exist", () => {
+    const bulged = [
+      { x: 0, y: -12, bulge: 0.4 }, { x: 0, y: 12 }, { x: 96, y: 12 }, { x: 96, y: -12 },
+    ];
+    expect(endplateEdgePose(bulged, { index: 0 })).toBeNull();
+  });
+
+  it("returns null rather than guessing when the edge isn't there", () => {
+    expect(endplateEdgePose(rect, { index: 9 })).toBeNull();
+    expect(endplateEdgePose(rect, { index: -1 })).toBeNull();
+    expect(endplateEdgePose([{ x: 0, y: 0 }, { x: 1, y: 1 }], { index: 0 })).toBeNull();
+    expect(endplateEdgePose(null, { index: 0 })).toBeNull();
+  });
+
+  // ⭐ The bug from FMN-0077: a junction endplate derived onto the module CENTRE
+  // LINE instead of the fascia. Bound to an edge, the centre line is not a place
+  // an endplate can be.
+  it("a bound endplate cannot land on the centre line", () => {
+    const poses = deriveEndplatePoses({
+      lengthInches: 96,
+      outline: rect,
+      endplateEdges: { C: { index: 1 } }, // the north fascia
+      branches: [{ id: "C", atPos: 48, side: "up" }],
+    });
+    const c = poses.find((p) => p.id === "C")!;
+    expect(c.boundToEdge).toBe(true);
+    expect(c.y).toBe(12); // ON the fascia
+    expect(c.y).not.toBe(0); // not the centre line
+    expect(c.heading).toBe(90);
+    expect(c.widthInches).toBe(96);
+  });
+
+  // ⚠️ A binding is NOT a manual pose. Treating a derived pose as manual is what
+  // pinned plates so they stopped following the module (#182) — the only reason
+  // `poseAuthored` had to be invented.
+  it("is not 'manual' — it follows the board instead of pinning to a point", () => {
+    const poses = deriveEndplatePoses({
+      lengthInches: 96, outline: rect, endplateEdges: { A: { index: 0 } },
+    });
+    const a = poses.find((p) => p.id === "A")!;
+    expect(a.boundToEdge).toBe(true);
+    expect(a.manual).toBeFalsy();
+    // Reshape the board; the endplate moves with it, with no edit to the plate.
+    const wider = [
+      { x: 0, y: -18 }, { x: 0, y: 18 }, { x: 96, y: 18 }, { x: 96, y: -18 },
+    ];
+    const moved = deriveEndplatePoses({
+      lengthInches: 96, outline: wider, endplateEdges: { A: { index: 0 } },
+    }).find((p) => p.id === "A")!;
+    expect(moved.widthInches).toBe(36);
+    expect(moved.x).toBe(0);
+  });
+
+  // ⚠️ A field the round-trip drops is INVISIBLE — the exact trap that made a
+  // whole feature inert earlier today. Prove it survives doc -> state -> doc.
+  it("survives the document round-trip", () => {
+    const doc: any = {
+      module: "RT", version: 1, lengthInches: 96,
+      tracks: [{ id: "main", role: "main", lane: 0 }],
+      turnouts: [],
+      endplates: [
+        { id: "A", label: "West", edge: { index: 0 }, tracks: [{ trackId: "main", lane: 0, config: "single" }] },
+        { id: "B", label: "East", edge: { index: 2, fromT: 0.25, toT: 0.75 }, tracks: [{ trackId: "main", lane: 0, config: "single" }] },
+      ],
+      outline: rect,
+    };
+    const st = docToState(doc, 96, []);
+    expect(st.endplateEdges).toEqual({
+      A: { index: 0 },
+      B: { index: 2, fromT: 0.25, toT: 0.75 },
+    });
+    const back: any = stateToDoc(st, "RT");
+    expect(back.endplates.find((e: any) => e.id === "A").edge).toEqual({ index: 0 });
+    expect(back.endplates.find((e: any) => e.id === "B").edge).toEqual({
+      index: 2, fromT: 0.25, toT: 0.75,
+    });
+  });
+
+  it("falls back rather than drawing a lie when the binding no longer resolves", () => {
+    const poses = deriveEndplatePoses({
+      lengthInches: 96, outline: rect, endplateEdges: { A: { index: 42 } },
+    });
+    const a = poses.find((p) => p.id === "A")!;
+    expect(a.boundToEdge).toBeFalsy();
+    expect(a.x).toBe(0); // the ordinary derivation still ran
   });
 });
