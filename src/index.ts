@@ -317,6 +317,9 @@ export interface SchematicTurnout {
 export interface SchematicSignal {
   id: string;
   pos: number;
+  /** Hold this signal by the piece it stands beside (ADR 0001). See
+   * {@link GraphAnchor} — a mast is planted next to a particular bit of rail. */
+  anchor?: GraphAnchor | null;
   /** Track the signal governs; absent = the primary main (lane 0). */
   track?: string;
   facing?: SignalFacing;
@@ -371,11 +374,41 @@ export type IndustryLabelMode = "none" | "cars" | "inches";
  */
 /** One car-spot span of an industry on a track — an industry may have several
  * (a house track serving one customer across multiple spot tracks, #54). */
+/**
+ * ⭐ A PLACE ON THE TRACK, HELD BY THE PIECE THAT IS THERE (ADR 0001).
+ *
+ * `pos` — inches from endplate A — is a fine way to *read* where something is
+ * and a poor way to *hold* it: it is a number about the whole module, so every
+ * edit anywhere upstream silently changes what it means. A car spot belongs to
+ * the rail it is beside. Anchored to the piece, moving that piece takes the
+ * industry with it and moving anything else leaves it alone, which is what an
+ * owner dragging track expects to happen.
+ *
+ * Present = `pos` / `fromPos` / `toPos` are DERIVED from this by
+ * {@link graphToDoc}. Absent = the authored numbers stand, exactly as before —
+ * nothing migrates (ADR 0001).
+ */
+export interface GraphAnchor {
+  /** The {@link TrackPiece} it sits on. */
+  piece: string;
+  /**
+   * Inches along that piece from its OWN origin end — joint `a` on flex, the
+   * throat on a turnout, and in every case the part's x=0.
+   *
+   * ⚠️ Deliberately NOT "from the end the walk came in by". Which end that is
+   * depends on where the module's endplate A happens to be, so the same spot
+   * beside the same rail would mean two different numbers on two modules.
+   */
+  atInches: number;
+}
+
 export interface IndustrySpot {
   track: string;
   fromPos: number;
   toPos: number;
   side?: SignalSide;
+  /** Hold this spot by the piece it is beside (ADR 0001). See {@link GraphAnchor}. */
+  anchor?: GraphAnchor | null;
 }
 
 export interface SchematicIndustry {
@@ -389,6 +422,10 @@ export interface SchematicIndustry {
   /** The primary car-spot span along `track`, inches from endplate A. */
   fromPos: number;
   toPos: number;
+  /** Hold this span by the piece it is beside (ADR 0001). See {@link GraphAnchor}.
+   * The span's LENGTH stays authored — a dock face is as long as it is built;
+   * only where it begins is read off the track. */
+  anchor?: GraphAnchor | null;
   /** Extra car-spot spans on other tracks — the industry's house-track spots. */
   spots?: IndustrySpot[];
   /** Which side of the track the building + label sit on. */
@@ -2100,6 +2137,8 @@ export interface EditorIndustry {
   carTypes: string[];
   /** freemon_industries row (single source of truth), or null for a new one. */
   moduleIndustryId: number | null;
+  /** The piece this span is held by (ADR 0001). See {@link GraphAnchor}. */
+  anchor?: GraphAnchor | null;
 }
 /** A 3rd+ endplate — a branch/junction connection off the module (#170).
  * A module may have several (e.g. a set carrying a second railroad through:
@@ -2589,6 +2628,10 @@ export function stateToDoc(
             track: ind.track,
             fromPos: ind.fromPos,
             toPos: ind.toPos,
+            // Carried, not interpreted. An anchor is what HOLDS the span (ADR
+            // 0001); dropping it here would quietly convert an anchored
+            // industry back into a typed number the next time anyone saved.
+            ...(ind.anchor ? { anchor: ind.anchor } : {}),
             ...(ind.spots?.length ? { spots: ind.spots } : {}),
             side: ind.side,
             ...(ind.labelMode && ind.labelMode !== "none"
@@ -2849,11 +2892,13 @@ export function docToState(
         fromPos: sc(s.fromPos ?? 0),
         toPos: s.toPos != null ? sc(s.toPos) : len,
         ...(s.side ? { side: s.side as SignalSide } : {}),
+        ...(s.anchor ? { anchor: s.anchor } : {}),
       })),
       side: (ind.side as SignalSide) ?? "above",
       labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
       carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
       moduleIndustryId: ind.moduleIndustryId ?? null,
+      ...(ind.anchor ? { anchor: ind.anchor } : {}),
     })),
   };
 }
@@ -5453,6 +5498,18 @@ export function buildTrackGraph(
   return { joints, connections, open, conflicts, unplaceable };
 }
 
+/** A piece as the route crosses it — what an anchored feature resolves against. */
+export interface RouteSpan {
+  piece: string;
+  /** The joints the route entered and left this piece by. Tell you which way
+   * round the piece's own measurements run against the route's. */
+  entryJoint: string;
+  exitJoint: string;
+  /** Inches from endplate A at the entry joint, and at the one it left by. */
+  fromPos: number;
+  toPos: number;
+}
+
 /** A route the walk found: a continuous run of pieces a train can travel. */
 export interface GraphRoute {
   id: string;
@@ -5464,6 +5521,8 @@ export interface GraphRoute {
   /** The turnout it runs back into. Set = a SIDING; null = it dead-ends. */
   endsAt: string | null;
   pieces: string[];
+  /** The same pieces, each with where it starts and ends along the route. */
+  spans: RouteSpan[];
   /** Furthest lateral offset reached — what gives a lane its side. */
   lateral: number;
 }
@@ -5531,7 +5590,7 @@ export function walkTrackGraph(
     bornAt: string | null,
   ): GraphRoute => {
     const route: GraphRoute = {
-      id, fromPos: startPos, toPos: startPos, bornAt, endsAt: null, pieces: [], lateral: 0,
+      id, fromPos: startPos, toPos: startPos, bornAt, endsAt: null, pieces: [], spans: [], lateral: 0,
     };
     let cur: string | undefined = startKey;
     let pos = startPos;
@@ -5630,7 +5689,11 @@ export function walkTrackGraph(
       for (const j of graph.joints)
         if (j.piece === here.piece && Math.abs(j.y) > Math.abs(route.lateral))
           route.lateral = j.y;
+      const entered = pos;
       pos += gap(here, exit);
+      route.spans.push({
+        piece: here.piece, entryJoint: here.joint, exitJoint, fromPos: entered, toPos: pos,
+      });
       route.toPos = pos;
       const next = exit ? link.get(exit.key) : undefined;
       if (!next) break;
@@ -5685,6 +5748,50 @@ export function walkTrackGraph(
 // unaffected. This is where that claim is demonstrated IN THE PACKAGE — the
 // graph emits an ordinary `ModuleSchematicDoc` and the same pure function reads
 // it. Nothing downstream is told which way a module was authored.
+
+/** Where an anchored feature turned out to be. */
+export interface ResolvedAnchor {
+  /** Inches from endplate A — the number the document and the dispatcher read. */
+  pos: number;
+  /** The route the anchored piece is part of. */
+  routeId: string;
+  /** The piece's own measuring direction runs BACKWARD along the route, so
+   * increasing {@link GraphAnchor.atInches} moves toward endplate A. */
+  reversed: boolean;
+}
+
+/**
+ * Turn a {@link GraphAnchor} into a position along the module.
+ *
+ * The piece is measured from its own origin end, and the walk knows both ends
+ * of it, so whichever end the route arrived by, the sum comes out the same.
+ * Returns null when the anchored piece is not on any route — a spur nobody has
+ * connected yet — which is a thing to report, not to guess at.
+ */
+export function resolveGraphAnchor(
+  anchor: GraphAnchor,
+  walk: GraphWalk,
+  pieces: TrackPiece[],
+  library = BUILT_IN_TRACK_PARTS,
+): ResolvedAnchor | null {
+  const piece = pieces.find((p) => p.id === anchor.piece);
+  const part = piece ? library.find((x) => x.id === piece.partId) : undefined;
+  // Every part's own frame starts at x=0 at one joint: `a` on flex, the throat
+  // on everything with points.
+  const origin = part?.kind === "flex" ? "a" : "throat";
+  for (const r of walk.routes) {
+    const span = r.spans.find((s) => s.piece === anchor.piece);
+    if (!span) continue;
+    if (span.entryJoint === origin)
+      return { pos: span.fromPos + anchor.atInches, routeId: r.id, reversed: false };
+    if (span.exitJoint === origin)
+      return { pos: span.toPos - anchor.atInches, routeId: r.id, reversed: true };
+    // A wye crossed leg-to-leg never touches its throat, so there is no
+    // measuring from it. Better to say so than to pick an end.
+    return null;
+  }
+  return null;
+}
 
 /** What the graph cannot know, and therefore never invents. */
 export interface GraphDocInput {
@@ -5826,6 +5933,54 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   }
   turnouts.sort((a, b) => a.pos - b.pos);
 
+  // ⭐ ANCHORED FEATURES ARE PLACED BY THE PIECE THEY ARE BESIDE, not by a
+  // number about the module. Unanchored ones keep exactly the positions their
+  // owner typed — nothing migrates (ADR 0001).
+  const place = (a: GraphAnchor | null | undefined, what: string) => {
+    if (!a) return null;
+    const hit = resolveGraphAnchor(a, walk, pieces, library);
+    if (!hit) {
+      warnings.push(
+        `${what} is anchored to ${a.piece}, which is not on any route — its authored position stands`,
+      );
+      return null;
+    }
+    return hit;
+  };
+  /** A span keeps its authored LENGTH and takes its start from the anchor. */
+  const spanAt = (hit: ResolvedAnchor, from: number, to: number): [number, number] => {
+    const len = Math.abs(to - from);
+    return hit.reversed
+      ? [round(hit.pos - len), round(hit.pos)]
+      : [round(hit.pos), round(hit.pos + len)];
+  };
+
+  const industries = base.industries?.map((ind) => {
+    const hit = place(ind.anchor, `industry "${ind.name}"`);
+    const spots = ind.spots?.map((s) => {
+      const sh = place(s.anchor, `a spot of industry "${ind.name}"`);
+      if (!sh) return s;
+      const [from, to] = spanAt(sh, s.fromPos, s.toPos);
+      return { ...s, track: trackIdOf.get(sh.routeId) ?? s.track, fromPos: from, toPos: to };
+    });
+    if (!hit) return spots ? { ...ind, spots } : ind;
+    const [fromPos, toPos] = spanAt(hit, ind.fromPos, ind.toPos);
+    return {
+      ...ind,
+      track: trackIdOf.get(hit.routeId) ?? ind.track,
+      fromPos,
+      toPos,
+      ...(spots ? { spots } : {}),
+    };
+  });
+
+  const signals = base.signals?.map((sig) => {
+    const hit = place(sig.anchor, `signal "${sig.name ?? sig.id}"`);
+    return hit
+      ? { ...sig, pos: round(hit.pos), track: trackIdOf.get(hit.routeId) ?? sig.track }
+      : sig;
+  });
+
   const doc: ModuleSchematicDoc = {
     version: 1,
     ...base,
@@ -5833,6 +5988,8 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
     endplates,
     tracks,
     turnouts,
+    ...(industries ? { industries } : {}),
+    ...(signals ? { signals } : {}),
   };
   return { doc, graph, walk, warnings };
 }

@@ -96,6 +96,7 @@ import {
   partGeometry,
   buildTrackGraph,
   graphToDoc,
+  type GraphAnchor,
   walkTrackGraph,
   placedJoints,
   type TrackPiece,
@@ -5362,5 +5363,119 @@ describe("graph → document", () => {
     // …but the graph still wins on what it reads.
     expect(doc.lengthInches).toBe(96);
     expect(moduleFeatures(doc).industries).toHaveLength(1);
+  });
+});
+
+// ─── Anchored features (ADR 0001) ────────────────────────────────────────────
+// Will's call, 2026-07-27: an industry holds onto THE PIECE IT SITS BESIDE, not
+// a number about the whole module. `pos` is a fine way to read where something
+// is and a poor way to hold it.
+describe("features anchored to a piece", () => {
+  const SW = "atlas-c55-n-7";
+  const FLEX = "atlas-c55-n-flex";
+  const LEAD = trackPart(SW)!.lead!.inches;
+
+  /** A spur off the main at `at`, with a 30″ stub. */
+  const spurAt = (at: number): TrackPiece[] => {
+    const pieces: TrackPiece[] = [
+      { id: "f0", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: at - LEAD },
+      { id: "s1", partId: SW, x: at - LEAD, y: 0, rotationDeg: 0 },
+    ];
+    const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
+    pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 30 });
+    return pieces;
+  };
+
+  const mill = (anchor: GraphAnchor | null) => ({
+    id: "i1",
+    name: "Feed Mill",
+    track: "sp",
+    // Deliberately WRONG numbers, so anything that survives them is derived.
+    fromPos: 0,
+    toPos: 12,
+    ...(anchor ? { anchor } : {}),
+  });
+
+  const emit = (pieces: TrackPiece[], industries: ReturnType<typeof mill>[]) =>
+    graphToDoc(pieces, { startAt: { piece: "f0", joint: "a" }, base: { industries } });
+
+  // ⭐⭐ THE POINT OF THE DECISION. Move the turnout and its spur six inches east
+  // and the mill goes with them, because the mill is beside that rail. Nobody
+  // re-typed anything: both runs pass the SAME authored numbers in.
+  it("moves with its piece", () => {
+    const near = emit(spurAt(20), [mill({ piece: "sp", atInches: 4 })]).doc.industries![0];
+    const far = emit(spurAt(26), [mill({ piece: "sp", atInches: 4 })]).doc.industries![0];
+    expect(far.fromPos - near.fromPos).toBeCloseTo(6, 6);
+    expect(far.toPos - near.toPos).toBeCloseTo(6, 6);
+    // The span keeps the length it was built to — a dock face is as long as it is.
+    expect(near.toPos - near.fromPos).toBeCloseTo(12, 6);
+    // …and it is on the spur, named as the graph names it.
+    expect(near.track).toBe("sp");
+  });
+
+  it("measures from the piece's OWN end, whichever way the route crosses it", () => {
+    const forward = spurAt(20);
+    // The same 30″ of spur, laid the other way round: its origin end is now the
+    // far one and the route enters by `b`.
+    const d = placedJoints(forward).find((j) => j.key === "s1.diverge")!;
+    const reversed = forward.map((p) =>
+      p.id === "sp" ? { ...p, x: d.x + 30, rotationDeg: 180 } : p);
+    const a = emit(forward, [mill({ piece: "sp", atInches: 4 })]).doc.industries![0];
+    // A span begins at the anchor and runs along the PIECE, so the same 12″ of
+    // rail — 4″ in from one end of a 30″ piece — begins 14″ in from the other.
+    const b = emit(reversed, [mill({ piece: "sp", atInches: 30 - 4 - 12 })]).doc.industries![0];
+    expect(b.fromPos).toBeCloseTo(a.fromPos, 6);
+    expect(b.toPos).toBeCloseTo(a.toPos, 6);
+  });
+
+  // ❌ NOTHING MIGRATES. An industry with no anchor keeps the numbers its owner
+  // typed, exactly — the whole ADR rests on old documents being left alone.
+  it("leaves an unanchored industry exactly as authored", () => {
+    const { doc, warnings } = emit(spurAt(20), [mill(null)]);
+    expect(doc.industries![0].fromPos).toBe(0);
+    expect(doc.industries![0].toPos).toBe(12);
+    expect(warnings).toEqual([]);
+  });
+
+  it("says so when the anchored piece is on no route, and keeps what was typed", () => {
+    const pieces = [...spurAt(20), { id: "loose", partId: FLEX, x: 0, y: 40, rotationDeg: 0, lengthInches: 10 }];
+    const { doc, warnings } = emit(pieces, [mill({ piece: "loose", atInches: 2 })]);
+    expect(doc.industries![0].fromPos).toBe(0);
+    expect(warnings.join(" ")).toMatch(/anchored to loose, which is not on any route/);
+  });
+
+  it("places a signal the same way", () => {
+    const pieces = spurAt(20);
+    const { doc } = graphToDoc(pieces, {
+      startAt: { piece: "f0", joint: "a" },
+      base: { signals: [{ id: "sg1", pos: 0, anchor: { piece: "f0", atInches: 10 } }] },
+    });
+    expect(doc.signals![0].pos).toBe(10);
+    expect(doc.signals![0].track).toBe("main");
+  });
+});
+
+// An anchor must survive the editor. Dropping it on save would quietly convert
+// an anchored industry back into a typed number — the silent migration ADR 0001
+// forbids, arriving by the back door.
+describe("an anchor round-trips through the editor state", () => {
+  it("keeps the anchor on an industry and on a house-track spot", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 48,
+      endplates: [{ id: "A" }, { id: "B" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "sp", role: "spur", lane: 1, fromPos: 20, toPos: 40 },
+      ],
+      industries: [{
+        id: "i1", name: "Feed Mill", track: "sp", fromPos: 24, toPos: 36,
+        anchor: { piece: "p9", atInches: 4 },
+        spots: [{ track: "main", fromPos: 10, toPos: 16, anchor: { piece: "p2", atInches: 1.5 } }],
+      }],
+    };
+    const back = stateToDoc(docToState(doc));
+    expect(back.industries![0].anchor).toEqual({ piece: "p9", atInches: 4 });
+    expect(back.industries![0].spots![0].anchor).toEqual({ piece: "p2", atInches: 1.5 });
   });
 });
