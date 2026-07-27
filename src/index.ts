@@ -3104,10 +3104,14 @@ export interface TrackPart {
   /** `flex` is track sold by the length rather than as a fixed geometry — its
    * {@link overallLength} is the LONGEST piece you can lay from it, not a shape
    * (#193). */
-  /** ⚠️ `crossover` is an ASSEMBLY, not a single turnout — two turnouts plus the
-   * diagonal between two parallel tracks, sold as one fixture. It therefore
-   * carries {@link trackSpacing}, which no single turnout has, and its
-   * `frogNumber` describes the two turnouts in it. */
+  /** ⚠️ `crossover` is an ASSEMBLY, not a single turnout. A Fast Tracks
+   * crossover fixture builds ONE SYMMETRICAL HALF; you build a second, rotate it
+   * 180° and butt the two together at the through routes and the diamond to get
+   * a complete DOUBLE (scissors) crossover — four turnouts, two diagonals and
+   * the X where they cross. So it carries {@link trackSpacing} and
+   * {@link secondaryFrogAngle}, which no single turnout has, and
+   * {@link piecesPerAssembly} — because its lengths describe the HALF, not the
+   * finished crossover. */
   kind: "turnout" | "wye" | "curved-turnout" | "crossover" | "crossing" | "flex";
   /** Manufacturer part numbers by hand, where the part has a hand. */
   partNumbers?: { left?: string; right?: string; single?: string };
@@ -3149,6 +3153,14 @@ export interface TrackPart {
   buildable?: boolean;
   /** The shortest the part can be built. Buildable parts only. */
   minimumLength?: PartDimension;
+  /** How many identical pieces built on this fixture make ONE finished part.
+   *
+   * ⚠️ WHEN THIS IS SET, `overallLength` AND `minimumLength` DESCRIBE ONE PIECE,
+   * NOT THE FINISHED ITEM. A Fast Tracks crossover fixture builds one half of a
+   * double crossover: you build it twice, rotate the second 180°, and butt them
+   * together. Its 10.07″ is the half. Absent or 1 means the fixture builds the
+   * whole part in one go, which is the case for every turnout and wye here. */
+  piecesPerAssembly?: number;
   /** The radius of plain curve this turnout can stand in for, as a
    * layout-planning figure. Fast Tracks publish it; Atlas do not. Nothing draws
    * with it — it is here because it is a real published dimension and dropping
@@ -3670,9 +3682,32 @@ export const FAST_TRACKS_N_ME55: TrackPart[] = (
 /**
  * Fast Tracks N-scale CROSSOVER fixtures, ME Code 55.
  *
- *     crossover   angle    2nd frog   default   minimum   track spacing
- *     #6           9.46°     19°       10.07″     9.31″      1.09″
- *     #8           7.13°     14.3°     13.61″    13.07″      1.09″
+ *     crossover   angle    2nd frog   HALF: default   minimum   track spacing
+ *     #6           9.46°     19°           10.07″      9.31″       1.09″
+ *     #8           7.13°     14.3°         13.61″     13.07″       1.09″
+ *
+ * ⚠️⚠️ **THE LENGTHS ABOVE ARE ONE HALF, NOT THE FINISHED CROSSOVER.** Will
+ * Gage, 2026-07-26: *"crossovers are two pieces. the pdf shows half, then you
+ * would duplicate this same piece and flip it 180 and butt it up to the through
+ * and X."* Fast Tracks say the same — *"Crossovers are constructed by building
+ * two symmetrical halves of a crossover in the Assembly Fixture and then joining
+ * them to form a complete double crossover"* — and their own gloss on the
+ * length is "the length of the turnout on the QuickSticks", i.e. the piece the
+ * fixture holds. `piecesPerAssembly: 2` records this so the number cannot be
+ * read as the assembly's.
+ *
+ * ⚠️ THE FINISHED LENGTH IS NOT PUBLISHED, and is deliberately not stored. The
+ * two halves are related by a 180° rotation about the diamond, so they cover the
+ * same longitudinal span and the finished crossover is plausibly also ~10.07″ —
+ * but that is an inference from the symmetry, not a reading, and this library
+ * has been burned four times by exactly that kind of plausible reconstruction.
+ * If it matters, measure a built one.
+ *
+ * ⚠️ THESE MAKE A DOUBLE (SCISSORS) CROSSOVER — four turnouts, two diagonals,
+ * and the X where the diagonals cross. A half carries one full 9.46° frog and
+ * HALF of the 19° diamond, which is why the diamond only exists once the second
+ * piece is butted up. Not a single crossover: half a diamond is not usable on
+ * its own.
  *
  * ⚠️⚠️ **THE TRACK SPACING IS 1.09″, AND FREE-moN §2.0 REQUIRES 1.125″.**
  * A crossover fixture is machined for ONE spacing; it is not adjustable. So a
@@ -3689,9 +3724,11 @@ export const FAST_TRACKS_N_ME55: TrackPart[] = (
  *
  * ⭐ THE SECOND FROG IS EXACTLY TWICE THE FIRST — 19° against 2 × 9.46 = 18.92,
  * and 14.3° against 2 × 7.13 = 14.26, both inside the published rounding. That
- * is the diamond in a scissors crossover, where two diagonals each leaving at
- * the frog angle meet each other. It is a free cross-check on the pair, and it
- * passes.
+ * is the diamond, where the two halves' diagonals — each leaving its main at the
+ * frog angle, and pointing opposite ways because the second piece is turned
+ * 180° — cross each other. It is a free cross-check on the pair, it passes, and
+ * it independently corroborates the two-piece build: a part with one frog would
+ * have no second angle to publish.
  *
  * ⚠️ A CROSSOVER IS AN ASSEMBLY, so `partExtent` means nothing for it and the
  * turnout size lookups must never see it: `kind` is `"crossover"`, and every
@@ -3719,11 +3756,12 @@ export const FAST_TRACKS_N_ME55_CROSSOVERS: TrackPart[] = (
     manufacturer: "Fast Tracks",
     line: "Code 55",
     scale: "N" as const,
-    name: `#${n} Crossover`,
+    name: `#${n} Double Crossover`,
     kind: "crossover" as const,
     partNumbers: { single: `AF-N-C-${n}-ME55` },
     frogNumber: n,
     buildable: true,
+    piecesPerAssembly: 2,
     actualAngle: { deg, source: manufacturer, note: `${spec}. atan(1/${n}) exactly.` },
     secondaryFrogAngle: {
       deg: second,
@@ -3733,9 +3771,18 @@ export const FAST_TRACKS_N_ME55_CROSSOVERS: TrackPart[] = (
     overallLength: {
       inches: dflt,
       source: manufacturer,
-      note: `${spec}. The DEFAULT length of the whole assembly — a fixture, so the builder chooses.`,
+      note:
+        `${spec}. ⚠️ ONE HALF, NOT THE FINISHED CROSSOVER — the fixture builds a ` +
+        "symmetrical half, which you build twice and butt together after turning " +
+        "the second 180°. Fast Tracks gloss it as \"the length of the turnout on " +
+        "the QuickSticks\", i.e. the piece in the jig. The DEFAULT for that " +
+        "piece; it is a fixture, so the builder chooses.",
     },
-    minimumLength: { inches: min, source: manufacturer, note: spec },
+    minimumLength: {
+      inches: min,
+      source: manufacturer,
+      note: `${spec}. The shortest ONE HALF can be built — see the overall length's note.`,
+    },
     trackSpacing: {
       inches: spacing,
       source: manufacturer,
@@ -4471,6 +4518,7 @@ export interface StoredTrackPart {
   secondaryFrogAngleDeg?: number | null;
   secondaryFrogAngleSource?: string | null;
   buildable?: boolean | null;
+  piecesPerAssembly?: number | null;
   leadInches?: number | null;
   leadSource?: string | null;
   outerRadiusInches?: number | null;
@@ -4557,6 +4605,8 @@ export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
       ...(note ? { note } : {}),
     };
   if (row.buildable) part.buildable = true;
+  if (typeof row.piecesPerAssembly === "number" && row.piecesPerAssembly > 1)
+    part.piecesPerAssembly = row.piecesPerAssembly;
   if (lead) part.lead = lead;
   const outer = dim(row.outerRadiusInches, row.radiusSource);
   const inner = dim(row.innerRadiusInches, row.radiusSource);

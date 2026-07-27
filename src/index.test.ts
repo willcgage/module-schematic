@@ -3151,6 +3151,20 @@ describe("track parts library (#179 stage 3)", () => {
       expect(p.trackSpacing!.inches).toBe(1.09);
       expect(p.buildable).toBe(true);
       expect(p.minimumLength!.inches).toBeLessThan(p.overallLength!.inches);
+      // ⚠️ Will Gage, 2026-07-26: "crossovers are two pieces. the pdf shows
+      // half, then you would duplicate this same piece and flip it 180 and butt
+      // it up to the through and X." So the lengths are ONE HALF, and both
+      // notes have to say so — this shipped once claiming they were the whole
+      // assembly.
+      expect(p.piecesPerAssembly, `${p.id}`).toBe(2);
+      expect(p.overallLength!.note, `${p.id} length note`).toMatch(/ONE HALF/);
+      expect(p.minimumLength!.note, `${p.id} minimum note`).toMatch(/ONE HALF/);
+      expect(p.name).toMatch(/Double Crossover/);
+    }
+    // Nothing else in the library is built in pieces, so nothing else may carry
+    // a length that means something other than "the whole part".
+    for (const p of BUILT_IN_TRACK_PARTS.filter((x) => x.kind !== "crossover")) {
+      expect(p.piecesPerAssembly, `${p.id}`).toBeUndefined();
     }
     // Every size lookup filters kind === "turnout", so a #6 crossover must not
     // become "the #6" and displace a real turnout.
