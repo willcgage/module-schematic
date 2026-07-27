@@ -535,6 +535,13 @@ export interface ModuleSchematicDoc {
     pieces: TrackPiece[];
     /** Where the main starts: the joint endplate A's track arrives at. */
     startAt: { piece: string; joint: string };
+    /** Where MAIN 2 starts, on a double-track module — the joint the endplate's
+     * SECOND track arrives at. Absent = single track.
+     *
+     * Two starts rather than a list because a document has exactly two mains,
+     * `main` and `main2`. This mirrors the thing downstream instead of inventing
+     * a generality nothing can read. */
+    start2?: { piece: string; joint: string } | null;
   } | null;
 }
 
@@ -5799,12 +5806,21 @@ export interface GraphWalk {
    * sentence, so a caller can act on it (and say it ONCE) instead of matching
    * on prose. */
   danglingDiverges: string[];
+  /** Pieces this walk never got to. ⚠️ "Unreached BY THIS WALK" is not the same
+   * as "unreachable": a double-track module's second main is unreached by the
+   * first walk and perfectly well connected. Ids, so a caller running more than
+   * one walk can tell the difference. */
+  unreached: string[];
 }
 
 /** The one wording for a turnout whose diverging route reaches nothing, so a
  * caller can recognise it exactly rather than by substring. */
 const danglingDivergeWarning = (id: string) =>
   `the route diverging at ${id} is not connected to anything`;
+
+/** Likewise for a piece the walk never got to. */
+const unreachedWarning = (id: string) =>
+  `${id} is not reachable from the endplate — nothing connects it`;
 
 /**
  * Walk the graph from an endplate and read the topology off it.
@@ -6016,12 +6032,15 @@ export function walkTrackGraph(
   }
 
   const reached = new Set(routes.flatMap((r) => r.pieces));
+  const unreached: string[] = [];
   for (const p of pieces)
-    if (!reached.has(p.id) && !graph.unplaceable.some((u) => u.piece === p.id))
-      warnings.push(`${p.id} is not reachable from the endplate — nothing connects it`);
+    if (!reached.has(p.id) && !graph.unplaceable.some((u) => u.piece === p.id)) {
+      warnings.push(unreachedWarning(p.id));
+      unreached.push(p.id);
+    }
   for (const c of graph.conflicts) warnings.push(c.reason);
 
-  return { routes, turnouts, warnings, danglingDiverges };
+  return { routes, turnouts, warnings, danglingDiverges, unreached };
 }
 
 // ─── GRAPH → DOCUMENT (ADR 0001) ─────────────────────────────────────────────
@@ -6079,6 +6098,8 @@ export function resolveGraphAnchor(
 export interface GraphDocInput {
   /** Where the main begins: the joint endplate A's track arrives at. */
   startAt: { piece: string; joint: string };
+  /** Where MAIN 2 begins, on a double-track module. Absent = single track. */
+  start2?: { piece: string; joint: string } | null;
   /**
    * The rest of the document — module id, endplate identities, the benchwork,
    * industries and signals. Merged UNDERNEATH the derived keys, so the graph
@@ -6145,26 +6166,73 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   const epB = endplates[1];
 
   const main = walk.routes.find((r) => r.id === "main")!;
-  const lengthInches = round(main.toPos);
+
+  /**
+   * MAIN 2 is its own walk, from its own end of the endplate.
+   *
+   * ⚠️ It is a SEPARATE RUN, not a branch: the two mains of a double-track
+   * module never touch (what would join them is a crossover, and no crossover
+   * can be placed yet — the fixture builds one half). So it is walked
+   * independently and its routes are kept apart by a prefix, because both walks
+   * name their own route "main".
+   */
+  const walk2 = input.start2
+    ? walkTrackGraph(graph, pieces, input.start2, library)
+    : null;
+  const main2 = walk2?.routes.find((r) => r.id === "main") ?? null;
+  const claimed = new Set(walk.routes.flatMap((r) => r.pieces));
+  if (main2 && main2.pieces.some((p) => claimed.has(p))) {
+    // Both starts landed on the same run. Emitting it twice would put one piece
+    // of track in the document as two, on two lanes.
+    warnings.push(
+      "Main 2 starts on track that Main 1 already runs along — they are one run, not two",
+    );
+  }
+  const twoMains = !!main2 && !main2.pieces.some((p) => claimed.has(p));
+
+  // ⭐ WHICH SIDE MAIN 2 IS ON IS READ, NOT AUTHORED. The 1-D model needs a
+  // `mainsSwapped` flag to say Main 2 draws below; here it is simply where the
+  // track is. Module-local +y is above, and endplate A's track point is the
+  // origin, so the sign of its first joint's offset is the answer.
+  const main2Lane = twoMains
+    ? (graph.joints.find((j) => j.key === `${input.start2!.piece}.${input.start2!.joint}`)?.y ?? 1) >= 0
+      ? 1
+      : -1
+    : 0;
+
+  const lengthInches = round(Math.max(main.toPos, twoMains ? main2!.toPos : 0));
 
   // A branch takes the id of the piece it STARTS at — the run's own first piece.
   // It is the piece an owner selects, so it is the thing their name belongs to.
   // ⚠️ Not stable against inserting a piece at the throat: that changes the id.
   // Persisting the graph will need a run identity of its own; nothing yet reads
   // these ids back.
-  const branches = walk.routes.filter((r) => r.id !== "main" && r.pieces.length);
+  const branches = [
+    ...walk.routes.filter((r) => r.id !== "main" && r.pieces.length),
+    ...(twoMains
+      ? walk2!.routes
+          .filter((r) => r.id !== "main" && r.pieces.length)
+          .map((r) => ({ ...r, id: `main2:${r.id}`, bornAt: r.bornAt }))
+      : []),
+  ];
   const trackIdOf = new Map<string, string>([["main", MAIN_TRACK_ID]]);
+  if (twoMains) trackIdOf.set("main2:main", MAIN2_TRACK_ID);
   for (const r of branches) trackIdOf.set(r.id, r.pieces[0]);
 
   // LANE is an ordinal: which side, and how many tracks out. The side is the
   // sign of how far the run reaches laterally; the magnitude is its rank among
   // the runs on that side, so a spur off a spur stacks OUTSIDE its parent.
+  //
+  // ⚠️ MAIN 2 ALREADY OCCUPIES A LANE on its own side, so branches there start
+  // at 2. Ranking branches alone put the first siding above the main on lane 1
+  // — the same lane as Main 2 — and the two drew on top of each other.
   const laneOf = (r: GraphRoute): number => {
     const side = Math.sign(r.lateral) || 1;
     const sameSide = branches
       .filter((x) => (Math.sign(x.lateral) || 1) === side)
       .sort((a, b) => Math.abs(a.lateral) - Math.abs(b.lateral));
-    return side * (sameSide.indexOf(r) + 1);
+    const taken = side === main2Lane ? 1 : 0;
+    return side * (sameSide.indexOf(r) + 1 + taken);
   };
 
   const tracks: SchematicTrack[] = [
@@ -6175,6 +6243,21 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
       from: epA?.id ?? "A",
       ...(epB ? { to: epB.id } : {}),
     },
+    ...(twoMains
+      ? [
+          {
+            id: MAIN2_TRACK_ID,
+            role: "main" as const,
+            lane: main2Lane,
+            from: epA?.id ?? "A",
+            ...(epB ? { to: epB.id } : {}),
+            // ⚠️ Its own extent, because a second main need not run the whole
+            // module: on a transition module it starts or stops partway.
+            fromPos: round(Math.min(main2!.fromPos, main2!.toPos)),
+            toPos: round(Math.max(main2!.fromPos, main2!.toPos)),
+          },
+        ]
+      : []),
   ];
   for (const r of branches) {
     const id = trackIdOf.get(r.id)!;
@@ -6193,9 +6276,36 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
     });
   }
 
+  if (walk2) {
+    // ⚠️ EACH WALK CALLS THE OTHER MAIN UNREACHABLE, and neither is right. A
+    // walk only knows what IT got to; with two starts, a piece reached by
+    // either one is connected. Told as it stood, a perfectly ordinary
+    // double-track module reported both of its mains as stray track.
+    const seen = new Set([
+      ...walk.routes.flatMap((r) => r.pieces),
+      ...walk2.routes.flatMap((r) => r.pieces),
+    ]);
+    const covered = new Set([...walk.unreached, ...walk2.unreached].filter((id) => seen.has(id)));
+    const drop = new Set([...covered].map(unreachedWarning));
+    const d2 = new Set(walk2.danglingDiverges.map(danglingDivergeWarning));
+    for (let i = warnings.length - 1; i >= 0; i--) if (drop.has(warnings[i])) warnings.splice(i, 1);
+    for (const w of walk2.warnings)
+      if (!d2.has(w) && !drop.has(w) && !warnings.includes(w)) warnings.push(w);
+  }
+
   const pieceById = new Map(pieces.map((p) => [p.id, p]));
   const turnouts: SchematicTurnout[] = [];
-  for (const t of walk.turnouts) {
+  const allTurnouts = [
+    ...walk.turnouts,
+    ...(twoMains
+      ? walk2!.turnouts.map((t) => ({
+          ...t,
+          onRoute: t.onRoute === "main" ? "main2:main" : `main2:${t.onRoute}`,
+          divergeRoute: t.divergeRoute ? `main2:${t.divergeRoute}` : null,
+        }))
+      : []),
+  ];
+  for (const t of allTurnouts) {
     const diverge = t.divergeRoute ? trackIdOf.get(t.divergeRoute) : undefined;
     if (!diverge) {
       // A switch whose diverging route reaches nothing is an unfinished layout,
@@ -6309,7 +6419,13 @@ export function deriveGraphDoc(
       ...(t.moduleTrackId != null ? { moduleTrackId: t.moduleTrackId } : {}),
     };
   }
-  const out = graphToDoc(g.pieces, { startAt: g.startAt, base: doc, meta, library });
+  const out = graphToDoc(g.pieces, {
+    startAt: g.startAt,
+    start2: g.start2 ?? null,
+    base: doc,
+    meta,
+    library,
+  });
   return { doc: out.doc, warnings: out.warnings };
 }
 

@@ -5744,3 +5744,92 @@ describe("a bent run of flex", () => {
     expect(snap!.piece.rotationDeg).toBeCloseTo(90, 6);
   });
 });
+
+// ─── Two mains (ADR 0001) ────────────────────────────────────────────────────
+// A double-track module's mains are two separate runs — nothing joins them,
+// because what would is a crossover and no crossover can be placed yet. So Main
+// 2 is its own walk, from its own end of the endplate.
+describe("a double-track module", () => {
+  const FLEX = "atlas-c55-n-flex";
+  const SW = "atlas-c55-n-7";
+  const LEAD = trackPart(SW)!.lead!.inches;
+  const SPACING = FREEMO_TRACK_SPACING_INCHES;
+
+  /** Two parallel runs a track-spacing apart, Main 2 above. */
+  const doubleTrack = (): TrackPiece[] => [
+    { id: "m1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 96 },
+    { id: "m2", partId: FLEX, x: 0, y: SPACING, rotationDeg: 0, lengthInches: 96 },
+  ];
+  const emit = (pieces: TrackPiece[], start2: { piece: string; joint: string } | null = { piece: "m2", joint: "a" }) =>
+    graphToDoc(pieces, { startAt: { piece: "m1", joint: "a" }, start2 });
+
+  it("emits both mains, each running the module", () => {
+    const { doc, warnings } = emit(doubleTrack());
+    expect(doc.tracks.map((t) => [t.id, t.role, t.lane])).toEqual([
+      ["main", "main", 0],
+      ["main2", "main", 1],
+    ]);
+    expect(doc.lengthInches).toBe(96);
+    expect(warnings).toEqual([]);
+  });
+
+  // ⭐ WHICH SIDE MAIN 2 IS ON IS READ, NOT AUTHORED. The 1-D model carries a
+  // `mainsSwapped` flag for this; here it is simply where the track is.
+  it("puts Main 2 below when that is where it is, with no flag", () => {
+    const below = doubleTrack().map((p) => (p.id === "m2" ? { ...p, y: -SPACING } : p));
+    const { doc } = emit(below);
+    expect(doc.tracks.find((t) => t.id === "main2")!.lane).toBe(-1);
+    expect(doc.mainsSwapped).toBeUndefined(); // nothing had to be declared
+  });
+
+  it("leaves Main 2 out when the module is single track", () => {
+    const { doc, warnings } = emit(doubleTrack(), null);
+    expect(doc.tracks.map((t) => t.id)).toEqual(["main"]);
+    // The second run is still there, and now genuinely unreached — nothing
+    // starts on it — which is worth saying.
+    expect(warnings.join(" ")).toMatch(/m2 is not reachable/);
+  });
+
+  // ⚠️ EACH WALK ONLY KNOWS WHAT IT GOT TO. Left alone, walk 1 calls Main 2
+  // stray track and walk 2 says the same of Main 1, so an ordinary double-track
+  // module reported BOTH its mains as unconnected.
+  it("does not call either main unreachable just because the other walk found it", () => {
+    const { warnings } = emit(doubleTrack());
+    expect(warnings.filter((w) => w.includes("not reachable"))).toEqual([]);
+  });
+
+  // ⚠️ THE LANE COLLISION. Main 2 already occupies a lane on its own side, so a
+  // siding above the main starts at 2 — ranking branches alone put it on lane 1
+  // and the two drew on top of each other.
+  it("stacks a siding on Main 2's side OUTSIDE Main 2", () => {
+    const pieces = doubleTrack();
+    // A turnout on Main 1 with a spur running up past Main 2.
+    pieces[0] = { ...pieces[0], lengthInches: 20 - LEAD };
+    pieces.push({ id: "s1", partId: SW, x: 20 - LEAD, y: 0, rotationDeg: 0 });
+    const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
+    pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 30 });
+    const { doc } = emit(pieces);
+    const spur = doc.tracks.find((t) => t.id === "sp")!;
+    expect(doc.tracks.find((t) => t.id === "main2")!.lane).toBe(1);
+    expect(spur.lane).toBe(2);
+  });
+
+  it("says so when both starts land on the same run", () => {
+    const { warnings } = emit(doubleTrack(), { piece: "m1", joint: "b" });
+    expect(warnings.join(" ")).toMatch(/they are one run, not two/);
+  });
+
+  // A turnout on Main 2 must say it is on Main 2 — the dispatcher view stacks a
+  // ladder off its parent, so naming the wrong host puts the whole thing on the
+  // wrong side of the module.
+  it("names Main 2 as the host of a turnout laid on it", () => {
+    const pieces = doubleTrack();
+    pieces[1] = { ...pieces[1], lengthInches: 30 - LEAD };
+    pieces.push({ id: "s2", partId: SW, x: 30 - LEAD, y: SPACING, rotationDeg: 0 });
+    const d = placedJoints(pieces).find((j) => j.key === "s2.diverge")!;
+    pieces.push({ id: "yd", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 24 });
+    const { doc } = emit(pieces);
+    expect(doc.turnouts![0].onTrack).toBe("main2");
+    expect(doc.turnouts![0].divergeTrack).toBe("yd");
+  });
+});
