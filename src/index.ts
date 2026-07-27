@@ -5339,6 +5339,81 @@ export function partGeometry(
   };
 }
 
+/**
+ * The SHAPE of every route through a placed piece, in MODULE inches — the
+ * polyline a renderer draws.
+ *
+ * ⭐ The shape belongs to the PART, so it lives here rather than in either app's
+ * canvas. A diverging route drawn as a straight chord from throat to diverging
+ * end cuts the corner the closure actually turns; every renderer would have to
+ * rebuild that curve, and they would drift.
+ *
+ * ⚠️ Each polyline ENDS EXACTLY ON ITS JOINTS, by construction — the samples in
+ * between follow the closure, but the ends are the joint positions themselves.
+ * Track that stops short of its own joint would draw a gap at a connection that
+ * the graph considers made.
+ */
+export function pieceRoutePaths(
+  piece: TrackPiece,
+  library = BUILT_IN_TRACK_PARTS,
+): { route: [string, string]; points: { x: number; y: number }[] }[] {
+  const part = library.find((p) => p.id === piece.partId);
+  if (!part) return [];
+  const geo = partGeometry(part, library);
+  if (!geo) return [];
+  const joints = placedJoints([piece], library);
+  const at = (id: string) => joints.find((j) => j.joint === id);
+
+  // Sample the closure between the points and the diverging end, in the part's
+  // own frame, then put it through the same transform the joints went through.
+  const RAD = Math.PI / 180;
+  const c = Math.cos(piece.rotationDeg * RAD);
+  const s = Math.sin(piece.rotationDeg * RAD);
+  const place = (x: number, y: number) => {
+    const ly = piece.flipped ? -y : y;
+    return { x: piece.x + x * c - ly * s, y: piece.y + x * s + ly * c };
+  };
+
+  const out: { route: [string, string]; points: { x: number; y: number }[] }[] = [];
+  for (const route of geo.routes) {
+    const a = at(route[0]);
+    const b = at(route[1]);
+    if (!a || !b) continue;
+    const ends = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
+    const diverging = route.some((r) => r === "diverge" || r === "legA" || r === "legB");
+    if (!diverging || part.kind === "flex") {
+      out.push({ route, points: ends });
+      continue;
+    }
+    const lead = part.lead?.inches ?? 0;
+    const pts0 = part.pointsOffset?.inches ?? 0;
+    const far = geo.joints.find((j) => j.id === route[1]) ?? geo.joints.find((j) => j.id === route[0]);
+    if (!far || !(lead > 0)) {
+      out.push({ route, points: ends });
+      continue;
+    }
+    const isWye = part.kind === "wye";
+    const closure = turnoutClosure(isWye ? (part.frogNumber as number) * 2 : (part.frogNumber as number), {
+      leadInches: lead,
+    });
+    // The route runs straight to the points, then follows the closure. `legB` is
+    // the mirror of `legA` — a wye splits symmetrically, which is the same rule
+    // its joints were placed by.
+    const mirror = route.includes("legB") ? -1 : 1;
+    const pts: { x: number; y: number }[] = [place(0, 0), place(pts0, 0)];
+    const steps = 12;
+    for (let i = 1; i <= steps; i++) {
+      const x = pts0 + ((far.x - pts0) * i) / steps;
+      pts.push(place(x, mirror * closure.offsetAt(x - pts0)));
+    }
+    // End ON the joint: the sampled curve and the joint are worked out the same
+    // way, but only this makes them the same number.
+    pts[pts.length - 1] = { x: b.x, y: b.y };
+    out.push({ route, points: route[0] === "throat" ? pts : pts.slice().reverse() });
+  }
+  return out;
+}
+
 /** Every part that can be PLACED on a board today, and every one that can only
  * be named — with the reason. The gap list is the parts backlog. */
 export function partsPlaceable(library = BUILT_IN_TRACK_PARTS): {
@@ -5538,6 +5613,74 @@ export interface RouteSpan {
   /** Inches from endplate A at the entry joint, and at the one it left by. */
   fromPos: number;
   toPos: number;
+}
+
+/** A piece moved into place against an open joint. */
+export interface PieceSnap {
+  /** The piece, rotated and translated so the two joints coincide. */
+  piece: TrackPiece;
+  /** The moving joint's key, and the open joint it was brought onto. */
+  from: string;
+  to: string;
+}
+
+/**
+ * Bring a piece being dragged onto the nearest OPEN joint of the others.
+ *
+ * ⛔ **ONLY OPEN JOINTS ARE CANDIDATES, and that is the ADR's standing rule
+ * enforced where it can still be obeyed.** A joint already holding a connection
+ * is not offered, so an owner cannot stack a third rail end on a joint at all —
+ * rather than stacking it and having {@link buildTrackGraph} refuse all three
+ * afterwards, with a piece silently outside the layout until they notice.
+ *
+ * The piece is ROTATED as well as moved: two ends meet when they are in the same
+ * place and facing opposite ways, so the rotation falls out of the joint it is
+ * brought to. That is what makes laying a curve out of straight pieces possible
+ * without typing an angle.
+ *
+ * `withinInches` is a GRAB radius — how near counts as "meant it" — and is a
+ * different thing from {@link JOINT_SNAP_INCHES}, which is how close two joints
+ * must be to BE connected. This one is generous; that one is a hundredth of an
+ * inch.
+ */
+export function snapPiece(
+  moving: TrackPiece,
+  others: TrackPiece[],
+  library = BUILT_IN_TRACK_PARTS,
+  withinInches = 0.5,
+): PieceSnap | null {
+  const mine = placedJoints([moving], library);
+  if (!mine.length) return null;
+  const graph = buildTrackGraph(others, library);
+  const taken = new Set(graph.connections.flatMap((c) => [c.a, c.b]));
+  const open = graph.joints.filter((j) => !taken.has(j.key));
+
+  let best: { m: PlacedJoint; t: PlacedJoint; d: number } | null = null;
+  for (const m of mine)
+    for (const t of open) {
+      const d = Math.hypot(t.x - m.x, t.y - m.y);
+      if (d <= withinInches && (!best || d < best.d)) best = { m, t, d };
+    }
+  if (!best) return null;
+
+  // Turn the piece about the joint that is being brought in — so that joint
+  // stays where the owner's pointer left it — then slide it onto the target.
+  const RAD = Math.PI / 180;
+  const dRot = norm360(best.t.headingDeg + 180 - best.m.headingDeg);
+  const c = Math.cos(dRot * RAD);
+  const s = Math.sin(dRot * RAD);
+  const ox = moving.x - best.m.x;
+  const oy = moving.y - best.m.y;
+  return {
+    piece: {
+      ...moving,
+      rotationDeg: norm360(moving.rotationDeg + dRot),
+      x: best.t.x + ox * c - oy * s,
+      y: best.t.y + ox * s + oy * c,
+    },
+    from: best.m.key,
+    to: best.t.key,
+  };
 }
 
 /** A route the walk found: a continuous run of pieces a train can travel. */

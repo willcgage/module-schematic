@@ -96,6 +96,8 @@ import {
   partGeometry,
   buildTrackGraph,
   graphToDoc,
+  pieceRoutePaths,
+  snapPiece,
   deriveGraphDoc,
   type GraphAnchor,
   walkTrackGraph,
@@ -5558,5 +5560,96 @@ describe("deriveGraphDoc", () => {
       96,
     );
     expect(state.graph!.pieces.find((p) => p.id === "sp")!.lengthInches).toBe(30);
+  });
+});
+
+// ─── The shape of a route through a piece ────────────────────────────────────
+describe("pieceRoutePaths", () => {
+  const SW = "atlas-c55-n-7";
+  const FLEX = "atlas-c55-n-flex";
+
+  it("draws flex as one straight run of the length it was cut to", () => {
+    const [r] = pieceRoutePaths({ id: "f", partId: FLEX, x: 2, y: 3, rotationDeg: 0, lengthInches: 18 });
+    expect(r.points).toEqual([{ x: 2, y: 3 }, { x: 20, y: 3 }]);
+  });
+
+  // ⭐ The point of putting this in the package: a diverging route is a CURVE.
+  // Drawn as a straight chord it cuts the corner the closure actually turns,
+  // and every renderer would have to rebuild that curve for itself.
+  it("follows the closure on a diverging route instead of cutting the chord", () => {
+    const piece: TrackPiece = { id: "s", partId: SW, x: 0, y: 0, rotationDeg: 0 };
+    const paths = pieceRoutePaths(piece);
+    const div = paths.find((p) => p.route.includes("diverge"))!;
+    const joints = placedJoints([piece]);
+    const throat = joints.find((j) => j.joint === "throat")!;
+    const end = joints.find((j) => j.joint === "diverge")!;
+    // Ends exactly on its own joints — a gap here would be a gap at a
+    // connection the graph considers made.
+    expect(div.points[0]).toEqual({ x: throat.x, y: throat.y });
+    expect(div.points[div.points.length - 1]).toEqual({ x: end.x, y: end.y });
+    // …and it is not the chord: halfway along, it is still short of it.
+    const mid = div.points[Math.floor(div.points.length / 2)];
+    const chordY = throat.y + ((end.y - throat.y) * (mid.x - throat.x)) / (end.x - throat.x);
+    expect(mid.y).toBeLessThan(chordY);
+  });
+
+  it("goes where the piece goes", () => {
+    const piece: TrackPiece = { id: "s", partId: SW, x: 10, y: -4, rotationDeg: 37, flipped: true };
+    const joints = placedJoints([piece]);
+    for (const { route, points } of pieceRoutePaths(piece)) {
+      const a = joints.find((j) => j.joint === route[0])!;
+      const b = joints.find((j) => j.joint === route[1])!;
+      expect(Math.hypot(points[0].x - a.x, points[0].y - a.y)).toBeLessThan(1e-9);
+      const last = points[points.length - 1];
+      expect(Math.hypot(last.x - b.x, last.y - b.y)).toBeLessThan(1e-9);
+    }
+  });
+});
+
+// ─── Snapping a piece into place ─────────────────────────────────────────────
+describe("snapPiece", () => {
+  const SW = "atlas-c55-n-7";
+  const FLEX = "atlas-c55-n-flex";
+
+  it("brings a loose end onto an open joint, turning the piece to meet it", () => {
+    const main: TrackPiece = { id: "f0", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 20 };
+    const sw: TrackPiece = { id: "s1", partId: SW, x: 20, y: 0, rotationDeg: 0 };
+    const target = placedJoints([main, sw]).find((j) => j.key === "s1.diverge")!;
+    // Dropped near the diverging end, at a careless angle.
+    const loose: TrackPiece = {
+      id: "sp", partId: FLEX, x: target.x + 0.3, y: target.y - 0.2, rotationDeg: 61, lengthInches: 24,
+    };
+    const snap = snapPiece(loose, [main, sw]);
+    expect(snap).not.toBeNull();
+    expect(snap!.to).toBe("s1.diverge");
+    // It is now genuinely connected — by the graph's own rule, not by looking close.
+    const graph = buildTrackGraph([main, sw, snap!.piece]);
+    expect(graph.connections.some((c) => [c.a, c.b].includes("s1.diverge"))).toBe(true);
+    expect(graph.conflicts).toEqual([]);
+    // The rotation came from the joint, not from the owner: the piece now leaves
+    // along the diverging rail.
+    expect(snap!.piece.rotationDeg).toBeCloseTo(target.headingDeg, 6);
+  });
+
+  // ⛔ THE ADR'S STANDING RULE, enforced where it can still be obeyed. Offering
+  // an occupied joint would let an owner stack a third rail end there — and
+  // then the graph refuses all three, putting a piece outside the layout until
+  // they notice.
+  it("never offers a joint that already holds a connection", () => {
+    const a: TrackPiece = { id: "a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 10 };
+    const b: TrackPiece = { id: "b", partId: FLEX, x: 10, y: 0, rotationDeg: 0, lengthInches: 10 };
+    // Short, so its OTHER end is nowhere near anything — the occupied junction
+    // is the only thing in reach, and it is not on offer.
+    const third: TrackPiece = { id: "c", partId: FLEX, x: 10.05, y: 0.05, rotationDeg: 0, lengthInches: 4 };
+    expect(snapPiece(third, [a, b])).toBeNull();
+    // The free ends are still offered, so it can join the other end of the run.
+    const atEnd: TrackPiece = { id: "c", partId: FLEX, x: 20.1, y: 0.1, rotationDeg: 0, lengthInches: 10 };
+    expect(snapPiece(atEnd, [a, b])!.to).toBe("b.b");
+  });
+
+  it("leaves a piece alone when nothing is near", () => {
+    const a: TrackPiece = { id: "a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 10 };
+    const far: TrackPiece = { id: "z", partId: FLEX, x: 40, y: 30, rotationDeg: 0, lengthInches: 10 };
+    expect(snapPiece(far, [a])).toBeNull();
   });
 });
