@@ -93,6 +93,10 @@ import {
   clearancePointPastFrogInches,
   CLEARANCE_SPACING_INCHES,
   FREEMO_TRACK_SPACING_INCHES,
+  laneOffsetAt,
+  crossoverPinches,
+  PINCH_EASE_INCHES,
+  type LanePinch,
   turnoutClosure,
   leadInchesForSize,
   BUILT_IN_TRACK_PARTS,
@@ -4583,3 +4587,145 @@ describe("branch endplate placement", () => {
     expect(p).toMatchObject({ x: 30, y: 5, heading: 45, manual: true });
   });
 })
+
+// ─── The crossover pinch (#180) ──────────────────────────────────────────────
+// Will Gage, 2026-07-26: "draw the crossover at 1.09 and show the pinch."
+// A crossover fixture is machined for ONE spacing, so a module with a Fast
+// Tracks crossover really does have its mains 0.035" closer across it, opening
+// back to the standard 1.125" at the endplates. Drawing a straight pair would
+// be drawing something the module doesn't have.
+describe("crossover pinch", () => {
+  const pinch: LanePinch[] = [
+    { lane: 1, fromPos: 40, toPos: 50, spacingInches: 1.09 },
+  ];
+
+  it("holds the fixture's spacing across the crossover", () => {
+    for (const pos of [40, 43, 45, 48, 50]) {
+      expect(laneOffsetAt(1, pos, pinch), `pos ${pos}`).toBeCloseTo(1.09, 9);
+    }
+  });
+
+  it("is the standard spacing well clear of it", () => {
+    for (const pos of [0, 20, 36.9, 53.1, 80]) {
+      expect(laneOffsetAt(1, pos, pinch), `pos ${pos}`).toBeCloseTo(1.125, 9);
+    }
+  });
+
+  // The whole point of a smoothstep: the deviation leaves and rejoins the
+  // straight run TANGENTIALLY. A linear ramp puts a visible corner at each end,
+  // which is not how bent flex behaves.
+  it("eases in and out with no kink at either end", () => {
+    const e = PINCH_EASE_INCHES;
+    const d = 0.001;
+    const slope = (p: number) =>
+      (laneOffsetAt(1, p + d, pinch) - laneOffsetAt(1, p - d, pinch)) / (2 * d);
+    // Flat where the ease meets the straight track, and where it meets the
+    // rigid section — all four joins.
+    expect(Math.abs(slope(40 - e))).toBeLessThan(1e-3);
+    expect(Math.abs(slope(40))).toBeLessThan(1e-3);
+    expect(Math.abs(slope(50))).toBeLessThan(1e-3);
+    expect(Math.abs(slope(50 + e))).toBeLessThan(1e-3);
+    // …and it genuinely moves in between, rather than being flat everywhere.
+    expect(laneOffsetAt(1, 40 - e / 2, pinch)).toBeGreaterThan(1.09);
+    expect(laneOffsetAt(1, 40 - e / 2, pinch)).toBeLessThan(1.125);
+    // Monotone approach: no wobble on the way in.
+    let prev = Infinity;
+    for (let s = 0; s <= 20; s++) {
+      const v = laneOffsetAt(1, 40 - e + (e * s) / 20, pinch);
+      expect(v).toBeLessThanOrEqual(prev + 1e-9);
+      prev = v;
+    }
+  });
+
+  it("never moves the main — it is the reference everything is measured from", () => {
+    for (const pos of [0, 40, 45, 50, 80]) {
+      expect(laneOffsetAt(0, pos, pinch)).toBe(0);
+    }
+  });
+
+  it("pulls a lane BELOW the main toward it too, not away", () => {
+    const below: LanePinch[] = [
+      { lane: -1, fromPos: 40, toPos: 50, spacingInches: 1.09 },
+    ];
+    expect(laneOffsetAt(-1, 45, below)).toBeCloseTo(-1.09, 9);
+    expect(laneOffsetAt(-1, 0, below)).toBeCloseTo(-1.125, 9);
+    // Closer to the main in BOTH cases — the sign must not flip the direction.
+    expect(Math.abs(laneOffsetAt(-1, 45, below))).toBeLessThan(
+      Math.abs(laneOffsetAt(-1, 0, below)),
+    );
+  });
+
+  it("leaves other lanes alone", () => {
+    expect(laneOffsetAt(2, 45, pinch)).toBeCloseTo(2.25, 9);
+    expect(laneOffsetAt(1, 45, [])).toBeCloseTo(1.125, 9);
+    expect(laneOffsetAt(1, 45, null)).toBeCloseTo(1.125, 9);
+  });
+
+  // Two crossovers on top of each other is a data error, not a doubly-tight
+  // pair — so the deepest wins rather than the two summing into nonsense.
+  it("takes the deepest of overlapping pinches, never the sum", () => {
+    const two: LanePinch[] = [
+      { lane: 1, fromPos: 40, toPos: 50, spacingInches: 1.09 },
+      { lane: 1, fromPos: 42, toPos: 48, spacingInches: 1.0 },
+    ];
+    expect(laneOffsetAt(1, 45, two)).toBeCloseTo(1.0, 9);
+    // Summing the two deviations would give 1.125 − 0.035 − 0.125 = 0.965.
+    // Nothing anywhere may go below the deepest single target.
+    for (let pos = 30; pos <= 60; pos += 0.25) {
+      expect(laneOffsetAt(1, pos, two), `pos ${pos}`).toBeGreaterThanOrEqual(1.0 - 1e-9);
+      expect(laneOffsetAt(1, pos, two), `pos ${pos}`).toBeLessThanOrEqual(1.125 + 1e-9);
+    }
+    // Order must not matter.
+    expect(laneOffsetAt(1, 41, two)).toBeCloseTo(laneOffsetAt(1, 41, [...two].reverse()), 12);
+  });
+
+  describe("derived from the document", () => {
+    const xover = (partId?: string) => ({
+      role: "crossover",
+      lane: 1,
+      fromPos: 40,
+      toPos: 50,
+      ...(partId ? { crossoverPartId: partId } : {}),
+    });
+
+    it("reads the spacing off the named part", () => {
+      const ps = crossoverPinches([xover("fast-tracks-n-me55-c-6")]);
+      expect(ps).toEqual([
+        { lane: 1, fromPos: 40, toPos: 50, spacingInches: 1.09 },
+      ]);
+    });
+
+    // An owner who hasn't said what they built gets the straight pair they had
+    // before. Assuming Fast Tracks would be inventing a fact about their module.
+    it("imposes nothing when no part is named", () => {
+      expect(crossoverPinches([xover()])).toEqual([]);
+    });
+
+    it("imposes nothing for a part built to the standard spacing", () => {
+      const lib = [
+        {
+          id: "std-crossover",
+          manufacturer: "T",
+          line: "Code 55",
+          scale: "N" as const,
+          name: "std",
+          kind: "crossover" as const,
+          trackSpacing: {
+            inches: FREEMO_TRACK_SPACING_INCHES,
+            source: "manufacturer" as const,
+          },
+        },
+      ];
+      expect(crossoverPinches([xover("std-crossover")], lib)).toEqual([]);
+    });
+
+    it("ignores tracks that aren't crossovers, and unknown parts", () => {
+      expect(
+        crossoverPinches([
+          { role: "siding", lane: 1, fromPos: 40, toPos: 50, crossoverPartId: "fast-tracks-n-me55-c-6" },
+          { ...xover("no-such-part") },
+        ]),
+      ).toEqual([]);
+    });
+  });
+});

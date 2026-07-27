@@ -90,6 +90,118 @@ export const FREEMO_TRACK_SPACING_INCHES = 1.125;
 export const FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES = 4;
 
 /**
+ * A stretch where a pair of parallel tracks runs at something other than the
+ * standard spacing, because a rigid assembly built to another spacing sits in
+ * it (#180).
+ *
+ * The case this exists for: a crossover fixture is machined for ONE track
+ * spacing and cannot be built to another. The Fast Tracks N crossovers are
+ * 1.09″ where Free-moN §2.0 requires 1.125″, so a module with one genuinely has
+ * its two mains 0.035″ closer together across the crossover, opening back to
+ * 1.125″ at the endplates — which the standard fixes. That pinch is real, and
+ * drawing it is more honest than drawing a straight pair.
+ */
+export interface LanePinch {
+  /** The lane pulled in. Lane 0 is the reference and never moves. */
+  lane: number;
+  /** Inches from endplate A where the rigid section begins and ends. */
+  fromPos: number;
+  toPos: number;
+  /** Centre-to-centre spacing INSIDE that span, inches. */
+  spacingInches: number;
+}
+
+/**
+ * How far either side of a rigid section the pair takes to reach it.
+ *
+ * ⚠️ A DRAWING CONVENTION, NOT A MEASUREMENT. Nobody publishes this and it is
+ * not a property of any part — in the real world the builder eases the flex over
+ * whatever room they have. It exists so the pinch renders as a smooth deviation
+ * rather than a kink, and it is deliberately a round number so it never reads as
+ * something that was measured.
+ */
+export const PINCH_EASE_INCHES = 3;
+
+/**
+ * The lane offset at a point, honouring any {@link LanePinch} covering it.
+ *
+ * Eases with a smoothstep, whose slope is zero at both ends, so the deviation
+ * leaves and rejoins the straight run tangentially — the way bent flex actually
+ * behaves. A linear ramp would put a visible corner at each end.
+ *
+ * ⚠️ ONLY THE PINCH'S OWN LANE MOVES. The main is the reference every Free-moN
+ * measurement is taken from, so it stays put and the parallel track deviates,
+ * which is also what a builder does.
+ */
+export function laneOffsetAt(
+  lane: number,
+  pos: number,
+  pinches?: LanePinch[] | null,
+  spacingInches = FREEMO_TRACK_SPACING_INCHES,
+): number {
+  const base = (lane ?? 0) * spacingInches;
+  if (!lane || !pinches?.length) return base;
+  const sign = Math.sign(lane);
+  const smooth = (t: number) => t * t * (3 - 2 * t);
+  let off = base;
+  for (const p of pinches) {
+    if (p.lane !== lane) continue;
+    const a = Math.min(p.fromPos, p.toPos);
+    const b = Math.max(p.fromPos, p.toPos);
+    // The pinch names ONE lane step's spacing. A pinched lane 2 would need to
+    // say which of its two gaps closed, and nothing records that: not modelled.
+    const target = base - sign * (spacingInches * Math.abs(lane) - p.spacingInches);
+    const e = PINCH_EASE_INCHES;
+    let t: number | null = null;
+    if (pos >= a && pos <= b) t = 1;
+    else if (pos > a - e && pos < a) t = smooth((pos - (a - e)) / e);
+    else if (pos > b && pos < b + e) t = smooth(1 - (pos - b) / e);
+    if (t == null) continue;
+    // Where two overlap the DEEPEST wins rather than summing: two crossovers in
+    // the same place is a data error, not a doubly-tight pair.
+    const candidate = base + (target - base) * t;
+    if (Math.abs(candidate - base) > Math.abs(off - base)) off = candidate;
+  }
+  return off;
+}
+
+/**
+ * The pinches a document's crossovers impose — one per crossover connector that
+ * names a part whose {@link TrackPart.trackSpacing} differs from the standard.
+ *
+ * A crossover with no part named, or one built to the standard spacing, imposes
+ * nothing: an owner who hasn't said what they built gets the straight pair they
+ * had before, which is the only honest default.
+ */
+export function crossoverPinches(
+  tracks: Array<{
+    role?: string;
+    lane?: number;
+    fromPos?: number | null;
+    toPos?: number | null;
+    crossoverPartId?: string | null;
+  }>,
+  library = BUILT_IN_TRACK_PARTS,
+  spacingInches = FREEMO_TRACK_SPACING_INCHES,
+): LanePinch[] {
+  const out: LanePinch[] = [];
+  for (const t of tracks) {
+    if (t.role !== "crossover" || !t.crossoverPartId) continue;
+    const part = library.find((p) => p.id === t.crossoverPartId);
+    const s = part?.trackSpacing?.inches;
+    if (typeof s !== "number" || !Number.isFinite(s) || s <= 0) continue;
+    if (Math.abs(s - spacingInches) < 1e-9) continue;
+    const lane = t.lane ?? 1;
+    if (!lane) continue;
+    const a = t.fromPos ?? 0;
+    const b = t.toPos ?? 0;
+    if (!Number.isFinite(a) || !Number.isFinite(b) || Math.abs(b - a) < 1e-9) continue;
+    out.push({ lane, fromPos: Math.min(a, b), toPos: Math.max(a, b), spacingInches: s });
+  }
+  return out;
+}
+
+/**
  * The authored face width for an endplate, or the recommended default when a
  * module hasn't authored one. The single source of truth both apps read so a
  * module's endplate size is drawn the same in the Repository and the layout.
@@ -133,6 +245,16 @@ export interface SchematicTrack {
    * product's maximum piece length. Present = these are the ONLY joints, so an
    * owner's deliberate cut survives a change elsewhere on the module. */
   flexCuts?: number[] | null;
+  /** `role: "crossover"` only — the crossover product this connector was built
+   * from, a slug from the parts library.
+   *
+   * It sits on the CONNECTOR rather than on the turnouts at its ends because a
+   * crossover is one assembly: the fixture that set its angle also set its
+   * {@link TrackPart.trackSpacing}, and that spacing belongs to the pair of
+   * tracks, not to either turnout. Naming it is what lets the physical view draw
+   * the crossover at the spacing it was actually built to — the Fast Tracks N
+   * fixtures are 1.09″ against Free-moN's 1.125″, and the difference is real. */
+  crossoverPartId?: string | null;
   /** The owner's MEASURED usable length, real inches (#20) — for what the
    * drawing can't know: a bumper post short of the drawn end, a structure
    * fouling the track. Absent = derive it from the clearance points (#19). */
@@ -1885,6 +2007,10 @@ export interface EditorTrack {
   path?: BenchworkPoint[];
   /** Measured usable length, real inches (#20). Absent = derived (#19). */
   measuredUsableInches?: number;
+  /** `role: "crossover"` only — the crossover product this connector was built
+   * from. Drives the spacing the pair is DRAWN at (see
+   * {@link SchematicTrack.crossoverPartId}). */
+  crossoverPartId?: string;
 }
 
 /** A module_tracks row as loaded for the editor. */
@@ -2367,6 +2493,7 @@ export function stateToDoc(
           ? { measuredUsableInches: t.measuredUsableInches }
           : {}),
         ...(state.loop && t.inLoop ? { inLoop: true } : {}),
+        ...(t.crossoverPartId ? { crossoverPartId: t.crossoverPartId } : {}),
         ...(t.path && t.path.length >= 2 ? { path: t.path } : {}),
       })),
     ]),
@@ -2494,6 +2621,11 @@ export function docToState(
         moduleTrackId,
         trackName: t.trackName ?? nameOf(moduleTrackId),
         ...(t.inLoop ? { inLoop: true } : {}),
+        // The crossover product this connector was built from — what makes the
+        // physical view draw the pair at the spacing it was really built to.
+        ...(typeof t.crossoverPartId === "string" && t.crossoverPartId
+          ? { crossoverPartId: t.crossoverPartId }
+          : {}),
         // Authored path kept as-drawn (a physical shape, not rescaled with length).
         ...(trackPath(t.path) ? { path: trackPath(t.path)! } : {}),
         // A MEASURED length is a real-world fact about the physical track, so it
