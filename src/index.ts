@@ -3130,8 +3130,27 @@ export interface TrackPart {
    * prefer these when both are known: they're what someone can actually put a
    * rule against. */
   frogOffset?: PartDimension;
-  /** End-to-end length of the part. */
+  /** End-to-end length of the part.
+   *
+   * ⚠️ On a {@link buildable} part this is the manufacturer's DEFAULT length,
+   * not a property of the part — the modeller cuts the rail, so their turnout
+   * is whatever they built between {@link minimumLength} and as long as they
+   * like. */
   overallLength?: PartDimension;
+  /** True when the product is a FIXTURE or template rather than a finished
+   * turnout — Fast Tracks sell jigs, not parts. The distinction is not cosmetic:
+   * a buildable part has no single length, so `overallLength` becomes a default
+   * and `minimumLength` a floor, and nothing may infer where an owner's actual
+   * turnout ends from either of them. */
+  buildable?: boolean;
+  /** The shortest the part can be built. Buildable parts only. */
+  minimumLength?: PartDimension;
+  /** The radius of plain curve this turnout can stand in for, as a
+   * layout-planning figure. Fast Tracks publish it; Atlas do not. Nothing draws
+   * with it — it is here because it is a real published dimension and dropping
+   * it would mean the library could not represent what a manufacturer actually
+   * says about their own product. */
+  substitutionRadius?: PartDimension;
   /** Frog apex → the end of the diverging rail, measured ALONG that rail. The
    * independent cross-check on {@link frogOffset}: it must be slightly LONGER
    * than the axial `overallLength − frogOffset`, because the rail is the
@@ -3532,11 +3551,113 @@ export const FLEX_TRACK_PARTS: TrackPart[] = [
   },
 ];
 
+/**
+ * Fast Tracks N-scale assembly fixtures, Micro Engineering Code 55 rail.
+ *
+ * ⚠️ A DIFFERENT MANUFACTURER PUBLISHES DIFFERENT NUMBERS, and the library has
+ * to hold what each one actually says rather than a lowest common denominator.
+ * Fast Tracks publish none of Atlas's three landmarks — no points offset, no
+ * frog offset, no lead — and four things Atlas never state:
+ *
+ *     straight   angle    div R    default   minimum   substitution R
+ *     #4         14.04°    8″       4.57″     3.43″     11″
+ *     #4.5       12.53°   11″       5.00″     3.90″     14″
+ *     #5         11.31°   14″       5.39″     3.92″     17″
+ *     #6          9.46°   23″       6.26″     4.30″     24″
+ *     #7          8.13°   27″       7.40″     5.44″     34″
+ *     #8          7.13°   36″       8.00″     5.93″     42″
+ *     #9          6.34°   50″       8.38″     6.42″     57″
+ *     #10         5.71°   64″       9.15″     6.80″     70″
+ *     #12         4.76°   82″      10.34″     7.95″     90″
+ *
+ *     wye        angle    div R    default   minimum   substitution R
+ *     #4         14.04°   23″       4.63″     3.48″     27″
+ *     #5         11.31°   25″       5.23″     3.81″     30″
+ *     #6          9.46°   35″       5.99″     4.30″     47″
+ *     #8          7.13°   70″       8.22″     5.93″     94″
+ *     #10         5.71°   89″       9.47″     6.97″    130″
+ *
+ * ⭐ **FAST TRACKS BUILD TO TRUE FROG RATIOS.** Every angle above is `atan(1/N)`
+ * to the digits published — 14.04, 11.31, 9.46, 8.13, 7.13, 6.34, 5.71, 4.76.
+ * Atlas do NOT: they build to SECTIONAL angles (a "#5" is 11.25°, a 1/32 turn,
+ * against theory's 11.310°). Two manufacturers, two different meanings for the
+ * same number on the box, and the difference is real if you ever check whether
+ * a part mates with sectional track.
+ *
+ * ⚠️ THESE ARE FIXTURES, SO THEY HAVE NO LENGTH. The modeller cuts the rail:
+ * `overallLength` here is the manufacturer's DEFAULT and `minimumLength` the
+ * floor. Because Fast Tracks publish no points offset, {@link partExtent}
+ * returns null for every one of them, so none claims a body and flex still runs
+ * through it (#193). That is the honest answer — we do not know where an
+ * owner's hand-built turnout stops, and guessing from a default length would be
+ * inventing a measurement. An owner who measures their own build can enter it,
+ * and the admin form's cross-checks will catch a bad reading.
+ *
+ * Source: handlaidtrack.com product pages, "Detailed Specifications" tables,
+ * read 2026-07-26. ⚠️ The PDF templates in Will's local reference folder are
+ * ENCRYPTED (`/Encrypt /Standard`), so they are deliberately not the source
+ * here — the public product pages say the same thing and can be cited.
+ */
+export const FAST_TRACKS_N_ME55: TrackPart[] = (
+  [
+    // [kind, N, angle°, divergingR, defaultLength, minLength, substitutionR]
+    ["turnout", 4, 14.04, 8, 4.57, 3.43, 11],
+    ["turnout", 4.5, 12.53, 11, 5, 3.9, 14],
+    ["turnout", 5, 11.31, 14, 5.39, 3.92, 17],
+    ["turnout", 6, 9.46, 23, 6.26, 4.3, 24],
+    ["turnout", 7, 8.13, 27, 7.4, 5.44, 34],
+    ["turnout", 8, 7.13, 36, 8, 5.93, 42],
+    ["turnout", 9, 6.34, 50, 8.38, 6.42, 57],
+    ["turnout", 10, 5.71, 64, 9.15, 6.8, 70],
+    ["turnout", 12, 4.76, 82, 10.34, 7.95, 90],
+    ["wye", 4, 14.04, 23, 4.63, 3.48, 27],
+    ["wye", 5, 11.31, 25, 5.23, 3.81, 30],
+    ["wye", 6, 9.46, 35, 5.99, 4.3, 47],
+    ["wye", 8, 7.13, 70, 8.22, 5.93, 94],
+    ["wye", 10, 5.71, 89, 9.47, 6.97, 130],
+  ] as Array<["turnout" | "wye", number, number, number, number, number, number]>
+).map(([kind, n, deg, divR, dflt, min, subR]) => {
+  const code = kind === "wye" ? "y" : "t";
+  const spec = "handlaidtrack.com Detailed Specifications, read 2026-07-26";
+  const manufacturer: DimensionSource = "manufacturer";
+  return {
+    id: `fast-tracks-n-me55-${code}-${n}`,
+    manufacturer: "Fast Tracks",
+    line: "Code 55",
+    scale: "N" as const,
+    // Named for what the OWNER has, not what Fast Tracks sell. They sell a jig;
+    // the person picking this in the editor is holding the turnout they built
+    // on it. `buildable` and the AF-… part number carry the fixture fact.
+    name: `#${n} ${kind === "wye" ? "Wye" : "Turnout"}`,
+    kind,
+    partNumbers: { single: `AF-N-${code.toUpperCase()}-${n}-ME55` },
+    frogNumber: n,
+    buildable: true,
+    actualAngle: {
+      deg,
+      source: manufacturer,
+      note: `${spec}. Matches atan(1/${n}) to the published digits — Fast Tracks build to TRUE frog ratios, unlike Atlas's sectional angles.`,
+    },
+    divergingRadius: { inches: divR, source: manufacturer, note: spec },
+    overallLength: {
+      inches: dflt,
+      source: manufacturer,
+      note: `${spec}. The DEFAULT length — this is a fixture, so the builder chooses.`,
+    },
+    minimumLength: { inches: min, source: manufacturer, note: spec },
+    substitutionRadius: { inches: subR, source: manufacturer, note: spec },
+  } satisfies TrackPart;
+});
+
 /** What a track is laid with when nobody has said — the commonest N-scale flex. */
 export const DEFAULT_FLEX_PART_ID = "atlas-c55-n-flex";
 
 /** Every built-in part, across manufacturers. */
-export const BUILT_IN_TRACK_PARTS: TrackPart[] = [...ATLAS_CODE55_N, ...FLEX_TRACK_PARTS];
+export const BUILT_IN_TRACK_PARTS: TrackPart[] = [
+  ...ATLAS_CODE55_N,
+  ...FAST_TRACKS_N_ME55,
+  ...FLEX_TRACK_PARTS,
+];
 
 /** Every flex product a track can be laid with. */
 export function flexParts(library = BUILT_IN_TRACK_PARTS): TrackPart[] {
@@ -3887,19 +4008,33 @@ export function partExtentForSize(
   return part && part.frogNumber === size ? partExtent(part) : null;
 }
 
-/** The closest built-in turnout for a frog number — what a bare `size` maps to
- * when a turnout names no part. Exact match wins; otherwise the nearest frog. */
+/**
+ * The closest built-in turnout for a frog number — what a bare `size` maps to
+ * when a turnout names no part. Exact match wins; otherwise the nearest frog.
+ *
+ * ⚠️ TIES ARE BROKEN TOWARD A PART WE CAN ACTUALLY DRAW. Two parts can share a
+ * frog number — Atlas sell a #5 and Fast Tracks make a #5 fixture — and only one
+ * of them may carry the measured offsets {@link partExtent} needs. Picking by
+ * frog number alone would let a part with no geometry win on array order and
+ * take the other's body away with it, which is the #193 failure (a turnout that
+ * claims no extent has flex drawn straight through it). So: nearest frog first,
+ * and among equals, one with a real extent.
+ */
 export function turnoutPartForSize(
   size: number,
   library = BUILT_IN_TRACK_PARTS,
 ): TrackPart | null {
   const turnouts = library.filter((p) => p.kind === "turnout" && p.frogNumber != null);
   if (!turnouts.length) return null;
-  return turnouts.reduce((best, p) =>
-    Math.abs((p.frogNumber as number) - size) < Math.abs((best.frogNumber as number) - size)
-      ? p
-      : best,
-  );
+  const dist = (p: TrackPart) => Math.abs((p.frogNumber as number) - size);
+  return turnouts.reduce((best, p) => {
+    const d = dist(p);
+    const bd = dist(best);
+    if (d !== bd) return d < bd ? p : best;
+    // Same frog number: prefer the one that can be drawn at its real size.
+    if (!partExtent(best) && partExtent(p)) return p;
+    return best;
+  });
 }
 
 /** Measured leads, ascending by frog number — the interpolation basis. Only
@@ -3928,8 +4063,16 @@ function measuredLeadPoints(library: TrackPart[]): Array<{ n: number; lead: numb
  *    wye is a long way out. Treat those as placeholders until a part is measured.
  */
 export function leadInchesForSize(size: number, library = BUILT_IN_TRACK_PARTS): number {
-  const part = turnoutPartForSize(size, library);
-  if (part?.lead && part.frogNumber === size) return part.lead.inches;
+  // An exact part match wins — but it has to be an exact part that HAS a lead.
+  // Several makers can sell the same frog number and only some publish a lead:
+  // Fast Tracks state an angle and a radius and no landmarks at all, so asking
+  // `turnoutPartForSize` for "the #6" and reading its (absent) lead would skip
+  // straight past an Atlas #6 that had one. Search for the dimension, not the
+  // part.
+  const exact = library.find(
+    (p) => p.kind === "turnout" && p.frogNumber === size && p.lead != null,
+  );
+  if (exact) return exact.lead!.inches;
 
   const pts = measuredLeadPoints(library);
   if (!pts.length) return size * TURNOUT_LEAD_INCHES_PER_FROG;
@@ -4220,6 +4363,11 @@ export interface StoredTrackPart {
   overallLengthSource?: string | null;
   divergingLengthInches?: number | null;
   divergingLengthSource?: string | null;
+  minimumLengthInches?: number | null;
+  minimumLengthSource?: string | null;
+  substitutionRadiusInches?: number | null;
+  substitutionRadiusSource?: string | null;
+  buildable?: boolean | null;
   leadInches?: number | null;
   leadSource?: string | null;
   outerRadiusInches?: number | null;
@@ -4293,6 +4441,11 @@ export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
   if (overall) part.overallLength = overall;
   const diverging = dim(row.divergingLengthInches, row.divergingLengthSource);
   if (diverging) part.divergingLength = diverging;
+  const minimum = dim(row.minimumLengthInches, row.minimumLengthSource);
+  if (minimum) part.minimumLength = minimum;
+  const substitution = dim(row.substitutionRadiusInches, row.substitutionRadiusSource);
+  if (substitution) part.substitutionRadius = substitution;
+  if (row.buildable) part.buildable = true;
   if (lead) part.lead = lead;
   const outer = dim(row.outerRadiusInches, row.radiusSource);
   const inner = dim(row.innerRadiusInches, row.radiusSource);

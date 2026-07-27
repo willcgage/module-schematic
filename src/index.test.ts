@@ -1691,6 +1691,36 @@ describe("endplate poses (#175)", () => {
     expect(partExtent(after)).toBeNull();
   });
 
+  // Every dimension a manufacturer publishes has to survive the DB, or the
+  // wholesale-replace trap above quietly deletes it the first time an admin
+  // edits the part. Fast Tracks' set is the one that would go.
+  it("carries a Fast Tracks part's own dimensions through the stored round-trip", () => {
+    const merged = mergeStoredParts([
+      {
+        slug: "fast-tracks-n-me55-t-6",
+        manufacturer: "Fast Tracks",
+        line: "Code 55",
+        name: "#6 Turnout",
+        kind: "turnout",
+        frogNumber: 6,
+        buildable: true,
+        overallLengthInches: 6.26,
+        overallLengthSource: "manufacturer",
+        minimumLengthInches: 4.3,
+        minimumLengthSource: "manufacturer",
+        substitutionRadiusInches: 24,
+        substitutionRadiusSource: "manufacturer",
+      },
+    ]);
+    const p = merged.find((x) => x.id === "fast-tracks-n-me55-t-6")!;
+    expect(p.buildable).toBe(true);
+    expect(p.minimumLength).toMatchObject({ inches: 4.3, source: "manufacturer" });
+    expect(p.substitutionRadius).toMatchObject({ inches: 24, source: "manufacturer" });
+    expect(p.overallLength!.inches).toBe(6.26);
+    // Still no landmarks, so still no body — the DB cannot invent one.
+    expect(partExtent(p)).toBeNull();
+  });
+
   it("carries divergingLength through the stored round-trip", () => {
     const merged = mergeStoredParts([
       {
@@ -3067,9 +3097,97 @@ describe("track parts library (#179 stage 3)", () => {
   });
 
   it("turnoutPartForSize picks the nearest frog", () => {
-    expect(turnoutPartForSize(7)!.id).toBe("atlas-c55-n-7");
-    expect(turnoutPartForSize(9)!.id).toBe("atlas-c55-n-10");
-    expect(turnoutPartForSize(4)!.id).toBe("atlas-c55-n-5");
+    // #9 and #4 used to resolve to the Atlas #10 and #5 because nothing nearer
+    // existed. Fast Tracks make both sizes, so the nearest is now exact.
+    expect(turnoutPartForSize(9)!.frogNumber).toBe(9);
+    expect(turnoutPartForSize(4)!.frogNumber).toBe(4);
+    expect(turnoutPartForSize(11.4)!.frogNumber).toBe(12);
+    expect(turnoutPartForSize(6.4)!.frogNumber).toBe(6);
+    // A #11 is equidistant from the #10 and the #12, so the extent tie-break
+    // decides it: the Atlas #10 is measured, the Fast Tracks #12 is a fixture.
+    expect(turnoutPartForSize(11)!.id).toBe("atlas-c55-n-10");
+  });
+
+  // Will Gage, 2026-07-26: "not every manufacturer has all the same numbers."
+  // Fast Tracks publish an angle, two radii and two lengths; Atlas publish three
+  // landmarks and one length. Neither set is a subset of the other, and the
+  // library has to hold both rather than a lowest common denominator.
+  it("Fast Tracks parts carry their OWN dimension set, not Atlas's", () => {
+    const ft = BUILT_IN_TRACK_PARTS.filter((p) => p.manufacturer === "Fast Tracks");
+    expect(ft).toHaveLength(14); // 9 straight + 5 wye
+    for (const p of ft) {
+      // What Fast Tracks DO publish.
+      expect(p.actualAngle, `${p.id} angle`).toBeTruthy();
+      expect(p.divergingRadius, `${p.id} diverging R`).toBeTruthy();
+      expect(p.overallLength, `${p.id} default length`).toBeTruthy();
+      expect(p.minimumLength, `${p.id} minimum length`).toBeTruthy();
+      expect(p.substitutionRadius, `${p.id} substitution R`).toBeTruthy();
+      // What they DON'T — and inventing these is what the library forbids.
+      expect(p.pointsOffset, `${p.id} points`).toBeUndefined();
+      expect(p.frogOffset, `${p.id} frog`).toBeUndefined();
+      expect(p.lead, `${p.id} lead`).toBeUndefined();
+      // A fixture has no length of its own; the builder cuts the rail.
+      expect(p.buildable, `${p.id} buildable`).toBe(true);
+      expect(p.minimumLength!.inches).toBeLessThan(p.overallLength!.inches);
+      // …so it claims no body, and flex still runs through it (#193). Honest:
+      // we do not know where someone's hand-built turnout stops.
+      expect(partExtent(p), `${p.id} extent`).toBeNull();
+    }
+  });
+
+  // ⭐ Fast Tracks build to TRUE frog ratios; Atlas build to SECTIONAL angles
+  // (a "#5" is 11.25°, a 1/32 turn, not theory's 11.310°). Same number on the
+  // box, two different meanings — worth pinning, because it is the kind of
+  // difference that gets "simplified" away.
+  it("Fast Tracks angles are atan(1/N); Atlas angles are not", () => {
+    for (const p of BUILT_IN_TRACK_PARTS.filter((x) => x.manufacturer === "Fast Tracks")) {
+      const theory = (Math.atan(1 / (p.frogNumber as number)) * 180) / Math.PI;
+      expect(p.actualAngle!.deg, `${p.id}`).toBeCloseTo(theory, 1);
+    }
+    const atlas5 = trackPart("atlas-c55-n-5")!;
+    expect(atlas5.actualAngle!.deg).toBe(11.25);
+    expect(atlas5.actualAngle!.deg).not.toBeCloseTo(
+      (Math.atan(1 / 5) * 180) / Math.PI,
+      2,
+    );
+  });
+
+  // Adding a whole manufacturer must not move a single drawn turnout: Fast
+  // Tracks publish no lead and no extent, so neither interpolation basis sees
+  // them. This is the check that would have caught it if they did.
+  it("adding Fast Tracks moves no existing turnout geometry", () => {
+    const atlasOnly = BUILT_IN_TRACK_PARTS.filter((p) => p.manufacturer !== "Fast Tracks");
+    for (const n of [4, 4.5, 5, 6, 7, 8, 9, 10, 12]) {
+      expect(leadInchesForSize(n), `lead ${n}`).toBeCloseTo(
+        leadInchesForSize(n, atlasOnly),
+        9,
+      );
+      expect(pastFrogInchesForSize(n), `pastFrog ${n}`).toBeCloseTo(
+        pastFrogInchesForSize(n, atlasOnly),
+        9,
+      );
+    }
+  });
+
+  // ⚠️ Atlas and Fast Tracks both make a #5 and a #7, and only Atlas publish the
+  // landmarks partExtent needs. If a frog-number tie went on array order the
+  // fixture could win and take the Atlas part's body away with it — which is
+  // #193 (a turnout with no extent has flex drawn straight through it).
+  it("breaks a frog-number tie toward the part that can be drawn", () => {
+    for (const n of [5, 7]) {
+      const both = BUILT_IN_TRACK_PARTS.filter(
+        (p) => p.kind === "turnout" && p.frogNumber === n,
+      );
+      expect(both.length, `two makers at #${n}`).toBeGreaterThan(1);
+      const picked = turnoutPartForSize(n)!;
+      expect(picked.manufacturer, `#${n}`).toBe("Atlas");
+      expect(partExtent(picked), `#${n} extent`).not.toBeNull();
+      expect(partExtentForSize(n), `#${n} via size`).not.toBeNull();
+    }
+    // …and the tie-break holds whichever order the library happens to be in.
+    const reversed = [...BUILT_IN_TRACK_PARTS].reverse();
+    expect(turnoutPartForSize(5, reversed)!.manufacturer).toBe("Atlas");
+    expect(partExtentForSize(7, reversed)).not.toBeNull();
   });
 });
 
@@ -3307,8 +3425,12 @@ describe("parseXtpLibrary — importing an owner's OWN XTrkCAD library", () => {
     it("appends a part we have no entry for", () => {
       const merged = mergeImportedParts(parseXtpLibrary(unknown), BUILT_IN_TRACK_PARTS);
       expect(merged).toHaveLength(BUILT_IN_TRACK_PARTS.length + 1);
-      const six = merged.find((p) => p.frogNumber === 6)!;
+      // Select by provenance, not frog number: Fast Tracks make a #6 too, and
+      // the imported part appends rather than folding into it because the
+      // manufacturer differs.
+      const six = merged.find((p) => p.importedFrom)!;
       expect(six.importedFrom).toBeTruthy();
+      expect(six.frogNumber).toBe(6);
       expect(six.lead).toBeUndefined();
     });
 
@@ -3993,7 +4115,9 @@ describe("flex track pieces (#193)", () => {
     // FROG NUMBERS, not a left/right pair — a wye has no hand, both legs
     // diverge. Pinned because the identification came from someone holding the
     // parts, and the library had only one of them.
-    const wyes = BUILT_IN_TRACK_PARTS.filter((p) => p.kind === "wye");
+    const wyes = BUILT_IN_TRACK_PARTS.filter(
+      (p) => p.kind === "wye" && p.manufacturer === "Atlas",
+    );
     expect(wyes.map((w) => [w.partNumbers?.single, w.frogNumber])).toEqual([
       ["2056", 2.5],
       ["2057", 3.5],
