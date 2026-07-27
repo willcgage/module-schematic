@@ -3197,9 +3197,10 @@ describe("track parts library (#179 stage 3)", () => {
     }
   });
 
-  // The published second frog is the diamond of a scissors crossover, where two
-  // diagonals each leaving at the frog angle meet. So it must be twice the
-  // first — a free cross-check on the pair, and it passes.
+  // The published second frog is the SCISSORS of a double crossover — the X
+  // where its two opposite diverging routes cross. Each leaves its main at the
+  // frog angle and they point opposite ways, so the crossing is twice the frog
+  // angle. A free cross-check on the pair, and it passes.
   it("a crossover's second frog angle is twice its first", () => {
     for (const p of BUILT_IN_TRACK_PARTS.filter((x) => x.kind === "crossover")) {
       expect(p.secondaryFrogAngle!.deg, `${p.id}`).toBeCloseTo(
@@ -4695,7 +4696,7 @@ describe("crossover pinch", () => {
       ]);
     });
 
-    // A scissors crossover is TWO connectors over the same span at the same
+    // A double crossover is TWO connectors over the same span at the same
     // spacing, but the pair of tracks only closes up ONCE. Un-deduped the
     // geometry stays right (identical pinches agree) so it surfaces as a
     // doubled CALLOUT — the label drawn twice, exactly superimposed, which is

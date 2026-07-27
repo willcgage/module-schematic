@@ -202,8 +202,8 @@ export function crossoverPinches(
       toPos: Math.max(a, b),
       spacingInches: s,
     };
-    // ⚠️ A DOUBLE CROSSOVER IS TWO CONNECTORS AND ONE PINCH. The scissors is
-    // built as two diagonals, so the document holds two records over the same
+    // ⚠️ A DOUBLE CROSSOVER IS TWO CONNECTORS AND ONE PINCH. It is built as two
+    // diagonals, so the document holds two records over the same
     // span at the same spacing — but the pair of tracks only closes up once.
     // Left un-deduped the geometry is still right (identical pinches agree), so
     // this shows up as a doubled CALLOUT rather than a wrong drawing: the label
@@ -3257,9 +3257,11 @@ export interface TrackPart {
    * (#193). */
   /** ⚠️ `crossover` is an ASSEMBLY, not a single turnout. A Fast Tracks
    * crossover fixture builds ONE SYMMETRICAL HALF; you build a second, rotate it
-   * 180° and butt the two together at the through routes and the diamond to get
-   * a complete DOUBLE (scissors) crossover — four turnouts, two diagonals and
-   * the X where they cross. So it carries {@link trackSpacing} and
+   * 180° and butt the two together at the through routes and the scissors to get
+   * a complete DOUBLE CROSSOVER — four turnouts, two diagonals, and the SCISSORS
+   * where they cross.  ⚠️ Will Gage, 2026-07-26: *"A double crossover contains
+   * the scissors."* The scissors is that X, not the whole assembly — do not use
+   * it as another name for the part. So it carries {@link trackSpacing} and
    * {@link secondaryFrogAngle}, which no single turnout has, and
    * {@link piecesPerAssembly} — because its lengths describe the HALF, not the
    * finished crossover. */
@@ -3345,8 +3347,9 @@ export interface TrackPart {
    * than reconciled: it is a fact about the product, and an owner deciding what
    * to buy is better served by the true number than by a convenient one. */
   trackSpacing?: PartDimension;
-  /** The SECOND frog angle on a part that has two — the diamond where the
-   * diagonals of a scissors crossover cross. Published in degrees. */
+  /** The SECOND frog angle on a part that has two — the SCISSORS of a double
+   * crossover, the X where its two opposite diverging routes meet and cross.
+   * Published in degrees. */
   secondaryFrogAngle?: PartAngle;
   /** The part's drawn geometry in its own frame, when it came from a library
    * file. This is the payload worth importing — real outlines we can draw
@@ -3848,17 +3851,24 @@ export const FAST_TRACKS_N_ME55: TrackPart[] = (
  * read as the assembly's.
  *
  * ⚠️ THE FINISHED LENGTH IS NOT PUBLISHED, and is deliberately not stored. The
- * two halves are related by a 180° rotation about the diamond, so they cover the
+ * two halves are related by a 180° rotation about the scissors, so they cover the
  * same longitudinal span and the finished crossover is plausibly also ~10.07″ —
  * but that is an inference from the symmetry, not a reading, and this library
  * has been burned four times by exactly that kind of plausible reconstruction.
  * If it matters, measure a built one.
  *
- * ⚠️ THESE MAKE A DOUBLE (SCISSORS) CROSSOVER — four turnouts, two diagonals,
- * and the X where the diagonals cross. A half carries one full 9.46° frog and
- * HALF of the 19° diamond, which is why the diamond only exists once the second
- * piece is butted up. Not a single crossover: half a diamond is not usable on
- * its own.
+ * ⚠️ THESE MAKE A DOUBLE CROSSOVER — four turnouts, two diagonals, and the
+ * SCISSORS where the two opposite diverging routes meet and cross in an X.
+ * A half carries one full 9.46° frog and HALF of the 19° scissors, which is why
+ * the scissors only exists once the second piece is butted up. Not a single
+ * crossover: half a scissors is not usable on its own.
+ *
+ * ⚠️ TERMINOLOGY, from Will Gage 2026-07-26: *"A double crossover contains the
+ * scissors. The location where both opposite diverging routes meet and cross
+ * like an 'X'."* The scissors is that crossing, NOT another name for the whole
+ * part — the assembly is a double crossover. Nor is it this library's
+ * `crossing`/diamond kind, which is two tracks crossing with no route choice
+ * (#170); the scissors is internal to the crossover.
  *
  * ⚠️⚠️ **THE TRACK SPACING IS 1.09″, AND FREE-moN §2.0 REQUIRES 1.125″.**
  * A crossover fixture is machined for ONE spacing; it is not adjustable. So a
@@ -3917,7 +3927,7 @@ export const FAST_TRACKS_N_ME55_CROSSOVERS: TrackPart[] = (
     secondaryFrogAngle: {
       deg: second,
       source: manufacturer,
-      note: `${spec}. The diamond of a scissors crossover — 2 × ${deg}° within the published rounding.`,
+      note: `${spec}. The SCISSORS of a double crossover — the X where its two opposite diverging routes cross — at 2 × ${deg}° within the published rounding.`,
     },
     overallLength: {
       inches: dflt,
