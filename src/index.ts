@@ -96,6 +96,17 @@ export const FREEMO_TRACK_SPACING_INCHES = 1.125;
 /** Free-moN §2.0 **standard**: track crossing an endplate must be "not less than
  * 4 inches from either fascia" (and perpendicular, straight and level for 4″). */
 export const FREEMO_ENDPLATE_TRACK_FASCIA_CLEARANCE_INCHES = 4;
+/**
+ * Free-moN **standard**: minimum MAIN-LINE radius, 22″.
+ *
+ * ⚠️ The main line only. A spur, a yard lead or an industrial track may be
+ * tighter, and telling an owner their yard is out of spec because it is not a
+ * main would be worse than saying nothing.
+ */
+export const FREEMO_MAIN_MIN_RADIUS_INCHES = 22;
+/** Free-moN **standard**: at least 6″ of straight track between REVERSE curves,
+ * so a train is never asked to change hands instantly. */
+export const FREEMO_REVERSE_CURVE_STRAIGHT_INCHES = 6;
 
 /**
  * A stretch where a pair of parallel tracks runs at something other than the
