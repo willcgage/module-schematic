@@ -5281,6 +5281,391 @@ export function partsPlaceable(library = BUILT_IN_TRACK_PARTS): {
   return { placeable, blocked };
 }
 
+// ─── THE TRACK GRAPH (ADR 0001) ──────────────────────────────────────────────
+// Pieces placed on the board; joints that coincide are connected. Everything
+// positional — `pos`, a siding's extent, which track hosts a turnout — is READ
+// OFF this by walking it, rather than authored separately and reconciled.
+
+/** A part placed on the benchwork. */
+export interface TrackPiece {
+  id: string;
+  /** A slug from the parts library. */
+  partId: string;
+  /** Where the part's own origin sits, in module-local inches. */
+  x: number;
+  y: number;
+  /** Rotation about that origin, degrees. */
+  rotationDeg: number;
+  /** Mirrored across its own through route — a left-hand turnout from a right. */
+  flipped?: boolean;
+  /** FLEX ONLY: how long this run is. The one piece a builder cuts (ADR 0001). */
+  lengthInches?: number;
+  /** Owner's label, carried onto whatever route this piece ends up in. */
+  name?: string;
+}
+
+/** A piece's joint, in MODULE coordinates. */
+export interface PlacedJoint {
+  /** `"<pieceId>.<jointId>"` — stable, and what connections refer to. */
+  key: string;
+  piece: string;
+  joint: string;
+  role: PartJointRole;
+  x: number;
+  y: number;
+  headingDeg: number;
+}
+
+/** Two joints in the same place. That is the entire connection rule. */
+export interface GraphConnection {
+  a: string;
+  b: string;
+}
+
+/**
+ * More than two joints in one place — REFUSED, not resolved.
+ *
+ * ⚠️ THIS IS THE GAP THE SPIKE FOUND, and the one that would bite owners. With
+ * three ends stacked on a point, picking a pair silently drops a piece out of
+ * the layout: the walk never reaches it, and nothing says so. So none of them
+ * connect and the ambiguity is reported. Refusing is the only honest answer —
+ * the model cannot know which two the owner meant.
+ */
+export interface GraphConflict {
+  x: number;
+  y: number;
+  joints: string[];
+  reason: string;
+}
+
+export interface TrackGraph {
+  joints: PlacedJoint[];
+  connections: GraphConnection[];
+  /** Joints connected to nothing — an unfinished layout, which is a real thing
+   * to show an owner rather than quietly draw as if it were joined. */
+  open: string[];
+  conflicts: GraphConflict[];
+  /** Pieces whose part has no derivable geometry (see {@link partGeometryGap}). */
+  unplaceable: { piece: string; partId: string; why: string }[];
+}
+
+/** How close two joints must be to count as connected. A hundredth of an inch:
+ * tight enough that nothing joins by accident, loose enough to absorb the
+ * rounding of a drag. */
+export const JOINT_SNAP_INCHES = 0.01;
+
+/** Every piece's joints, transformed onto the board. */
+export function placedJoints(
+  pieces: TrackPiece[],
+  library = BUILT_IN_TRACK_PARTS,
+): PlacedJoint[] {
+  const out: PlacedJoint[] = [];
+  const RAD = Math.PI / 180;
+  for (const p of pieces) {
+    const part = library.find((x) => x.id === p.partId);
+    if (!part) continue;
+    const geo = partGeometry(part, library);
+    if (!geo) continue;
+    const c = Math.cos(p.rotationDeg * RAD);
+    const s = Math.sin(p.rotationDeg * RAD);
+    for (const j of geo.joints) {
+      // Flex is the ONE piece whose geometry the builder sets, so its far end is
+      // wherever they cut it. Everything else is rigid.
+      const lx = part.kind === "flex" && j.id === "b" ? (p.lengthInches ?? 0) : j.x;
+      const ly = p.flipped ? -j.y : j.y;
+      const h = (p.flipped ? -j.angleDeg : j.angleDeg) + p.rotationDeg;
+      out.push({
+        key: `${p.id}.${j.id}`,
+        piece: p.id,
+        joint: j.id,
+        role: j.role,
+        x: p.x + lx * c - ly * s,
+        y: p.y + lx * s + ly * c,
+        headingDeg: norm360(h),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the graph: which joints are connected, which are open, and where the
+ * layout is ambiguous.
+ *
+ * ⭐ A JOINT HOLDS AT MOST ONE CONNECTION. Rail has two ends; a place where
+ * three meet is a mistake, not a junction — a junction is a TURNOUT, which is a
+ * part carrying three joints of its own.
+ */
+export function buildTrackGraph(
+  pieces: TrackPiece[],
+  library = BUILT_IN_TRACK_PARTS,
+  snapInches = JOINT_SNAP_INCHES,
+): TrackGraph {
+  const joints = placedJoints(pieces, library);
+  const unplaceable: TrackGraph["unplaceable"] = [];
+  for (const p of pieces) {
+    const part = library.find((x) => x.id === p.partId);
+    if (!part) {
+      unplaceable.push({ piece: p.id, partId: p.partId, why: "no such part in the library" });
+      continue;
+    }
+    const why = partGeometryGap(part);
+    if (why) unplaceable.push({ piece: p.id, partId: p.partId, why });
+  }
+
+  // Group coincident joints FIRST. Pairing greedily would connect two of three
+  // and hide the third, which is exactly the failure this rule exists to stop.
+  const groups: PlacedJoint[][] = [];
+  const taken = new Set<string>();
+  for (const j of joints) {
+    if (taken.has(j.key)) continue;
+    const g = [j];
+    taken.add(j.key);
+    for (const k of joints) {
+      if (taken.has(k.key) || k.piece === j.piece) continue;
+      if (Math.hypot(k.x - j.x, k.y - j.y) <= snapInches) {
+        g.push(k);
+        taken.add(k.key);
+      }
+    }
+    groups.push(g);
+  }
+
+  const connections: GraphConnection[] = [];
+  const open: string[] = [];
+  const conflicts: GraphConflict[] = [];
+  for (const g of groups) {
+    if (g.length === 1) open.push(g[0].key);
+    else if (g.length === 2) connections.push({ a: g[0].key, b: g[1].key });
+    else {
+      conflicts.push({
+        x: g[0].x,
+        y: g[0].y,
+        joints: g.map((j) => j.key),
+        reason:
+          `${g.length} track ends are stacked in one place. Rail has two ends, ` +
+          "so a junction of three is a turnout, not a joint — none of these are " +
+          "joined until one is moved.",
+      });
+      for (const j of g) open.push(j.key);
+    }
+  }
+  return { joints, connections, open, conflicts, unplaceable };
+}
+
+/** A route the walk found: a continuous run of pieces a train can travel. */
+export interface GraphRoute {
+  id: string;
+  /** Inches from endplate A, ALONG THE RAIL, to where this route begins. */
+  fromPos: number;
+  toPos: number;
+  /** The turnout this route branched from; null for the main. */
+  bornAt: string | null;
+  /** The turnout it runs back into. Set = a SIDING; null = it dead-ends. */
+  endsAt: string | null;
+  pieces: string[];
+  /** Furthest lateral offset reached — what gives a lane its side. */
+  lateral: number;
+}
+
+export interface GraphTurnout {
+  id: string;
+  /** ⚠️ The FROG's distance from endplate A (#132), measured along the rail. */
+  pos: number;
+  onRoute: string;
+  divergeRoute: string | null;
+}
+
+export interface GraphWalk {
+  routes: GraphRoute[];
+  turnouts: GraphTurnout[];
+  /** Every reason this walk is not the whole layout. */
+  warnings: string[];
+}
+
+/**
+ * Walk the graph from an endplate and read the topology off it.
+ *
+ * ⚠️ POSITIONS ARE ARC LENGTH ALONG THE RAIL, never x. On a curved module the
+ * two differ by inches — a 90°/R30 corner runs 47.1″ of rail across a 42.4″
+ * chord — and it is the rail a train travels.
+ *
+ * Nesting falls out for free: a turnout found on a branch queues the branch IT
+ * opens, so a yard ladder resolves to whatever depth it actually has. That is
+ * the case the 1-D model can only approximate.
+ */
+export function walkTrackGraph(
+  graph: TrackGraph,
+  pieces: TrackPiece[],
+  startAt: { piece: string; joint: string },
+  library = BUILT_IN_TRACK_PARTS,
+): GraphWalk {
+  const byKey = new Map(graph.joints.map((j) => [j.key, j]));
+  const pieceById = new Map(pieces.map((p) => [p.id, p]));
+  const link = new Map<string, string>();
+  for (const c of graph.connections) {
+    link.set(c.a, c.b);
+    link.set(c.b, c.a);
+  }
+  const partOf = (pid: string) => {
+    const p = pieceById.get(pid);
+    return p ? library.find((x) => x.id === p.partId) : undefined;
+  };
+  const geoOf = (pid: string) => {
+    const part = partOf(pid);
+    return part ? partGeometry(part, library) : null;
+  };
+  const gap = (a?: PlacedJoint, b?: PlacedJoint) =>
+    a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+
+  const routes: GraphRoute[] = [];
+  const turnouts: GraphTurnout[] = [];
+  const warnings: string[] = [];
+  const queued = new Set<string>();
+  const pending: { from: string; at: number; joint: string; skew: number }[] = [];
+
+  const walk = (
+    startKey: string,
+    startPos: number,
+    id: string,
+    bornAt: string | null,
+  ): GraphRoute => {
+    const route: GraphRoute = {
+      id, fromPos: startPos, toPos: startPos, bornAt, endsAt: null, pieces: [], lateral: 0,
+    };
+    let cur: string | undefined = startKey;
+    let pos = startPos;
+    const guard = new Set<string>();
+    while (cur && !guard.has(cur)) {
+      guard.add(cur);
+      const here = byKey.get(cur);
+      if (!here) break;
+      const geo = geoOf(here.piece);
+      if (!geo) break;
+      // Where this route leaves the piece: whichever of its routes uses the
+      // joint we came in by. At a turnout prefer the THROUGH route, so the walk
+      // stays on the line it is on and the diverging leg becomes a branch.
+      const opts = geo.routes.filter((r) => r.includes(here.joint));
+      if (!opts.length) break;
+      const pick = opts.find((r) => r.includes("through")) ?? opts[0];
+      const exitJoint = pick[0] === here.joint ? pick[1] : pick[0];
+      const exit = byKey.get(`${here.piece}.${exitJoint}`);
+      const part = partOf(here.piece);
+
+      if (part && (part.kind === "turnout" || part.kind === "wye")) {
+        const throat = byKey.get(`${here.piece}.throat`);
+        const through =
+          byKey.get(`${here.piece}.through`) ?? byKey.get(`${here.piece}.legA`);
+        const body = gap(throat, through);
+        const lead = part.lead?.inches ?? body / 2;
+        // ⚠️ ENTERED FROM EITHER END. A turnout facing the other way is entered
+        // at its `through` joint, so the frog is `body − lead` along, not
+        // `lead`. Assuming the throat put an east-end frog 1.8" out in the spike.
+        // The frog, in the piece's own frame — where the diverging rail has
+        // climbed one gauge and the two routes truly cross.
+        const dvj = byKey.get(`${here.piece}.diverge`) ?? byKey.get(`${here.piece}.legB`);
+        const frogPt =
+          throat && body > 0 && dvj
+            ? {
+                x: throat.x + ((dvj.x - throat.x) * lead) / body,
+                y: throat.y + ((dvj.y - throat.y) * lead) / body,
+              }
+            : null;
+        // ⚠️ HOW FAR THE FROG IS DEPENDS ON WHICH END YOU CAME IN BY, and there
+        // are THREE answers, not two. From the throat it is the lead. From the
+        // through end it is `body − lead`. From a DIVERGING end it is neither:
+        // that rail runs at an angle, so it is longer than the axial distance —
+        // measure it. Using `body − lead` there put a siding's far end 0.01"
+        // out, which is small only because the angle is.
+        const toFrog =
+          here.joint === "throat"
+            ? lead
+            : here.joint === "diverge" || here.joint === "legB"
+              ? frogPt && dvj
+                ? Math.hypot(dvj.x - frogPt.x, dvj.y - frogPt.y)
+                : Math.max(0, body - lead)
+              : Math.max(0, body - lead);
+        const frogPos = pos + toFrog;
+        if (here.joint === "diverge" || here.joint === "legB") {
+          // Arrived by a diverging end: this route has run into the far switch
+          // of a siding, which is what makes it a siding rather than a spur.
+          //
+          // ⚠️ ITS EXTENT IS THE FAR TURNOUT'S POSITION, not this branch's
+          // accumulated arc. A siding climbs away from the main and back, so
+          // its own rail is genuinely longer than the span it covers — reading
+          // the arc here put a 13→73 siding's far end at 73.02. `fromPos`/
+          // `toPos` mean where a track sits ALONG THE MODULE, so use the
+          // position the main walk already established for that turnout.
+          route.endsAt = here.piece;
+          const known = turnouts.find((t) => t.id === here.piece);
+          route.toPos = known ? known.pos : frogPos;
+          break;
+        }
+        turnouts.push({ id: here.piece, pos: frogPos, onRoute: id, divergeRoute: null });
+        for (const dj of ["diverge", "legB"]) {
+          const dk = `${here.piece}.${dj}`;
+          const d = byKey.get(dk);
+          if (!d || queued.has(dk)) continue;
+          queued.add(dk);
+          // A branch BEGINS at the frog, but its joint is further along the
+          // diverging rail. Losing that stretch makes every position downstream
+          // creep, and on a ladder the error compounds.
+          const fp =
+            throat && body > 0
+              ? {
+                  x: throat.x + ((d.x - throat.x) * lead) / body,
+                  y: throat.y + ((d.y - throat.y) * lead) / body,
+                }
+              : null;
+          pending.push({
+            from: here.piece,
+            at: frogPos,
+            joint: dk,
+            skew: fp ? Math.hypot(d.x - fp.x, d.y - fp.y) : 0,
+          });
+        }
+      }
+
+      route.pieces.push(here.piece);
+      for (const j of graph.joints)
+        if (j.piece === here.piece && Math.abs(j.y) > Math.abs(route.lateral))
+          route.lateral = j.y;
+      pos += gap(here, exit);
+      route.toPos = pos;
+      const next = exit ? link.get(exit.key) : undefined;
+      if (!next) break;
+      cur = next;
+    }
+    return route;
+  };
+
+  routes.push(walk(`${startAt.piece}.${startAt.joint}`, 0, "main", null));
+
+  let n = 0;
+  while (pending.length) {
+    const b = pending.shift()!;
+    const start = link.get(b.joint);
+    if (!start) {
+      warnings.push(`the route diverging at ${b.from} is not connected to anything`);
+      continue;
+    }
+    n += 1;
+    const r = walk(start, b.at + b.skew, `route${n}`, b.from);
+    r.fromPos = b.at; // it begins at the frog, whatever its first joint is
+    routes.push(r);
+    const sw = turnouts.find((t) => t.id === b.from);
+    if (sw && !sw.divergeRoute) sw.divergeRoute = r.id;
+  }
+
+  const reached = new Set(routes.flatMap((r) => r.pieces));
+  for (const p of pieces)
+    if (!reached.has(p.id) && !graph.unplaceable.some((u) => u.piece === p.id))
+      warnings.push(`${p.id} is not reachable from the endplate — nothing connects it`);
+  for (const c of graph.conflicts) warnings.push(c.reason);
+
+  return { routes, turnouts, warnings };
+}
+
 /** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the
  * points, `y` = lateral offset from the through route. */
 export interface FrogCasting {

@@ -94,6 +94,10 @@ import {
   CLEARANCE_SPACING_INCHES,
   FREEMO_TRACK_SPACING_INCHES,
   partGeometry,
+  buildTrackGraph,
+  walkTrackGraph,
+  placedJoints,
+  type TrackPiece,
   endplateEdgePose,
   partGeometryGap,
   partsPlaceable,
@@ -4990,5 +4994,205 @@ describe("endplate bound to a benchwork edge", () => {
     const a = poses.find((p) => p.id === "A")!;
     expect(a.boundToEdge).toBeFalsy();
     expect(a.x).toBe(0); // the ordinary derivation still ran
+  });
+});
+
+// ─── The track graph (ADR 0001) ──────────────────────────────────────────────
+// The spike proved a graph can carry the dispatcher view. This is that model in
+// the package, against REAL library parts rather than hand-made fixtures.
+describe("track graph", () => {
+  // The Atlas #7 is measured, so it can be placed: body 6.00", lead 3.59375".
+  const SW = "atlas-c55-n-7";
+  const FLEX = "atlas-c55-n-flex";
+  const g7 = () => partGeometry(trackPart(SW)!)!;
+  const bodyOf = () => {
+    const j = g7().joints;
+    return j.find((x) => x.id === "through")!.x - j.find((x) => x.id === "throat")!.x;
+  };
+  const LEAD = trackPart(SW)!.lead!.inches;
+
+  const flex = (id: string, x: number, y: number, len: number, rot = 0): TrackPiece => ({
+    id, partId: FLEX, x, y, rotationDeg: rot, lengthInches: len,
+  });
+  const sw = (id: string, x: number, y: number, rot = 0, flipped = false): TrackPiece => ({
+    id, partId: SW, x, y, rotationDeg: rot, flipped,
+  });
+
+  it("connects two joints that are in the same place, and nothing else", () => {
+    const pieces = [flex("a", 0, 0, 10), flex("b", 10, 0, 10), flex("far", 40, 0, 10)];
+    const graph = buildTrackGraph(pieces);
+    expect(graph.connections).toHaveLength(1);
+    expect(graph.connections[0]).toEqual({ a: "a.b", b: "b.a" });
+    // Everything else is an OPEN end — an unfinished layout, said out loud
+    // rather than drawn as though it were joined.
+    expect(graph.open.sort()).toEqual(["a.a", "b.b", "far.a", "far.b"]);
+    expect(graph.conflicts).toEqual([]);
+  });
+
+  // ⭐⭐ THE GAP THE SPIKE FOUND. Three ends stacked on a point made the walk
+  // silently pick one pair and drop the third piece out of the layout — the
+  // same failure that broke the spike's own first fixture. Refusing is the only
+  // honest answer: the model cannot know which two were meant.
+  it("REFUSES three track ends in one place instead of picking two", () => {
+    const pieces = [flex("a", 0, 0, 10), flex("b", 10, 0, 10), flex("c", 10, 0, 7)];
+    const graph = buildTrackGraph(pieces);
+    expect(graph.conflicts).toHaveLength(1);
+    expect(graph.conflicts[0].joints.sort()).toEqual(["a.b", "b.a", "c.a"]);
+    expect(graph.conflicts[0].reason).toMatch(/three is a turnout, not a joint/);
+    // NONE of them are joined — not two of the three.
+    expect(graph.connections).toEqual([]);
+    for (const k of ["a.b", "b.a", "c.a"]) expect(graph.open).toContain(k);
+  });
+
+  it("says which pieces cannot be placed at all, and why", () => {
+    const graph = buildTrackGraph([
+      flex("a", 0, 0, 10),
+      { id: "ft", partId: "fast-tracks-n-me55-t-6", x: 0, y: 0, rotationDeg: 0 },
+      { id: "ghost", partId: "no-such-part", x: 0, y: 0, rotationDeg: 0 },
+    ]);
+    expect(graph.unplaceable.map((u) => u.piece).sort()).toEqual(["ft", "ghost"]);
+    expect(graph.unplaceable.find((u) => u.piece === "ft")!.why).toMatch(/points offset/);
+    expect(graph.unplaceable.find((u) => u.piece === "ghost")!.why).toMatch(/no such part/);
+  });
+
+  // A passing siding, the commonest module shape there is: two turnouts facing
+  // each other with a track between them.
+  const siding = (west: number, east: number) => {
+    const B = bodyOf();
+    const pieces: TrackPiece[] = [
+      flex("f0", 0, 0, west - LEAD),
+      sw("swW", west - LEAD, 0),
+      flex("f1", west - LEAD + B, 0, (east + LEAD - B) - (west - LEAD + B)),
+      sw("swE", east + LEAD, 0, 180, true),
+      flex("f2", east + LEAD, 0, 96 - (east + LEAD)),
+    ];
+    const jw = placedJoints(pieces).find((j) => j.key === "swW.diverge")!;
+    const je = placedJoints(pieces).find((j) => j.key === "swE.diverge")!;
+    pieces.push({
+      id: "sid", partId: FLEX, x: jw.x, y: jw.y, rotationDeg: 0,
+      lengthInches: Math.hypot(je.x - jw.x, je.y - jw.y),
+    });
+    return pieces;
+  };
+
+  it("reads a passing siding off the geometry — extent, and both turnouts", () => {
+    const pieces = siding(13, 73);
+    const graph = buildTrackGraph(pieces);
+    expect(graph.conflicts).toEqual([]);
+    const w = walkTrackGraph(graph, pieces, { piece: "f0", joint: "a" });
+    expect(w.turnouts.map((t) => Math.round(t.pos * 100) / 100).sort((a, b) => a - b)).toEqual([13, 73]);
+    const sid = w.routes.find((r) => r.id !== "main")!;
+    expect(Math.round(sid.fromPos * 100) / 100).toBe(13);
+    // It runs back into the far switch — which is what makes it a siding.
+    expect(sid.endsAt).toBe("swE");
+    expect(Math.round(sid.toPos * 100) / 100).toBe(73);
+    expect(w.warnings).toEqual([]);
+  });
+
+  // ⭐ NO HAND ANYWHERE. A real document calls one of these "left" and the other
+  // "right" for the SAME siding; the graph never asks. The side is where the
+  // piece is.
+  it("takes the side from where the piece IS, never from a hand", () => {
+    const above = walkTrackGraph(buildTrackGraph(siding(13, 73)), siding(13, 73), { piece: "f0", joint: "a" });
+    const flipAll = siding(13, 73).map((p) =>
+      p.partId === SW ? { ...p, flipped: !p.flipped } : p.id === "sid" ? { ...p, y: -p.y } : p);
+    const below = walkTrackGraph(buildTrackGraph(flipAll), flipAll, { piece: "f0", joint: "a" });
+    const a = above.routes.find((r) => r.id !== "main")!;
+    const b = below.routes.find((r) => r.id !== "main")!;
+    expect(Math.sign(a.lateral)).toBe(1);
+    expect(Math.sign(b.lateral)).toBe(-1);
+    // …and the positions are identical either way. Only the side moved.
+    expect(Math.round(a.fromPos * 100)).toBe(Math.round(b.fromPos * 100));
+  });
+
+  it("re-reads every position when a turnout moves — nothing to reconcile", () => {
+    for (const [w, e] of [[13, 73], [20, 60], [8, 90]] as [number, number][]) {
+      const pieces = siding(w, e);
+      const walk = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "f0", joint: "a" });
+      const got = walk.turnouts.map((t) => Math.round(t.pos * 100) / 100).sort((x, y) => x - y);
+      expect(got, `${w}/${e}`).toEqual([w, e]);
+    }
+  });
+
+  // ⭐ THE CASE THE 1-D MODEL CAN ONLY APPROXIMATE. A yard ladder is turnouts on
+  // spurs on spurs; the walk just keeps walking, so depth costs nothing.
+  it("resolves a nested yard ladder, three deep", () => {
+    const B = bodyOf();
+    const PITCH = 8; // comfortably above what an Atlas #7 allows
+    const pieces: TrackPiece[] = [flex("m0", 0, 0, 8 - LEAD), sw("s1", 8 - LEAD, 0, 0, true)];
+    let prev = "s1";
+    for (let r = 2; r <= 3; r++) {
+      const d = placedJoints(pieces).find((j) => j.key === `${prev}.diverge`)!;
+      const th = placedJoints(pieces).find((j) => j.key === `${prev}.throat`)!;
+      const fx = th.x + ((d.x - th.x) * LEAD) / B;
+      const fy = th.y + ((d.y - th.y) * LEAD) / B;
+      const skew = Math.hypot(d.x - fx, d.y - fy);
+      // ⭐ A LADDER HAS A MINIMUM PITCH, and the graph knows it: the frogs
+      // cannot be closer than the diverging rail out of one plus the lead into
+      // the next. For a measured Atlas #7 that is ~6.01", so ELM Yard's 5" — a
+      // real document's numbers — is NOT buildable from #7s. The 1-D model
+      // cannot notice that; this one can only express what fits.
+      const minPitch = skew + LEAD;
+      expect(minPitch, "an Atlas #7 ladder cannot be tighter than this").toBeGreaterThan(5);
+      const run = PITCH - skew - LEAD;
+      pieces.push({ id: `x${r}`, partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: run });
+      pieces.push(sw(`s${r}`, d.x + run, d.y, 0, true));
+      prev = `s${r}`;
+    }
+    const graph = buildTrackGraph(pieces);
+    expect(graph.conflicts).toEqual([]);
+    const w = walkTrackGraph(graph, pieces, { piece: "m0", joint: "a" });
+    expect(w.turnouts.map((t) => Math.round(t.pos * 100) / 100).sort((a, b) => a - b)).toEqual([8, 16, 24]);
+    // Each turnout sits on a DIFFERENT route — that is what a ladder is.
+    expect(new Set(w.turnouts.map((t) => t.onRoute)).size).toBe(3);
+  });
+
+  // ⚠️ Positions are arc length along the RAIL. On a curve the difference is
+  // inches, and it is the rail a train travels.
+  it("measures a curve along the rail, not across the chord", () => {
+    const R = 30, segs = 24, sweep = Math.PI / 2;
+    const step = (R * sweep) / segs;
+    const pieces: TrackPiece[] = [];
+    let x = 0, y = 0, h = 0;
+    for (let i = 0; i < segs; i++) {
+      pieces.push(flex(`c${i}`, x, y, step, (h * 180) / Math.PI));
+      x += step * Math.cos(h);
+      y += step * Math.sin(h);
+      h += sweep / segs;
+    }
+    const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "c0", joint: "a" });
+    const arc = step * segs;
+    expect(w.routes[0].toPos).toBeCloseTo(arc, 6);
+    expect(arc - Math.hypot(x, y)).toBeGreaterThan(4); // the chord loses inches
+    // …and the same module laid at an angle measures identically.
+    const spun = pieces.map((p) => {
+      const t = 37 * (Math.PI / 180);
+      return { ...p, x: p.x * Math.cos(t) - p.y * Math.sin(t), y: p.x * Math.sin(t) + p.y * Math.cos(t), rotationDeg: p.rotationDeg + 37 };
+    });
+    const w2 = walkTrackGraph(buildTrackGraph(spun), spun, { piece: "c0", joint: "a" });
+    expect(w2.routes[0].toPos).toBeCloseTo(w.routes[0].toPos, 9);
+  });
+
+  it("reports a piece nothing connects, instead of leaving it out silently", () => {
+    const pieces = [flex("m", 0, 0, 20), flex("orphan", 50, 9, 10)];
+    const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "m", joint: "a" });
+    expect(w.warnings.some((s) => /orphan is not reachable/.test(s))).toBe(true);
+  });
+
+  it("terminates on a loop rather than walking forever", () => {
+    // A ring of flex: every joint meets another, so the walk must be guarded.
+    const n = 12, R = 10;
+    const pieces: TrackPiece[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * 2 * Math.PI;
+      const b = ((i + 1) / n) * 2 * Math.PI;
+      const p0 = { x: R * Math.cos(a), y: R * Math.sin(a) };
+      const p1 = { x: R * Math.cos(b), y: R * Math.sin(b) };
+      pieces.push(flex(`r${i}`, p0.x, p0.y, Math.hypot(p1.x - p0.x, p1.y - p0.y),
+        (Math.atan2(p1.y - p0.y, p1.x - p0.x) * 180) / Math.PI));
+    }
+    const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "r0", joint: "a" });
+    expect(w.routes[0].pieces.length).toBeLessThanOrEqual(n);
+    expect(w.routes[0].toPos).toBeGreaterThan(0);
   });
 });
