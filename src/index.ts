@@ -196,7 +196,26 @@ export function crossoverPinches(
     const a = t.fromPos ?? 0;
     const b = t.toPos ?? 0;
     if (!Number.isFinite(a) || !Number.isFinite(b) || Math.abs(b - a) < 1e-9) continue;
-    out.push({ lane, fromPos: Math.min(a, b), toPos: Math.max(a, b), spacingInches: s });
+    const pinch = {
+      lane,
+      fromPos: Math.min(a, b),
+      toPos: Math.max(a, b),
+      spacingInches: s,
+    };
+    // ⚠️ A DOUBLE CROSSOVER IS TWO CONNECTORS AND ONE PINCH. The scissors is
+    // built as two diagonals, so the document holds two records over the same
+    // span at the same spacing — but the pair of tracks only closes up once.
+    // Left un-deduped the geometry is still right (identical pinches agree), so
+    // this shows up as a doubled CALLOUT rather than a wrong drawing: the label
+    // renders twice, exactly superimposed.
+    const same = out.some(
+      (p) =>
+        p.lane === pinch.lane &&
+        Math.abs(p.fromPos - pinch.fromPos) < 1e-9 &&
+        Math.abs(p.toPos - pinch.toPos) < 1e-9 &&
+        Math.abs(p.spacingInches - pinch.spacingInches) < 1e-9,
+    );
+    if (!same) out.push(pinch);
   }
   return out;
 }

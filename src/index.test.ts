@@ -4695,6 +4695,26 @@ describe("crossover pinch", () => {
       ]);
     });
 
+    // A scissors crossover is TWO connectors over the same span at the same
+    // spacing, but the pair of tracks only closes up ONCE. Un-deduped the
+    // geometry stays right (identical pinches agree) so it surfaces as a
+    // doubled CALLOUT — the label drawn twice, exactly superimposed, which is
+    // how it was found.
+    it("a double crossover's two connectors are ONE pinch", () => {
+      const both = crossoverPinches([
+        xover("fast-tracks-n-me55-c-6"),
+        xover("fast-tracks-n-me55-c-6"),
+      ]);
+      expect(both).toHaveLength(1);
+      // …but two crossovers at DIFFERENT places are still two.
+      expect(
+        crossoverPinches([
+          xover("fast-tracks-n-me55-c-6"),
+          { ...xover("fast-tracks-n-me55-c-6"), fromPos: 70, toPos: 80 },
+        ]),
+      ).toHaveLength(2);
+    });
+
     // An owner who hasn't said what they built gets the straight pair they had
     // before. Assuming Fast Tracks would be inventing a fact about their module.
     it("imposes nothing when no part is named", () => {
