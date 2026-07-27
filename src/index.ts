@@ -5649,6 +5649,19 @@ export function walkTrackGraph(
       warnings.push(`the route diverging at ${b.from} is not connected to anything`);
       continue;
     }
+    // ⚠️ A SIDING IS FOUND TWICE — once from each of its turnouts. Both queue a
+    // diverging branch, and the second walks the same rail back the other way.
+    // Walking it again would put the same track in the layout twice, on two
+    // lanes, with the far turnout diverging onto the copy. A piece belongs to
+    // exactly ONE route, so if this branch starts on a piece a route already
+    // holds, the answer is that route: the far switch diverges onto the siding
+    // that is already there.
+    const already = routes.find((r) => r.pieces.includes(byKey.get(start)!.piece));
+    if (already) {
+      const swFar = turnouts.find((t) => t.id === b.from);
+      if (swFar && !swFar.divergeRoute) swFar.divergeRoute = already.id;
+      continue;
+    }
     n += 1;
     const r = walk(start, b.at + b.skew, `route${n}`, b.from);
     r.fromPos = b.at; // it begins at the frog, whatever its first joint is
@@ -5664,6 +5677,164 @@ export function walkTrackGraph(
   for (const c of graph.conflicts) warnings.push(c.reason);
 
   return { routes, turnouts, warnings };
+}
+
+// ─── GRAPH → DOCUMENT (ADR 0001) ─────────────────────────────────────────────
+// The claim the whole decision rests on: the 1-D document becomes a DERIVED
+// artifact, so `moduleFeatures`, the dispatcher view and Free-Dispatcher are
+// unaffected. This is where that claim is demonstrated IN THE PACKAGE — the
+// graph emits an ordinary `ModuleSchematicDoc` and the same pure function reads
+// it. Nothing downstream is told which way a module was authored.
+
+/** What the graph cannot know, and therefore never invents. */
+export interface GraphDocInput {
+  /** Where the main begins: the joint endplate A's track arrives at. */
+  startAt: { piece: string; joint: string };
+  /**
+   * The rest of the document — module id, endplate identities, the benchwork,
+   * industries and signals. Merged UNDERNEATH the derived keys, so the graph
+   * wins on length, tracks and turnouts and on nothing else.
+   *
+   * ⏸️ Industries, signals and control points are PASSED THROUGH untouched.
+   * Where they live in a graph is deliberately still open (ADR 0001 defers it
+   * to persistence); carrying them is honest, re-deriving them would be a guess.
+   */
+  base?: Partial<ModuleSchematicDoc>;
+  /**
+   * Owner metadata for a run, keyed by the piece the run STARTS at — the piece
+   * they select and name. Held here rather than on {@link TrackPiece} because
+   * it describes the whole run, not the one piece.
+   */
+  meta?: Record<
+    string,
+    { trackName?: string; capacityFeet?: number | null; moduleTrackId?: number | null }
+  >;
+  library?: TrackPart[];
+}
+
+export interface GraphDocResult {
+  doc: ModuleSchematicDoc;
+  graph: TrackGraph;
+  walk: GraphWalk;
+  /** The walk's warnings, plus anything the emission itself had to leave out. */
+  warnings: string[];
+}
+
+/**
+ * Derive a `ModuleSchematicDoc` from placed pieces.
+ *
+ * ⭐ **NO HAND IS EMITTED.** A turnout's `kind` is left unset on purpose. The
+ * graph knows which side the diverging route is on — it is where the piece IS —
+ * so the lane carries the side and `moduleFeatures` keeps the lane it is given
+ * (`resolveLane` only overrides the sign for a stated left/right). Emitting a
+ * hand as well would be a second source for one fact, which is the ~120 lines
+ * of reconciliation this model exists to remove.
+ *
+ * ⚠️ ONE MAIN. The walk starts at one endplate, so a double-track module's
+ * second main is not reached — it surfaces in `warnings` as unreachable pieces
+ * rather than vanishing quietly. Emitting Main 2 needs a second start point and
+ * is not built yet.
+ */
+export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDocResult {
+  const library = input.library ?? BUILT_IN_TRACK_PARTS;
+  const graph = buildTrackGraph(pieces, library);
+  const walk = walkTrackGraph(graph, pieces, input.startAt, library);
+  const warnings = [...walk.warnings];
+  const round = (n: number) => Math.round(n * 100) / 100;
+
+  const base = input.base ?? {};
+  const endplates: SchematicEndplate[] =
+    base.endplates && base.endplates.length
+      ? base.endplates
+      : [{ id: "A", label: "West" }, { id: "B", label: "East" }];
+  const epA = endplates[0];
+  const epB = endplates[1];
+
+  const main = walk.routes.find((r) => r.id === "main")!;
+  const lengthInches = round(main.toPos);
+
+  // A branch takes the id of the piece it STARTS at — the run's own first piece.
+  // It is the piece an owner selects, so it is the thing their name belongs to.
+  // ⚠️ Not stable against inserting a piece at the throat: that changes the id.
+  // Persisting the graph will need a run identity of its own; nothing yet reads
+  // these ids back.
+  const branches = walk.routes.filter((r) => r.id !== "main" && r.pieces.length);
+  const trackIdOf = new Map<string, string>([["main", MAIN_TRACK_ID]]);
+  for (const r of branches) trackIdOf.set(r.id, r.pieces[0]);
+
+  // LANE is an ordinal: which side, and how many tracks out. The side is the
+  // sign of how far the run reaches laterally; the magnitude is its rank among
+  // the runs on that side, so a spur off a spur stacks OUTSIDE its parent.
+  const laneOf = (r: GraphRoute): number => {
+    const side = Math.sign(r.lateral) || 1;
+    const sameSide = branches
+      .filter((x) => (Math.sign(x.lateral) || 1) === side)
+      .sort((a, b) => Math.abs(a.lateral) - Math.abs(b.lateral));
+    return side * (sameSide.indexOf(r) + 1);
+  };
+
+  const tracks: SchematicTrack[] = [
+    {
+      id: MAIN_TRACK_ID,
+      role: "main",
+      lane: 0,
+      from: epA?.id ?? "A",
+      ...(epB ? { to: epB.id } : {}),
+    },
+  ];
+  for (const r of branches) {
+    const id = trackIdOf.get(r.id)!;
+    const meta = input.meta?.[id] ?? {};
+    tracks.push({
+      id,
+      // It runs back into a second turnout, or it doesn't. That is the whole
+      // difference between a siding and a spur, and it is read, not declared.
+      role: r.endsAt ? "siding" : "spur",
+      lane: laneOf(r),
+      fromPos: round(Math.min(r.fromPos, r.toPos)),
+      toPos: round(Math.max(r.fromPos, r.toPos)),
+      ...(meta.trackName ? { trackName: meta.trackName } : {}),
+      ...(meta.capacityFeet != null ? { capacityFeet: meta.capacityFeet } : {}),
+      ...(meta.moduleTrackId != null ? { moduleTrackId: meta.moduleTrackId } : {}),
+    });
+  }
+
+  const pieceById = new Map(pieces.map((p) => [p.id, p]));
+  const turnouts: SchematicTurnout[] = [];
+  for (const t of walk.turnouts) {
+    const diverge = t.divergeRoute ? trackIdOf.get(t.divergeRoute) : undefined;
+    if (!diverge) {
+      // A switch whose diverging route reaches nothing is an unfinished layout,
+      // not an operating turnout. Said out loud rather than emitted with a
+      // dangling reference for the dispatcher view to trip over.
+      warnings.push(
+        `${t.id} is placed but its diverging route goes nowhere, so it is not in the operations view`,
+      );
+      continue;
+    }
+    const piece = pieceById.get(t.id);
+    const part = piece ? library.find((p) => p.id === piece.partId) : undefined;
+    turnouts.push({
+      id: t.id,
+      pos: round(t.pos),
+      onTrack: trackIdOf.get(t.onRoute) ?? MAIN_TRACK_ID,
+      divergeTrack: diverge,
+      ...(piece?.name ? { name: piece.name } : {}),
+      ...(part?.frogNumber != null ? { size: part.frogNumber } : {}),
+      ...(part ? { partId: part.id } : {}),
+    });
+  }
+  turnouts.sort((a, b) => a.pos - b.pos);
+
+  const doc: ModuleSchematicDoc = {
+    version: 1,
+    ...base,
+    lengthInches,
+    endplates,
+    tracks,
+    turnouts,
+  };
+  return { doc, graph, walk, warnings };
 }
 
 /** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the

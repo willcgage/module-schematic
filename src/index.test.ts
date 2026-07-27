@@ -95,6 +95,7 @@ import {
   FREEMO_TRACK_SPACING_INCHES,
   partGeometry,
   buildTrackGraph,
+  graphToDoc,
   walkTrackGraph,
   placedJoints,
   type TrackPiece,
@@ -5089,6 +5090,20 @@ describe("track graph", () => {
     expect(w.warnings).toEqual([]);
   });
 
+  // ⚠️ A SIDING IS FOUND TWICE — once from each of its turnouts, since both
+  // queue a diverging branch and the second walks the same rail back the other
+  // way. It is ONE track, and both switches diverge onto it. Emitting the doc is
+  // what exposed this: the siding appeared twice, on two lanes, with the far
+  // turnout pointing at the copy.
+  it("finds a siding ONCE, and both its turnouts diverge onto it", () => {
+    const pieces = siding(13, 73);
+    const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "f0", joint: "a" });
+    const branches = w.routes.filter((r) => r.id !== "main");
+    expect(branches).toHaveLength(1);
+    expect(branches[0].pieces).toEqual(["sid"]);
+    expect(new Set(w.turnouts.map((t) => t.divergeRoute))).toEqual(new Set([branches[0].id]));
+  });
+
   // ⭐ NO HAND ANYWHERE. A real document calls one of these "left" and the other
   // "right" for the SAME siding; the graph never asks. The side is where the
   // piece is.
@@ -5194,5 +5209,158 @@ describe("track graph", () => {
     const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "r0", joint: "a" });
     expect(w.routes[0].pieces.length).toBeLessThanOrEqual(n);
     expect(w.routes[0].toPos).toBeGreaterThan(0);
+  });
+});
+
+// ─── Graph → document (ADR 0001) ─────────────────────────────────────────────
+// ⭐⭐ THE CLAIM THE WHOLE DECISION RESTS ON: the document becomes a DERIVED
+// artifact, so `moduleFeatures` — and therefore Free-Dispatcher — is unaffected.
+// The spike showed it on one real module; these show it in the package, against
+// a hand-authored 1-D document of the same layout.
+describe("graph → document", () => {
+  const SW = "atlas-c55-n-7";
+  const FLEX = "atlas-c55-n-flex";
+  const LEAD = trackPart(SW)!.lead!.inches;
+  const BODY = (() => {
+    const j = partGeometry(trackPart(SW)!)!.joints;
+    return j.find((x) => x.id === "through")!.x - j.find((x) => x.id === "throat")!.x;
+  })();
+
+  const flex = (id: string, x: number, y: number, len: number, rot = 0): TrackPiece => ({
+    id, partId: FLEX, x, y, rotationDeg: rot, lengthInches: len,
+  });
+  const sw = (id: string, x: number, y: number, rot = 0, flipped = false): TrackPiece => ({
+    id, partId: SW, x, y, rotationDeg: rot, flipped,
+  });
+
+  /** A passing siding on a 96″ main — the commonest module there is. */
+  const siding = (west: number, east: number, below = false) => {
+    const pieces: TrackPiece[] = [
+      flex("f0", 0, 0, west - LEAD),
+      sw("swW", west - LEAD, 0, 0, below),
+      flex("f1", west - LEAD + BODY, 0, (east + LEAD - BODY) - (west - LEAD + BODY)),
+      sw("swE", east + LEAD, 0, 180, !below),
+      flex("f2", east + LEAD, 0, 96 - (east + LEAD)),
+    ];
+    const jw = placedJoints(pieces).find((j) => j.key === "swW.diverge")!;
+    const je = placedJoints(pieces).find((j) => j.key === "swE.diverge")!;
+    pieces.push({
+      id: "sid", partId: FLEX, x: jw.x, y: jw.y, rotationDeg: 0,
+      lengthInches: Math.hypot(je.x - jw.x, je.y - jw.y),
+    });
+    return pieces;
+  };
+
+  const emit = (pieces: TrackPiece[], input: Partial<Parameters<typeof graphToDoc>[1]> = {}) =>
+    graphToDoc(pieces, { startAt: { piece: "f0", joint: "a" }, ...input });
+
+  it("emits the ordinary document — length, tracks, turnouts", () => {
+    const { doc, warnings } = emit(siding(13, 73));
+    expect(warnings).toEqual([]);
+    expect(doc.lengthInches).toBe(96);
+    expect(doc.tracks).toEqual([
+      { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+      { id: "sid", role: "siding", lane: 1, fromPos: 13, toPos: 73 },
+    ]);
+    expect(doc.turnouts).toEqual([
+      { id: "swW", pos: 13, onTrack: "main", divergeTrack: "sid", size: 7, partId: SW },
+      { id: "swE", pos: 73, onTrack: "main", divergeTrack: "sid", size: 7, partId: SW },
+    ]);
+  });
+
+  // ⭐⭐ THE PROOF. Same layout, authored both ways; the dispatcher view cannot
+  // tell them apart. FD reads `moduleFeatures`, so FD is unaffected.
+  it("gives moduleFeatures the SAME drawing as the hand-authored 1-D document", () => {
+    const authored: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 96,
+      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "sid", role: "siding", lane: 1, fromPos: 13, toPos: 73 },
+      ],
+      turnouts: [
+        { id: "swW", pos: 13, onTrack: "main", divergeTrack: "sid", kind: "left" },
+        { id: "swE", pos: 73, onTrack: "main", divergeTrack: "sid", kind: "right" },
+      ],
+    };
+    const a = moduleFeatures(authored);
+    const b = moduleFeatures(emit(siding(13, 73)).doc);
+    expect(b.extraTracks).toEqual(a.extraTracks);
+    expect(b.turnouts).toEqual(a.turnouts);
+    expect(b.lengthInches).toBe(a.lengthInches);
+  });
+
+  // ⭐ NO HAND IS EMITTED, and it doesn't need one. The 1-D document needs the
+  // author to say "left" here and "right" there for ONE siding; the graph reads
+  // the side off where the pieces are, and `resolveLane` keeps the lane it is
+  // handed because no hand contradicts it.
+  it("puts a siding below the main with no hand anywhere", () => {
+    const { doc } = emit(siding(13, 73, true));
+    expect(doc.turnouts!.every((t) => t.kind === undefined)).toBe(true);
+    expect(doc.tracks.find((t) => t.id === "sid")!.lane).toBe(-1);
+    expect(moduleFeatures(doc).extraTracks[0].lane).toBe(-1);
+    // …and the positions are the same as the above-the-main version. Only the
+    // side moved.
+    const above = emit(siding(13, 73)).doc;
+    expect(doc.turnouts!.map((t) => t.pos)).toEqual(above.turnouts!.map((t) => t.pos));
+  });
+
+  // ⭐ THE CASE THE 1-D MODEL DOCUMENTS AS "APPROXIMATE": each rung of a ladder
+  // sits on the PREVIOUS rung, not on the main, and the emitted `onTrack` says
+  // so — which is exactly what the dispatcher view needs to stack them outward.
+  it("names each ladder rung's real host track, and stacks the lanes outward", () => {
+    const PITCH = 8;
+    const pieces: TrackPiece[] = [flex("f0", 0, 0, 8 - LEAD), sw("s1", 8 - LEAD, 0, 0, true)];
+    let prev = "s1";
+    for (let r = 2; r <= 3; r++) {
+      const js = placedJoints(pieces);
+      const d = js.find((j) => j.key === `${prev}.diverge`)!;
+      const th = js.find((j) => j.key === `${prev}.throat`)!;
+      const fx = th.x + ((d.x - th.x) * LEAD) / BODY;
+      const fy = th.y + ((d.y - th.y) * LEAD) / BODY;
+      const run = PITCH - Math.hypot(d.x - fx, d.y - fy) - LEAD;
+      pieces.push({ id: `x${r}`, partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: run });
+      pieces.push(sw(`s${r}`, d.x + run, d.y, 0, true));
+      prev = `s${r}`;
+    }
+    pieces.push({ id: "stub", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 12 });
+    const js = placedJoints(pieces).find((j) => j.key === "s3.diverge")!;
+    pieces[pieces.length - 1] = { ...pieces[pieces.length - 1], x: js.x, y: js.y };
+    const { doc } = emit(pieces);
+    const swById = new Map(doc.turnouts!.map((t) => [t.id, t]));
+    expect(swById.get("s1")!.onTrack).toBe("main");
+    expect(swById.get("s2")!.onTrack).toBe(swById.get("s1")!.divergeTrack);
+    expect(swById.get("s3")!.onTrack).toBe(swById.get("s2")!.divergeTrack);
+    // Each rung further from the main than the last.
+    expect(doc.tracks.filter((t) => t.role !== "main").map((t) => t.lane)).toEqual([-1, -2, -3]);
+  });
+
+  // A stub that reaches nothing is an unfinished layout, and saying so beats
+  // emitting a turnout pointing at a track that isn't in the document.
+  it("leaves out a turnout whose diverging route goes nowhere, and says why", () => {
+    const pieces = [flex("f0", 0, 0, 20 - LEAD), sw("s1", 20 - LEAD, 0), flex("f1", 20 - LEAD + BODY, 0, 40)];
+    const { doc, warnings } = emit(pieces);
+    expect(doc.turnouts).toEqual([]);
+    expect(warnings.join(" ")).toMatch(/s1 is placed but its diverging route goes nowhere/);
+  });
+
+  // ⏸️ Industries and signals are CARRIED, not re-derived — where they live in a
+  // graph is still an open question (ADR 0001 defers it to persistence), and
+  // guessing would be inventing an owner's intent.
+  it("carries through everything the graph does not know", () => {
+    const base = {
+      module: "FMN-0011",
+      outline: [{ x: 0, y: -12 }, { x: 96, y: -12 }, { x: 96, y: 12 }, { x: 0, y: 12 }],
+      industries: [{ id: "i1", name: "Feed Mill", track: "sid", fromPos: 20, toPos: 32 }],
+      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    };
+    const { doc } = emit(siding(13, 73), { base });
+    expect(doc.module).toBe("FMN-0011");
+    expect(doc.industries).toEqual(base.industries);
+    expect(doc.outline).toEqual(base.outline);
+    // …but the graph still wins on what it reads.
+    expect(doc.lengthInches).toBe(96);
+    expect(moduleFeatures(doc).industries).toHaveLength(1);
   });
 });
