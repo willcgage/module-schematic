@@ -5380,8 +5380,17 @@ export function pieceRoutePaths(
     const b = at(route[1]);
     if (!a || !b) continue;
     const ends = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
+    if (part.kind === "flex") {
+      // Bent flex is an arc; straight flex comes back as its two ends.
+      const pts = flexRunPoints(piece.lengthInches ?? 0, piece.radiusInches).map((q) =>
+        place(q.x, q.y),
+      );
+      pts[pts.length - 1] = { x: b.x, y: b.y };
+      out.push({ route, points: pts });
+      continue;
+    }
     const diverging = route.some((r) => r === "diverge" || r === "legA" || r === "legB");
-    if (!diverging || part.kind === "flex") {
+    if (!diverging) {
       out.push({ route, points: ends });
       continue;
     }
@@ -5448,8 +5457,27 @@ export interface TrackPiece {
   rotationDeg: number;
   /** Mirrored across its own through route — a left-hand turnout from a right. */
   flipped?: boolean;
-  /** FLEX ONLY: how long this run is. The one piece a builder cuts (ADR 0001). */
+  /** FLEX ONLY: how long this run is. The one piece a builder cuts (ADR 0001).
+   * ⚠️ ARC length when the run is bent — the rail, not the chord across it. */
   lengthInches?: number;
+  /**
+   * FLEX ONLY: the radius this run is bent to, inches. Absent = straight.
+   *
+   * ⭐ It lives on the PIECE, not the part, because bending flex is what a
+   * builder does to it — the product is the same product either way. That is
+   * the same reason `lengthInches` is here.
+   *
+   * ⭐ SIGNED, and the sign IS the side: positive curves toward +y in the
+   * piece's own frame, negative the other way. One number, no separate
+   * "direction" field to disagree with it — the same reasoning that keeps a
+   * hand off turnouts, where the side is simply where the piece is.
+   *
+   * ⚠️ {@link lengthInches} stays the ARC length. `pos` is arc length
+   * everywhere in this model, a curve's rail is genuinely longer than the chord
+   * it spans (a 90° corner at R30 runs 47.1″ across a 42.4″ chord), and it is
+   * the rail a train travels.
+   */
+  radiusInches?: number;
   /** Owner's label, carried onto whatever route this piece ends up in. */
   name?: string;
 }
@@ -5504,6 +5532,41 @@ export interface TrackGraph {
  * rounding of a drag. */
 export const JOINT_SNAP_INCHES = 0.01;
 
+/**
+ * Where a bent run's far end lands, and which way it points — in the piece's own
+ * frame, starting at its origin heading +x.
+ *
+ * ONE definition, called by both {@link placedJoints} and
+ * {@link pieceRoutePaths}, so the drawn rail cannot arrive anywhere other than
+ * the joint at the end of it.
+ */
+export function flexRunEnd(
+  lengthInches: number,
+  radiusInches?: number,
+): { x: number; y: number; headingDeg: number } {
+  const L = lengthInches;
+  const R = radiusInches;
+  if (!R || !Number.isFinite(R) || Math.abs(R) < 1e-6)
+    return { x: L, y: 0, headingDeg: 0 };
+  // Sweep follows from the two of them: a length of rail bent to a radius has
+  // no freedom left. Positive R turns toward +y.
+  const theta = L / R;
+  return {
+    x: Math.abs(R) * Math.sin(Math.abs(theta)) * Math.sign(L || 1),
+    y: R * (1 - Math.cos(theta)),
+    headingDeg: (theta * 180) / Math.PI,
+  };
+}
+
+/** Points along a bent run, in the piece's own frame. */
+function flexRunPoints(lengthInches: number, radiusInches: number | undefined, steps = 16) {
+  if (!radiusInches || !Number.isFinite(radiusInches) || Math.abs(radiusInches) < 1e-6)
+    return [{ x: 0, y: 0 }, { x: lengthInches, y: 0 }];
+  const out: { x: number; y: number }[] = [];
+  for (let i = 0; i <= steps; i++) out.push(flexRunEnd((lengthInches * i) / steps, radiusInches));
+  return out.map((p) => ({ x: p.x, y: p.y }));
+}
+
 /** Every piece's joints, transformed onto the board. */
 export function placedJoints(
   pieces: TrackPiece[],
@@ -5518,12 +5581,20 @@ export function placedJoints(
     if (!geo) continue;
     const c = Math.cos(p.rotationDeg * RAD);
     const s = Math.sin(p.rotationDeg * RAD);
+    // Flex is the ONE piece whose geometry the builder sets: its far end is
+    // wherever they cut it, and — bent — wherever the curve puts it. Everything
+    // else is rigid.
+    const run =
+      part.kind === "flex" ? flexRunEnd(p.lengthInches ?? 0, p.radiusInches) : null;
     for (const j of geo.joints) {
-      // Flex is the ONE piece whose geometry the builder sets, so its far end is
-      // wherever they cut it. Everything else is rigid.
-      const lx = part.kind === "flex" && j.id === "b" ? (p.lengthInches ?? 0) : j.x;
-      const ly = p.flipped ? -j.y : j.y;
-      const h = (p.flipped ? -j.angleDeg : j.angleDeg) + p.rotationDeg;
+      const far = run && j.id === "b";
+      const lx = far ? run.x : j.x;
+      const ly = p.flipped ? -(far ? run.y : j.y) : far ? run.y : j.y;
+      // ⚠️ A bent run's far end POINTS somewhere else. Leaving the angle at 0
+      // would make a curve's end claim to face along +x, so the next piece
+      // snapped to it would come in across the rail instead of along it.
+      const local = far ? run.headingDeg : j.angleDeg;
+      const h = (p.flipped ? -local : local) + p.rotationDeg;
       out.push({
         key: `${p.id}.${j.id}`,
         piece: p.id,
@@ -5756,8 +5827,24 @@ export function walkTrackGraph(
     const part = partOf(pid);
     return part ? partGeometry(part, library) : null;
   };
-  const gap = (a?: PlacedJoint, b?: PlacedJoint) =>
-    a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+  /**
+   * How far it is THROUGH a piece, from one of its joints to another.
+   *
+   * ⚠️⚠️ NOT THE DISTANCE BETWEEN THE TWO JOINTS. On a bent run those differ by
+   * inches — a 90° corner at R30 is 47.1″ of rail across a 42.4″ chord — and
+   * `pos` is arc length along the rail, because that is what a train travels
+   * and what every position in the document means. A flex run's arc length is
+   * the length it was cut to, which is exactly `lengthInches`.
+   */
+  const gap = (a?: PlacedJoint, b?: PlacedJoint) => {
+    if (!a || !b) return 0;
+    if (a.piece === b.piece) {
+      const piece = pieceById.get(a.piece);
+      const part = piece ? partOf(a.piece) : undefined;
+      if (piece && part?.kind === "flex") return piece.lengthInches ?? 0;
+    }
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
 
   const routes: GraphRoute[] = [];
   const turnouts: GraphTurnout[] = [];

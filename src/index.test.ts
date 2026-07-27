@@ -5656,3 +5656,91 @@ describe("snapPiece", () => {
     expect(snapPiece(far, [a])).toBeNull();
   });
 });
+
+// ─── Bent flex (ADR 0001) ────────────────────────────────────────────────────
+// A curve is a length of flex bent to a radius. The rail is genuinely longer
+// than the chord it spans, and `pos` means the rail.
+describe("a bent run of flex", () => {
+  const FLEX = "atlas-c55-n-flex";
+  const SW = "atlas-c55-n-7";
+  /** A quarter circle at R30: 47.12″ of rail across a 42.43″ chord. */
+  const QUARTER = (Math.PI / 2) * 30;
+
+  it("puts its far end on the arc, pointing along it", () => {
+    const piece: TrackPiece = {
+      id: "c1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: QUARTER, radiusInches: 30,
+    };
+    const b = placedJoints([piece]).find((j) => j.joint === "b")!;
+    expect(b.x).toBeCloseTo(30, 6);
+    expect(b.y).toBeCloseTo(30, 6);
+    // ⚠️ AND IT POINTS SOMEWHERE ELSE. A far end still claiming to face +x
+    // would take the next piece snapped to it in across the rail.
+    expect(b.headingDeg).toBeCloseTo(90, 6);
+  });
+
+  it("bends the other way for a negative radius", () => {
+    const piece: TrackPiece = {
+      id: "c1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: QUARTER, radiusInches: -30,
+    };
+    const b = placedJoints([piece]).find((j) => j.joint === "b")!;
+    expect(b.x).toBeCloseTo(30, 6);
+    expect(b.y).toBeCloseTo(-30, 6);
+    expect(b.headingDeg).toBeCloseTo(270, 6);
+  });
+
+  it("draws as an arc that ends on its own joint", () => {
+    const piece: TrackPiece = {
+      id: "c1", partId: FLEX, x: 5, y: 2, rotationDeg: 20, lengthInches: QUARTER, radiusInches: 30,
+    };
+    const [{ points }] = pieceRoutePaths(piece);
+    expect(points.length).toBeGreaterThan(4); // sampled, not a chord
+    const b = placedJoints([piece]).find((j) => j.joint === "b")!;
+    const last = points[points.length - 1];
+    expect(Math.hypot(last.x - b.x, last.y - b.y)).toBeLessThan(1e-9);
+    // The middle of it stands well off the chord.
+    const mid = points[Math.floor(points.length / 2)];
+    const t = 0.5;
+    const chord = { x: points[0].x + (b.x - points[0].x) * t, y: points[0].y + (b.y - points[0].y) * t };
+    expect(Math.hypot(mid.x - chord.x, mid.y - chord.y)).toBeGreaterThan(3);
+  });
+
+  // ⭐⭐ THE INVARIANT THE WHOLE MODEL RESTS ON. Measuring the chord here would
+  // put everything past the curve 4.7″ closer to endplate A than it is.
+  it("measures the RAIL, not the chord across it", () => {
+    const pieces: TrackPiece[] = [
+      { id: "c1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: QUARTER, radiusInches: 30 },
+    ];
+    const end = placedJoints(pieces).find((j) => j.joint === "b")!;
+    pieces.push({
+      id: "f2", partId: FLEX, x: end.x, y: end.y, rotationDeg: end.headingDeg, lengthInches: 10,
+    });
+    const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "c1", joint: "a" });
+    expect(w.routes[0].toPos).toBeCloseTo(QUARTER + 10, 6);
+    expect(QUARTER).toBeGreaterThan(Math.hypot(30, 30) + 4.5); // 47.12 vs 42.43
+  });
+
+  it("puts a turnout past a curve at its real distance along the rail", () => {
+    const pieces: TrackPiece[] = [
+      { id: "c1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: QUARTER, radiusInches: 30 },
+    ];
+    const end = placedJoints(pieces).find((j) => j.joint === "b")!;
+    pieces.push({ id: "s1", partId: SW, x: end.x, y: end.y, rotationDeg: end.headingDeg });
+    const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "c1", joint: "a" });
+    const lead = trackPart(SW)!.lead!.inches;
+    expect(w.turnouts[0].pos).toBeCloseTo(QUARTER + lead, 6);
+  });
+
+  // The snap reads the joint's heading, so a piece brought onto the end of a
+  // curve leaves ALONG the curve — no angle typed, on a bend as on a turnout.
+  it("takes a snapped piece away along the curve", () => {
+    const curve: TrackPiece = {
+      id: "c1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: QUARTER, radiusInches: 30,
+    };
+    const loose: TrackPiece = {
+      id: "f2", partId: FLEX, x: 30.2, y: 29.8, rotationDeg: 0, lengthInches: 12,
+    };
+    const snap = snapPiece(loose, [curve]);
+    expect(snap!.to).toBe("c1.b");
+    expect(snap!.piece.rotationDeg).toBeCloseTo(90, 6);
+  });
+});
