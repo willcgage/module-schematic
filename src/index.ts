@@ -5713,7 +5713,16 @@ export interface GraphWalk {
   turnouts: GraphTurnout[];
   /** Every reason this walk is not the whole layout. */
   warnings: string[];
+  /** Turnouts whose diverging route reaches nothing — the ids, not just the
+   * sentence, so a caller can act on it (and say it ONCE) instead of matching
+   * on prose. */
+  danglingDiverges: string[];
 }
+
+/** The one wording for a turnout whose diverging route reaches nothing, so a
+ * caller can recognise it exactly rather than by substring. */
+const danglingDivergeWarning = (id: string) =>
+  `the route diverging at ${id} is not connected to anything`;
 
 /**
  * Walk the graph from an endplate and read the topology off it.
@@ -5753,6 +5762,7 @@ export function walkTrackGraph(
   const routes: GraphRoute[] = [];
   const turnouts: GraphTurnout[] = [];
   const warnings: string[] = [];
+  const danglingDiverges: string[] = [];
   const queued = new Set<string>();
   const pending: { from: string; at: number; joint: string; skew: number }[] = [];
 
@@ -5882,7 +5892,8 @@ export function walkTrackGraph(
     const b = pending.shift()!;
     const start = link.get(b.joint);
     if (!start) {
-      warnings.push(`the route diverging at ${b.from} is not connected to anything`);
+      warnings.push(danglingDivergeWarning(b.from));
+      danglingDiverges.push(b.from);
       continue;
     }
     // ⚠️ A SIDING IS FOUND TWICE — once from each of its turnouts. Both queue a
@@ -5912,7 +5923,7 @@ export function walkTrackGraph(
       warnings.push(`${p.id} is not reachable from the endplate — nothing connects it`);
   for (const c of graph.conflicts) warnings.push(c.reason);
 
-  return { routes, turnouts, warnings };
+  return { routes, turnouts, warnings, danglingDiverges };
 }
 
 // ─── GRAPH → DOCUMENT (ADR 0001) ─────────────────────────────────────────────
@@ -6019,7 +6030,12 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   const library = input.library ?? BUILT_IN_TRACK_PARTS;
   const graph = buildTrackGraph(pieces, library);
   const walk = walkTrackGraph(graph, pieces, input.startAt, library);
-  const warnings = [...walk.warnings];
+  // ⚠️ ONE PROBLEM, ONE SENTENCE. The walk reports a diverging route that
+  // reaches nothing, and the emission has its own thing to say about the same
+  // turnout — printed together they read as two faults. Drop the walk's wording
+  // in favour of the one below, which names the consequence as well as the fact.
+  const dangling = new Set(walk.danglingDiverges.map(danglingDivergeWarning));
+  const warnings = walk.warnings.filter((w) => !dangling.has(w));
   const round = (n: number) => Math.round(n * 100) / 100;
 
   const base = input.base ?? {};

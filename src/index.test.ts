@@ -5347,6 +5347,9 @@ describe("graph → document", () => {
     const { doc, warnings } = emit(pieces);
     expect(doc.turnouts).toEqual([]);
     expect(warnings.join(" ")).toMatch(/s1 is placed but its diverging route goes nowhere/);
+    // ⚠️ ONE PROBLEM, ONE SENTENCE. The walk says the same thing in its own
+    // words; printed together they read as two separate faults.
+    expect(warnings).toHaveLength(1);
   });
 
   // ⏸️ Industries and signals are CARRIED, not re-derived — where they live in a
