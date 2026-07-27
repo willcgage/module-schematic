@@ -3104,7 +3104,11 @@ export interface TrackPart {
   /** `flex` is track sold by the length rather than as a fixed geometry — its
    * {@link overallLength} is the LONGEST piece you can lay from it, not a shape
    * (#193). */
-  kind: "turnout" | "wye" | "curved-turnout" | "crossing" | "flex";
+  /** ⚠️ `crossover` is an ASSEMBLY, not a single turnout — two turnouts plus the
+   * diagonal between two parallel tracks, sold as one fixture. It therefore
+   * carries {@link trackSpacing}, which no single turnout has, and its
+   * `frogNumber` describes the two turnouts in it. */
+  kind: "turnout" | "wye" | "curved-turnout" | "crossover" | "crossing" | "flex";
   /** Manufacturer part numbers by hand, where the part has a hand. */
   partNumbers?: { left?: string; right?: string; single?: string };
   /** Frog number N (the 1:N ratio). Definitional, so no provenance needed. */
@@ -3167,6 +3171,20 @@ export interface TrackPart {
   innerRadius?: PartDimension;
   /** Crossing angle, degrees. */
   crossingAngleDeg?: number;
+  /** Centre-to-centre distance of the two parallel tracks a {@link kind}
+   * `crossover` joins. A crossover fixture is BUILT for one spacing — it is not
+   * adjustable — so this decides whether the part suits a given standard at all.
+   *
+   * ⚠️ READ {@link FREEMO_TRACK_SPACING_INCHES} ALONGSIDE THIS. Free-moN §2.0
+   * fixes double-track spacing at exactly 1.125″; the Fast Tracks N crossovers
+   * are built to 1.09″. That 0.035″ is small but it is REAL and it is not a
+   * tolerance — the fixture cannot be built to another spacing. Recorded rather
+   * than reconciled: it is a fact about the product, and an owner deciding what
+   * to buy is better served by the true number than by a convenient one. */
+  trackSpacing?: PartDimension;
+  /** The SECOND frog angle on a part that has two — the diamond where the
+   * diagonals of a scissors crossover cross. Published in degrees. */
+  secondaryFrogAngle?: PartAngle;
   /** The part's drawn geometry in its own frame, when it came from a library
    * file. This is the payload worth importing — real outlines we can draw
    * instead of deriving a turnout's shape from a frog number. */
@@ -3649,6 +3667,86 @@ export const FAST_TRACKS_N_ME55: TrackPart[] = (
   } satisfies TrackPart;
 });
 
+/**
+ * Fast Tracks N-scale CROSSOVER fixtures, ME Code 55.
+ *
+ *     crossover   angle    2nd frog   default   minimum   track spacing
+ *     #6           9.46°     19°       10.07″     9.31″      1.09″
+ *     #8           7.13°     14.3°     13.61″    13.07″      1.09″
+ *
+ * ⚠️⚠️ **THE TRACK SPACING IS 1.09″, AND FREE-moN §2.0 REQUIRES 1.125″.**
+ * A crossover fixture is machined for ONE spacing; it is not adjustable. So a
+ * crossover hand-built on either of these puts the parallel track 0.035″ closer
+ * than the standard, and that difference has to go somewhere — the tracks pinch
+ * through the crossover and open back out to meet the endplates, which is fixed
+ * at both ends by {@link FREEMO_TRACK_SPACING_INCHES}.
+ *
+ * Recorded, NOT reconciled. It is 0.9 mm and most builders will absorb it, but
+ * it is a property of the product rather than a tolerance, and someone choosing
+ * what to buy for a double-track Free-moN module is better served by the true
+ * number than a convenient one. Nothing here warns or blocks — that would be a
+ * decision for the app, not for a data table.
+ *
+ * ⭐ THE SECOND FROG IS EXACTLY TWICE THE FIRST — 19° against 2 × 9.46 = 18.92,
+ * and 14.3° against 2 × 7.13 = 14.26, both inside the published rounding. That
+ * is the diamond in a scissors crossover, where two diagonals each leaving at
+ * the frog angle meet each other. It is a free cross-check on the pair, and it
+ * passes.
+ *
+ * ⚠️ A CROSSOVER IS AN ASSEMBLY, so `partExtent` means nothing for it and the
+ * turnout size lookups must never see it: `kind` is `"crossover"`, and every
+ * one of them filters `kind === "turnout"`.
+ *
+ * Atlas make crossover parts too — Will has no figures for them as of
+ * 2026-07-26, so there are deliberately no Atlas entries here rather than
+ * guessed ones.
+ *
+ * Source: handlaidtrack.com product pages, read 2026-07-26. Their tables also
+ * carry tie size and tie spacing; those describe the QuickSticks tie strip's
+ * appearance rather than the track's geometry, so they are not carried here.
+ */
+export const FAST_TRACKS_N_ME55_CROSSOVERS: TrackPart[] = (
+  [
+    // [N, angle°, secondFrog°, defaultLength, minLength, trackSpacing]
+    [6, 9.46, 19, 10.07, 9.31, 1.09],
+    [8, 7.13, 14.3, 13.61, 13.07, 1.09],
+  ] as Array<[number, number, number, number, number, number]>
+).map(([n, deg, second, dflt, min, spacing]) => {
+  const spec = "handlaidtrack.com Detailed Specifications, read 2026-07-26";
+  const manufacturer: DimensionSource = "manufacturer";
+  return {
+    id: `fast-tracks-n-me55-c-${n}`,
+    manufacturer: "Fast Tracks",
+    line: "Code 55",
+    scale: "N" as const,
+    name: `#${n} Crossover`,
+    kind: "crossover" as const,
+    partNumbers: { single: `AF-N-C-${n}-ME55` },
+    frogNumber: n,
+    buildable: true,
+    actualAngle: { deg, source: manufacturer, note: `${spec}. atan(1/${n}) exactly.` },
+    secondaryFrogAngle: {
+      deg: second,
+      source: manufacturer,
+      note: `${spec}. The diamond of a scissors crossover — 2 × ${deg}° within the published rounding.`,
+    },
+    overallLength: {
+      inches: dflt,
+      source: manufacturer,
+      note: `${spec}. The DEFAULT length of the whole assembly — a fixture, so the builder chooses.`,
+    },
+    minimumLength: { inches: min, source: manufacturer, note: spec },
+    trackSpacing: {
+      inches: spacing,
+      source: manufacturer,
+      note:
+        `${spec}. ⚠️ Free-moN §2.0 requires ${FREEMO_TRACK_SPACING_INCHES}″ — this fixture ` +
+        `is built to ${spacing}″, ${(FREEMO_TRACK_SPACING_INCHES - spacing).toFixed(3)}″ tighter, ` +
+        "and cannot be built to another spacing.",
+    },
+  } satisfies TrackPart;
+});
+
 /** What a track is laid with when nobody has said — the commonest N-scale flex. */
 export const DEFAULT_FLEX_PART_ID = "atlas-c55-n-flex";
 
@@ -3656,6 +3754,7 @@ export const DEFAULT_FLEX_PART_ID = "atlas-c55-n-flex";
 export const BUILT_IN_TRACK_PARTS: TrackPart[] = [
   ...ATLAS_CODE55_N,
   ...FAST_TRACKS_N_ME55,
+  ...FAST_TRACKS_N_ME55_CROSSOVERS,
   ...FLEX_TRACK_PARTS,
 ];
 
@@ -4367,6 +4466,10 @@ export interface StoredTrackPart {
   minimumLengthSource?: string | null;
   substitutionRadiusInches?: number | null;
   substitutionRadiusSource?: string | null;
+  trackSpacingInches?: number | null;
+  trackSpacingSource?: string | null;
+  secondaryFrogAngleDeg?: number | null;
+  secondaryFrogAngleSource?: string | null;
   buildable?: boolean | null;
   leadInches?: number | null;
   leadSource?: string | null;
@@ -4445,6 +4548,14 @@ export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
   if (minimum) part.minimumLength = minimum;
   const substitution = dim(row.substitutionRadiusInches, row.substitutionRadiusSource);
   if (substitution) part.substitutionRadius = substitution;
+  const spacing = dim(row.trackSpacingInches, row.trackSpacingSource);
+  if (spacing) part.trackSpacing = spacing;
+  if (typeof row.secondaryFrogAngleDeg === "number")
+    part.secondaryFrogAngle = {
+      deg: row.secondaryFrogAngleDeg,
+      source: asSource(row.secondaryFrogAngleSource),
+      ...(note ? { note } : {}),
+    };
   if (row.buildable) part.buildable = true;
   if (lead) part.lead = lead;
   const outer = dim(row.outerRadiusInches, row.radiusSource);

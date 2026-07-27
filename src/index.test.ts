@@ -3113,7 +3113,12 @@ describe("track parts library (#179 stage 3)", () => {
   // landmarks and one length. Neither set is a subset of the other, and the
   // library has to hold both rather than a lowest common denominator.
   it("Fast Tracks parts carry their OWN dimension set, not Atlas's", () => {
-    const ft = BUILT_IN_TRACK_PARTS.filter((p) => p.manufacturer === "Fast Tracks");
+    // Crossovers are excluded on purpose: they are an assembly and carry a
+    // THIRD dimension set again (track spacing, second frog; no radii). Even
+    // within one manufacturer the numbers aren't uniform.
+    const ft = BUILT_IN_TRACK_PARTS.filter(
+      (p) => p.manufacturer === "Fast Tracks" && p.kind !== "crossover",
+    );
     expect(ft).toHaveLength(14); // 9 straight + 5 wye
     for (const p of ft) {
       // What Fast Tracks DO publish.
@@ -3132,6 +3137,57 @@ describe("track parts library (#179 stage 3)", () => {
       // …so it claims no body, and flex still runs through it (#193). Honest:
       // we do not know where someone's hand-built turnout stops.
       expect(partExtent(p), `${p.id} extent`).toBeNull();
+    }
+  });
+
+  // A crossover is an ASSEMBLY — two turnouts and the diagonal between two
+  // parallel tracks — so it carries a track spacing no single turnout has, and
+  // partExtent means nothing for it.
+  it("crossovers carry a track spacing, and stay out of the turnout lookups", () => {
+    const xs = BUILT_IN_TRACK_PARTS.filter((p) => p.kind === "crossover");
+    expect(xs.map((p) => p.frogNumber)).toEqual([6, 8]);
+    for (const p of xs) {
+      expect(p.manufacturer).toBe("Fast Tracks");
+      expect(p.trackSpacing!.inches).toBe(1.09);
+      expect(p.buildable).toBe(true);
+      expect(p.minimumLength!.inches).toBeLessThan(p.overallLength!.inches);
+    }
+    // Every size lookup filters kind === "turnout", so a #6 crossover must not
+    // become "the #6" and displace a real turnout.
+    expect(turnoutPartForSize(6)!.kind).toBe("turnout");
+    expect(turnoutPartForSize(8)!.kind).toBe("turnout");
+    const noCross = BUILT_IN_TRACK_PARTS.filter((p) => p.kind !== "crossover");
+    for (const n of [5, 6, 7, 8, 10]) {
+      expect(leadInchesForSize(n), `lead ${n}`).toBeCloseTo(leadInchesForSize(n, noCross), 9);
+      expect(pastFrogInchesForSize(n), `past ${n}`).toBeCloseTo(
+        pastFrogInchesForSize(n, noCross),
+        9,
+      );
+    }
+  });
+
+  // ⚠️ A REAL INCOMPATIBILITY, recorded rather than reconciled. Free-moN §2.0
+  // fixes double-track spacing at 1.125"; these fixtures are machined for 1.09"
+  // and cannot be built to another spacing. Pinned so nobody "tidies" the
+  // number toward the standard.
+  it("the Fast Tracks crossovers do NOT build to Free-moN track spacing", () => {
+    for (const p of BUILT_IN_TRACK_PARTS.filter((x) => x.kind === "crossover")) {
+      expect(p.trackSpacing!.inches).not.toBe(FREEMO_TRACK_SPACING_INCHES);
+      expect(p.trackSpacing!.inches).toBeLessThan(FREEMO_TRACK_SPACING_INCHES);
+      expect(FREEMO_TRACK_SPACING_INCHES - p.trackSpacing!.inches).toBeCloseTo(0.035, 3);
+      expect(p.trackSpacing!.note).toMatch(/Free-moN/);
+    }
+  });
+
+  // The published second frog is the diamond of a scissors crossover, where two
+  // diagonals each leaving at the frog angle meet. So it must be twice the
+  // first — a free cross-check on the pair, and it passes.
+  it("a crossover's second frog angle is twice its first", () => {
+    for (const p of BUILT_IN_TRACK_PARTS.filter((x) => x.kind === "crossover")) {
+      expect(p.secondaryFrogAngle!.deg, `${p.id}`).toBeCloseTo(
+        2 * p.actualAngle!.deg,
+        0.5,
+      );
     }
   });
 
