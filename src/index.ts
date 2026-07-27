@@ -5050,6 +5050,199 @@ export function turnoutClosure(
   };
 }
 
+// ─── PIECE GEOMETRY (ADR 0001) ───────────────────────────────────────────────
+// A part's ENDS, in the part's own frame, so a piece graph has something to
+// snap. `PartEnd` already carried position and tangent for imported .xtp files;
+// what a graph also needs is WHICH end is which, and which ends a train can run
+// between. That is what this section derives, from measurements we already have.
+
+/** Which end of a part this is. A graph connects joints; a walk uses `routes`. */
+export type PartJointRole = "throat" | "through" | "diverge" | "divergeB";
+
+/** One end of a part, in part-local inches: `x` along the through route from
+ * the tie end, `y` lateral toward the diverging side, `angleDeg` the OUTWARD
+ * tangent (0 = +x). Named, unlike {@link PartEnd}, because a graph has to know
+ * a throat from a frog. */
+export interface PartJoint extends PartEnd {
+  id: string;
+  role: PartJointRole;
+}
+
+export interface PartGeometry {
+  joints: PartJoint[];
+  /** Joint id pairs a train can run between. A turnout has two routes sharing
+   * its throat; flex has one; a double crossover has four. */
+  routes: [string, string][];
+  /** The weakest provenance among the dimensions used — so a caller can tell a
+   * placed-from-measurement part from a placed-from-a-catalogue-figure one. */
+  source: DimensionSource;
+  /** True when the diverging end came from a measured {@link
+   * TrackPart.divergingLength} rather than from assuming the diverging rail
+   * leaves the moulding at the same place the through route does. */
+  divergingEndMeasured: boolean;
+}
+
+/**
+ * Why a part has no derivable geometry — null when it has.
+ *
+ * Worth its own function because "we cannot place this yet" is a fact an owner
+ * should see in the picker, not a silent absence. It is also the parts-library
+ * backlog in machine-readable form: every string this returns is a measurement
+ * someone could take.
+ */
+export function partGeometryGap(part: TrackPart): string | null {
+  if (part.kind === "flex") return null;
+  if (part.kind === "crossover")
+    return (
+      "a crossover fixture builds one HALF of the assembly (piecesPerAssembly), " +
+      "so its published lengths describe a piece, not the finished part — the " +
+      "geometry of the whole crossover is not yet derivable from them"
+    );
+  if (part.kind === "crossing") return "crossing geometry is not modelled yet";
+  if (part.kind === "curved-turnout")
+    return "a curved turnout needs both radii AND its points/frog landmarks; only the radii are published";
+  if (!part.pointsOffset)
+    // ⚠️ CONSIDERED AND REJECTED for buildable parts: a fixture's frame could be
+    // anchored at the POINTS instead of the tie end, which would make its
+    // geometry derivable from the published radius and angle alone. Rejected
+    // because it would give one library two different meanings for x=0 — and
+    // because a hand-built turnout's tie end is wherever the builder cut, so an
+    // owner measuring their own build is the honest source. One reading per
+    // size unblocks all fourteen Fast Tracks parts.
+    return "no points offset — without it there is nowhere for the diverging route to begin";
+  if (!part.overallLength) return "no overall length — the part has no end to put a joint on";
+  if (part.frogNumber == null) return "no frog number — the diverging angle is unknown";
+  return null;
+}
+
+/**
+ * A part's joints and routes, in its own frame.
+ *
+ * The through route runs along +x from the tie end; the diverging side is +y.
+ * A placed piece is this, transformed — which is the whole point: the geometry
+ * belongs to the PART, and placement is a rotation and a translation.
+ *
+ * ⚠️ THE DIVERGING END IS MEASURED WHERE WE HAVE A MEASUREMENT. `divergingLength`
+ * (frog → end of the diverging rail, along the rail) says exactly where that end
+ * is. Without it we fall back to assuming the diverging rail leaves the moulding
+ * at the same x as the through route — which is what `partExtent` has always
+ * assumed, and is an assumption, not a reading. `divergingEndMeasured` says
+ * which you got.
+ */
+export function partGeometry(
+  part: TrackPart,
+  library = BUILT_IN_TRACK_PARTS,
+): PartGeometry | null {
+  if (partGeometryGap(part)) return null;
+
+  if (part.kind === "flex") {
+    // Flex has no fixed geometry — it is the one piece a builder cuts. Its ends
+    // are a and b; where b sits is the placed piece's business, not the part's.
+    return {
+      joints: [
+        { id: "a", role: "throat", x: 0, y: 0, angleDeg: 180 },
+        { id: "b", role: "through", x: 0, y: 0, angleDeg: 0 },
+      ],
+      routes: [["a", "b"]],
+      source: "derived",
+      divergingEndMeasured: false,
+    };
+  }
+
+  const N = part.frogNumber as number;
+  const points = part.pointsOffset!;
+  const overall = part.overallLength!;
+  const frog = part.frogOffset;
+  const lead = part.lead?.inches ?? (frog ? frog.inches - points.inches : undefined);
+  if (lead == null || !(lead > 0)) return null;
+
+  // A wye splits SYMMETRICALLY: each leg takes HALF the divergence, so each
+  // behaves as a #2N. Same rule `frogLegOf` uses — one definition, two callers.
+  const isWye = part.kind === "wye";
+  const effN = isWye ? N * 2 : N;
+  const closure = turnoutClosure(effN, { leadInches: lead });
+
+  /** The diverging route's end: measured along the rail when we have it. */
+  const divergingEnd = (): { x: number; y: number; measured: boolean } => {
+    const frogX = frog ? frog.inches : points.inches + lead;
+    const slope = closure.frogSlope;
+    const dir = 1 / Math.hypot(1, slope); // unit x-component along the rail
+    if (part.divergingLength) {
+      // Frog → end of the diverging rail, ALONG the rail.
+      const L = part.divergingLength.inches;
+      return {
+        x: frogX + L * dir,
+        y: closure.offsetAt(frogX - points.inches) + L * slope * dir,
+        measured: true,
+      };
+    }
+    return {
+      x: overall.inches,
+      y: closure.offsetAt(overall.inches - points.inches),
+      measured: false,
+    };
+  };
+
+  const weakest = (...ds: (PartDimension | undefined)[]): DimensionSource => {
+    const rank: DimensionSource[] = ["measured", "manufacturer", "derived", "unverified"];
+    let worst = 0;
+    for (const d of ds) if (d) worst = Math.max(worst, rank.indexOf(d.source));
+    return rank[worst];
+  };
+
+  const de = divergingEnd();
+  const legAngle = (Math.atan(closure.frogSlope) * 180) / Math.PI;
+
+  if (isWye) {
+    // Both legs diverge, mirrored. There is no straight through route — which is
+    // exactly why a wye has no hand.
+    return {
+      joints: [
+        { id: "throat", role: "throat", x: 0, y: 0, angleDeg: 180 },
+        { id: "legA", role: "diverge", x: de.x, y: de.y, angleDeg: legAngle },
+        { id: "legB", role: "divergeB", x: de.x, y: -de.y, angleDeg: -legAngle },
+      ],
+      routes: [
+        ["throat", "legA"],
+        ["throat", "legB"],
+      ],
+      source: weakest(points, overall, frog, part.divergingLength),
+      divergingEndMeasured: de.measured,
+    };
+  }
+
+  return {
+    joints: [
+      { id: "throat", role: "throat", x: 0, y: 0, angleDeg: 180 },
+      { id: "through", role: "through", x: overall.inches, y: 0, angleDeg: 0 },
+      { id: "diverge", role: "diverge", x: de.x, y: de.y, angleDeg: legAngle },
+    ],
+    routes: [
+      ["throat", "through"],
+      ["throat", "diverge"],
+    ],
+    source: weakest(points, overall, frog, part.divergingLength),
+    divergingEndMeasured: de.measured,
+  };
+}
+
+/** Every part that can be PLACED on a board today, and every one that can only
+ * be named — with the reason. The gap list is the parts backlog. */
+export function partsPlaceable(library = BUILT_IN_TRACK_PARTS): {
+  placeable: TrackPart[];
+  blocked: { part: TrackPart; why: string }[];
+} {
+  const placeable: TrackPart[] = [];
+  const blocked: { part: TrackPart; why: string }[] = [];
+  for (const p of library) {
+    const why = partGeometryGap(p);
+    if (why) blocked.push({ part: p, why });
+    else if (partGeometry(p, library)) placeable.push(p);
+    else blocked.push({ part: p, why: "dimensions present but inconsistent" });
+  }
+  return { placeable, blocked };
+}
+
 /** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the
  * points, `y` = lateral offset from the through route. */
 export interface FrogCasting {

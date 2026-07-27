@@ -93,6 +93,9 @@ import {
   clearancePointPastFrogInches,
   CLEARANCE_SPACING_INCHES,
   FREEMO_TRACK_SPACING_INCHES,
+  partGeometry,
+  partGeometryGap,
+  partsPlaceable,
   laneOffsetAt,
   crossoverPinches,
   PINCH_EASE_INCHES,
@@ -4748,5 +4751,104 @@ describe("crossover pinch", () => {
         ]),
       ).toEqual([]);
     });
+  });
+});
+
+
+// ─── Piece geometry (ADR 0001) ───────────────────────────────────────────────
+// A part's ENDS, in its own frame, so a piece graph has something to snap. The
+// spike proved a graph can carry the dispatcher view; this is the data it needs.
+describe("part geometry", () => {
+  it("a turnout's three joints sit where its measurements say", () => {
+    const g = partGeometry(trackPart("atlas-c55-n-7")!)!;
+    expect(g.joints.map((j) => j.id)).toEqual(["throat", "through", "diverge"]);
+    const [throat, through, diverge] = g.joints;
+    // The frame: origin at the tie end, through route along +x.
+    expect([throat.x, throat.y]).toEqual([0, 0]);
+    expect(throat.angleDeg).toBe(180);
+    expect(through.x).toBe(6); // the measured overall length
+    expect(through.y).toBe(0);
+    // The diverging end leaves at the FROG angle, atan(1/7).
+    expect(diverge.angleDeg).toBeCloseTo((Math.atan(1 / 7) * 180) / Math.PI, 6);
+    expect(diverge.y).toBeGreaterThan(0);
+    // Routes share the throat — that is what makes it a turnout.
+    expect(g.routes).toEqual([["throat", "through"], ["throat", "diverge"]]);
+    expect(g.source).toBe("measured");
+  });
+
+  // ⭐ THE CROSS-CHECK PAYING OFF. `divergingLength` (frog -> end of the
+  // diverging rail, ALONG the rail) and `overallLength` are two independent
+  // readings of the same part. Projected, they must agree — and on both wyes
+  // they do, to a few hundredths. That is the measurements corroborating each
+  // other, not the code agreeing with itself.
+  it("the measured diverging end agrees with the measured overall length", () => {
+    for (const id of ["atlas-c55-n-wye", "atlas-c55-n-wye-35"]) {
+      const part = trackPart(id)!;
+      const g = partGeometry(part)!;
+      expect(g.divergingEndMeasured, id).toBe(true);
+      const leg = g.joints.find((j) => j.id === "legA")!;
+      expect(Math.abs(leg.x - part.overallLength!.inches), `${id} within 0.1"`).toBeLessThan(0.1);
+    }
+  });
+
+  it("a wye has two mirrored legs and NO straight route — which is why it has no hand", () => {
+    const g = partGeometry(trackPart("atlas-c55-n-wye")!)!;
+    const a = g.joints.find((j) => j.id === "legA")!;
+    const b = g.joints.find((j) => j.id === "legB")!;
+    expect(a.y).toBeCloseTo(-b.y, 9);
+    expect(a.angleDeg).toBeCloseTo(-b.angleDeg, 9);
+    expect(a.x).toBeCloseTo(b.x, 9);
+    expect(g.joints.some((j) => j.role === "through")).toBe(false);
+    // Each leg takes HALF the divergence, so it behaves as a #2N — the same
+    // rule `frogLegOf` uses. One definition, two callers.
+    expect(a.angleDeg).toBeCloseTo((Math.atan(1 / (2.5 * 2)) * 180) / Math.PI, 6);
+  });
+
+  it("falls back to the moulding's end when the diverging rail wasn't measured", () => {
+    for (const id of ["atlas-c55-n-5", "atlas-c55-n-7", "atlas-c55-n-10"]) {
+      const part = trackPart(id)!;
+      const g = partGeometry(part)!;
+      expect(g.divergingEndMeasured, id).toBe(false);
+      const d = g.joints.find((j) => j.id === "diverge")!;
+      expect(d.x, id).toBe(part.overallLength!.inches);
+    }
+  });
+
+  // ⚠️ THE BLOCKED LIST IS THE PARTS BACKLOG. Every reason here is a
+  // measurement someone could take, and the count is how far the piece editor
+  // is from covering the library.
+  it("says WHY a part cannot be placed, rather than silently omitting it", () => {
+    const { placeable, blocked } = partsPlaceable();
+    expect(placeable.length + blocked.length).toBe(BUILT_IN_TRACK_PARTS.length);
+    // Everything Atlas measured, plus both flex products.
+    expect(placeable.map((p) => p.id).sort()).toEqual([
+      "atlas-c55-n-10", "atlas-c55-n-5", "atlas-c55-n-7",
+      "atlas-c55-n-flex", "atlas-c55-n-wye", "atlas-c55-n-wye-35",
+      "me-c55-n-flex",
+    ]);
+    // Every Fast Tracks turnout and wye is blocked for ONE reason, and it is a
+    // reading, not a modelling problem: they publish no points offset.
+    const ft = blocked.filter((b) => b.part.manufacturer === "Fast Tracks" && b.part.kind !== "crossover");
+    expect(ft).toHaveLength(14);
+    for (const b of ft) expect(b.why).toMatch(/points offset/);
+    expect(partGeometry(trackPart("fast-tracks-n-me55-t-6")!)).toBeNull();
+  });
+
+  it("flex has two ends and no fixed shape — the builder cuts it", () => {
+    const g = partGeometry(trackPart("atlas-c55-n-flex")!)!;
+    expect(g.joints.map((j) => j.id)).toEqual(["a", "b"]);
+    expect(g.routes).toEqual([["a", "b"]]);
+    expect(partGeometryGap(trackPart("atlas-c55-n-flex")!)).toBeNull();
+  });
+
+  // Geometry belongs to the PART. Placement is a rotation and a translation
+  // applied later — so nothing here may depend on where a piece was dropped.
+  it("is expressed in the part's own frame, with the throat at the origin", () => {
+    for (const p of partsPlaceable().placeable) {
+      const g = partGeometry(p)!;
+      const first = g.joints[0];
+      expect([first.x, first.y], p.id).toEqual([0, 0]);
+      expect(first.angleDeg, p.id).toBe(180);
+    }
   });
 });
