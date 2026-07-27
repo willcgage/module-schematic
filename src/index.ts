@@ -507,6 +507,24 @@ export interface ModuleSchematicDoc {
    * shape; absent = derive it as a lane offset from Main 1. Physical view only
    * (#131). */
   main2Path?: BenchworkPoint[] | null;
+  /**
+   * ⭐⭐ THE AUTHORED TRACK, when this module was drawn as PIECES (ADR 0001).
+   *
+   * Present = this is the source, and `tracks`, `turnouts` and every anchored
+   * feature's position are DERIVED from it by {@link deriveGraphDoc} — they are
+   * still written into the document so that everything downstream, Free-
+   * Dispatcher included, reads an ordinary document and is never told which way
+   * the module was authored.
+   *
+   * Absent = the module is authored the way it always was, and nothing about it
+   * changes. No document is converted (ADR 0001): converting one would mean
+   * inventing the leads, frogs and radii nobody measured.
+   */
+  graph?: {
+    pieces: TrackPiece[];
+    /** Where the main starts: the joint endplate A's track arrives at. */
+    startAt: { piece: string; joint: string };
+  } | null;
 }
 
 /** A benchwork-outline vertex, module-local inches. The edge from this vertex
@@ -2227,6 +2245,10 @@ export interface EditorState {
   mainPath: BenchworkPoint[];
   /** Authored Main 2 centre-line (double-track only) — empty = lane offset (#131). */
   main2Path: BenchworkPoint[];
+  /** ⭐ The track as PLACED PIECES (ADR 0001), when the owner drew it that way.
+   * Absent = authored the way it always was, and nothing changes. See
+   * {@link ModuleSchematicDoc.graph} and {@link deriveGraphDoc}. */
+  graph?: ModuleSchematicDoc["graph"];
 }
 
 /** Build the empty editor state for a module of the given length. */
@@ -2655,6 +2677,10 @@ export function stateToDoc(
     // Authored mainline path (module-local inches); only when it's a real path.
     ...(state.mainPath.length >= 2 ? { mainPath: state.mainPath } : {}),
     ...(state.main2Path.length >= 2 ? { main2Path: state.main2Path } : {}),
+    // The pieces the owner drew, carried verbatim (ADR 0001). This function
+    // stays dumb about them on purpose: deriving here would put the derivation
+    // in every save path in both apps. `deriveGraphDoc` is the one place.
+    ...(state.graph?.pieces?.length ? { graph: state.graph } : {}),
   };
 }
 
@@ -2857,6 +2883,10 @@ export function docToState(
     sections: moduleSections(d),
     mainPath,
     main2Path,
+    // ⚠️ NOT scaled by `sc()` like every position above it. A piece is placed in
+    // real inches on the board; stretching the module's length does not move it,
+    // and the length is DERIVED from the pieces anyway when a graph is present.
+    ...(d!.graph?.pieces?.length ? { graph: d!.graph } : {}),
     crossings: (d!.crossings ?? []).map((x) => ({
       id: x.id,
       name: x.name ?? "",
@@ -5992,6 +6022,38 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
     ...(signals ? { signals } : {}),
   };
   return { doc, graph, walk, warnings };
+}
+
+/**
+ * Bring a document up to date with the track its owner drew.
+ *
+ * A document with no `graph` is returned UNTOUCHED — that is the ADR's
+ * no-migration rule in one line, and it is why every module authored before this
+ * keeps behaving exactly as it did. With a graph, the tracks and turnouts are
+ * re-read off the pieces and written back into the ordinary document keys, so
+ * the module is stored in a form every existing reader already understands.
+ *
+ * ⭐ Owners' names, capacities and `module_tracks` links are carried across from
+ * the tracks already in the document, keyed by id. Re-deriving must never cost
+ * an owner the name they gave a siding.
+ */
+export function deriveGraphDoc(
+  doc: ModuleSchematicDoc,
+  library = BUILT_IN_TRACK_PARTS,
+): { doc: ModuleSchematicDoc; warnings: string[] } {
+  const g = doc.graph;
+  if (!g || !g.pieces?.length || !g.startAt) return { doc, warnings: [] };
+  const meta: NonNullable<GraphDocInput["meta"]> = {};
+  for (const t of doc.tracks ?? []) {
+    if (t.role === "main") continue;
+    meta[t.id] = {
+      ...(t.trackName ? { trackName: t.trackName } : {}),
+      ...(t.capacityFeet != null ? { capacityFeet: t.capacityFeet } : {}),
+      ...(t.moduleTrackId != null ? { moduleTrackId: t.moduleTrackId } : {}),
+    };
+  }
+  const out = graphToDoc(g.pieces, { startAt: g.startAt, base: doc, meta, library });
+  return { doc: out.doc, warnings: out.warnings };
 }
 
 /** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the

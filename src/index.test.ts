@@ -96,6 +96,7 @@ import {
   partGeometry,
   buildTrackGraph,
   graphToDoc,
+  deriveGraphDoc,
   type GraphAnchor,
   walkTrackGraph,
   placedJoints,
@@ -5474,8 +5475,88 @@ describe("an anchor round-trips through the editor state", () => {
         spots: [{ track: "main", fromPos: 10, toPos: 16, anchor: { piece: "p2", atInches: 1.5 } }],
       }],
     };
-    const back = stateToDoc(docToState(doc));
+    const back = stateToDoc(docToState(doc, 48));
     expect(back.industries![0].anchor).toEqual({ piece: "p9", atInches: 4 });
     expect(back.industries![0].spots![0].anchor).toEqual({ piece: "p2", atInches: 1.5 });
+  });
+});
+
+// ─── A document that carries its graph (ADR 0001) ────────────────────────────
+describe("deriveGraphDoc", () => {
+  const SW = "atlas-c55-n-7";
+  const FLEX = "atlas-c55-n-flex";
+  const LEAD = trackPart(SW)!.lead!.inches;
+
+  const withSpur = (at: number): NonNullable<ModuleSchematicDoc["graph"]> => {
+    const pieces: TrackPiece[] = [
+      { id: "f0", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: at - LEAD },
+      { id: "s1", partId: SW, x: at - LEAD, y: 0, rotationDeg: 0 },
+    ];
+    const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
+    pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 30 });
+    return { pieces, startAt: { piece: "f0", joint: "a" } };
+  };
+
+  // ❌ THE NO-MIGRATION RULE, in one line. A document with no graph comes back
+  // as the very same object — not a copy, not a re-derivation.
+  it("returns a document with no graph completely untouched", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1, lengthInches: 48, endplates: [{ id: "A" }, { id: "B" }],
+      tracks: [{ id: "main", role: "main", lane: 0, from: "A", to: "B" }],
+    };
+    const out = deriveGraphDoc(doc);
+    expect(out.doc).toBe(doc);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it("re-reads tracks and turnouts off the pieces", () => {
+    const { doc } = deriveGraphDoc({
+      version: 1, endplates: [{ id: "A" }, { id: "B" }], tracks: [], graph: withSpur(20),
+    });
+    expect(doc.tracks.map((t) => t.id)).toEqual(["main", "sp"]);
+    expect(doc.turnouts![0]).toMatchObject({ id: "s1", onTrack: "main", divergeTrack: "sp" });
+    expect(doc.turnouts![0].pos).toBeCloseTo(20, 6);
+    // The graph stays on the document — it is the source, not a build artefact.
+    expect(doc.graph!.pieces).toHaveLength(3);
+  });
+
+  // ⭐ Re-deriving must never cost an owner the name they gave a siding.
+  it("carries the owner's name, capacity and module_tracks link across", () => {
+    const { doc } = deriveGraphDoc({
+      version: 1,
+      endplates: [{ id: "A" }, { id: "B" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "sp", role: "spur", lane: 1, fromPos: 99, toPos: 99, trackName: "Mill Spur", capacityFeet: 210, moduleTrackId: 44 },
+      ],
+      graph: withSpur(20),
+    });
+    const sp = doc.tracks.find((t) => t.id === "sp")!;
+    expect(sp.trackName).toBe("Mill Spur");
+    expect(sp.capacityFeet).toBe(210);
+    expect(sp.moduleTrackId).toBe(44);
+    // …while the POSITIONS are the graph's, not the stale ones.
+    expect(sp.fromPos).toBeCloseTo(20, 6);
+  });
+
+  it("round-trips the graph through the editor state without touching it", () => {
+    const graph = withSpur(20);
+    const back = stateToDoc(docToState(
+      { version: 1, lengthInches: 48, endplates: [{ id: "A" }, { id: "B" }], tracks: [], graph },
+      48,
+    ));
+    expect(back.graph).toEqual(graph);
+  });
+
+  // ⚠️ A piece is placed in real inches on the board. Stretching the module's
+  // length must not drag it — and with a graph the length is derived from the
+  // pieces anyway.
+  it("does not scale pieces when the module's length changes", () => {
+    const graph = withSpur(20);
+    const state = docToState(
+      { version: 1, lengthInches: 48, endplates: [{ id: "A" }, { id: "B" }], tracks: [], graph },
+      96,
+    );
+    expect(state.graph!.pieces.find((p) => p.id === "sp")!.lengthInches).toBe(30);
   });
 });
