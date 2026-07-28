@@ -7033,3 +7033,51 @@ describe("rebuilding a module with a double crossover", () => {
     expect(c.warnings.join(" ")).toMatch(/point-sets .* apart, but a .* is 6\.54/);
   });
 });
+
+// ⭐ The panel must not ask about a product the owner has already named. It did:
+// FMN-0078's crossovers are #6, so the report demanded a measured #6 TURNOUT —
+// which has nothing to do with a #6 crossover — while `docToGraph` went ahead
+// and laid the assembly without one. The two have to agree.
+describe("a crossover's point-sets are already answered", () => {
+  const doc = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0, fromPos: 0, toPos: 96 },
+      { id: "main2", role: "main", lane: 1, fromPos: 0, toPos: 96 },
+      { id: "xoA", role: "crossover", lane: 1, fromPos: 37.98, toPos: 44.52, crossoverPartId: "fast-tracks-n-me55-c-6" },
+      { id: "xoB", role: "crossover", lane: 1, fromPos: 37.98, toPos: 44.52, crossoverPartId: "fast-tracks-n-me55-c-6" },
+    ],
+    turnouts: [
+      { id: "sw1", pos: 37.98, size: 6, onTrack: "main", divergeTrack: "xoA" },
+      { id: "sw2", pos: 44.52, size: 6, onTrack: "main2", divergeTrack: "xoA" },
+      { id: "sw3", pos: 37.98, size: 6, onTrack: "main2", divergeTrack: "xoB" },
+      { id: "sw4", pos: 44.52, size: 6, onTrack: "main", divergeTrack: "xoB" },
+    ],
+  });
+
+  it("asks nothing, and says the assembly is what answered", () => {
+    const r = moduleConversionReport(doc());
+    expect(r.unanswered).toEqual([]);
+    expect(r.readyWithoutAsking).toBe(true);
+    for (const t of r.turnouts) {
+      expect(t.from).toBe("assembly");
+      expect(t.partId).toBe("fast-tracks-n-me55-c-6");
+      expect(t.why).toBeNull();
+    }
+  });
+
+  it("still asks about an ordinary turnout on the same module", () => {
+    const d = doc();
+    d.tracks.push({ id: "spur", role: "spur", lane: 2, fromPos: 60, toPos: 80 });
+    d.turnouts!.push({ id: "sw9", pos: 60, onTrack: "main", divergeTrack: "spur" });
+    const r = moduleConversionReport(d);
+    expect(r.unanswered).toEqual(["sw9"]);
+  });
+
+  // The report and the conversion must not disagree about what is needed.
+  it("agrees with what docToGraph actually requires", () => {
+    expect(moduleConversionReport(doc()).readyWithoutAsking).toBe(true);
+    expect(docToGraph(doc()).refused).toBeNull();
+  });
+});

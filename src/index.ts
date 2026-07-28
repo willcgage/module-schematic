@@ -7239,8 +7239,9 @@ export interface TurnoutIdentity {
   statedPartId?: string | null;
   /** The part this turnout converts to; null = the owner has to say. */
   partId: string | null;
-  /** How `partId` was arrived at. */
-  from: "named" | "frog-number" | "unresolved";
+  /** How `partId` was arrived at. `assembly` = this is a crossover's own
+   * point-set, and the crossover product answers for it. */
+  from: "named" | "frog-number" | "unresolved" | "assembly";
   /**
    * The weakest provenance behind the chosen part's geometry, so a caller can
    * tell a turnout placed from real readings from one placed off a catalogue
@@ -7352,7 +7353,39 @@ export function moduleConversionReport(
   const curved = placeableTurnoutParts(library, ["curved-turnout"]);
   const blockers: ConversionBlocker[] = [];
 
+  /**
+   * ⭐ A CROSSOVER'S OWN POINT-SETS ARE ALREADY ANSWERED.
+   *
+   * The document names the crossover product on its connectors, and a double
+   * crossover is ONE assembly whose four point-sets come with it. Asking "which
+   * turnout is this?" about them asks an owner to identify parts of a product
+   * they have already named — and on a #6 crossover it asked for a measured #6
+   * TURNOUT, which has nothing to do with it.
+   */
+  const assemblyPart = new Map<string, TrackPart>();
+  for (const t of doc.tracks ?? []) {
+    if (t.role !== "crossover" || !t.crossoverPartId) continue;
+    const part = library.find((p) => p.id === t.crossoverPartId);
+    if (!part || part.kind !== "crossover" || partGeometryGap(part)) continue;
+    for (const sw of doc.turnouts ?? [])
+      if (sw.divergeTrack === t.id) assemblyPart.set(sw.id, part);
+  }
+
   const turnouts: TurnoutIdentity[] = (doc.turnouts ?? []).map((t) => {
+    const asm = assemblyPart.get(t.id);
+    if (asm)
+      return {
+        id: t.id,
+        name: t.name,
+        pos: t.pos,
+        size: t.size,
+        statedPartId: t.partId,
+        partId: asm.id,
+        from: "assembly" as const,
+        source: partGeometry(asm, library)?.source ?? null,
+        why: null,
+        candidates: [],
+      };
     const wantCurved = t.curved === true;
     const pool = wantCurved ? curved : straight;
     const base = {
