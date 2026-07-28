@@ -6907,10 +6907,34 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
    * routes are kept apart by a prefix, because both walks name their own route
    * "main".
    */
-  const walk2 = input.start2
-    ? walkTrackGraph(graph, pieces, input.start2, library)
-    : null;
-  const main2 = walk2?.routes.find((r) => r.id === "main") ?? null;
+  const start2Key = input.start2 ? `${input.start2.piece}.${input.start2.joint}` : null;
+  /**
+   * ⭐⭐ **MAIN 2 DOES NOT ALWAYS ENTER AT THE ENDPLATE.** On a single-to-double
+   * transition module it BEGINS AT A TURNOUT, so it is reached as a branch of
+   * Main 1 rather than by a walk of its own — and `start2` points at the
+   * turnout's diverging end, which is connected rather than open.
+   *
+   * That is the discriminator: an OPEN `start2` is a second main crossing the
+   * endplate and gets its own walk; a CONNECTED one is a main that begins
+   * partway along, already found by the first walk. Walking it a second time
+   * would put one run in the document twice, which is what the `claimed` check
+   * below exists to catch.
+   */
+  const start2IsOpenEnd = !!start2Key && graph.open.includes(start2Key);
+  const walk2 =
+    input.start2 && start2IsOpenEnd
+      ? walkTrackGraph(graph, pieces, input.start2, library)
+      : null;
+  /** The branch of Main 1 that IS Main 2, on a transition module. */
+  const main2FromBranch = (() => {
+    if (!start2Key || start2IsOpenEnd) return null;
+    const conn = graph.connections.find((c) => c.a === start2Key || c.b === start2Key);
+    if (!conn) return null;
+    const otherKey = conn.a === start2Key ? conn.b : conn.a;
+    const piece = graph.joints.find((j) => j.key === otherKey)?.piece;
+    return walk.routes.find((r) => r.id !== "main" && r.pieces[0] === piece) ?? null;
+  })();
+  const main2 = walk2?.routes.find((r) => r.id === "main") ?? main2FromBranch;
   /**
    * ⚠️⚠️ **A CROSSOVER IS THE ONE PIECE TWO ROUTES MAY BOTH HOLD.** Everywhere
    * else "this piece is already in a route" means the two starts landed on the
@@ -6924,22 +6948,46 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
     const piece = pieces.find((p) => p.id === id);
     return library.find((p) => p.id === piece?.partId)?.kind === "crossover";
   };
-  const claimed = new Set(walk.routes.flatMap((r) => r.pieces).filter((p) => !sharedByDesign(p)));
-  if (main2 && main2.pieces.some((p) => claimed.has(p))) {
-    // Both starts landed on the same run. Emitting it twice would put one piece
-    // of track in the document as two, on two lanes.
+  /**
+   * ⚠️⚠️ **"MAIN 1 ALREADY RUNS ALONG THIS" IS TWO DIFFERENT SITUATIONS.**
+   *
+   * The real fault is both starts landing on the SAME RUN — one piece of track
+   * emitted twice, on two lanes. That is Main 1's OWN route overlapping Main 2's.
+   *
+   * A walk-1 BRANCH overlapping Main 2 is not that at all. On a double-to-single
+   * transition Main 2 runs from the endplate to a turnout, so walk 1 reaches it
+   * through that turnout's diverging leg while walk 2 reaches it from the
+   * endplate — both correctly, and it is one run either way. Treated as a
+   * collision it dropped Main 2 and re-emitted it as a spur named after its
+   * closing curve. The branch is the same track, so it is folded into Main 2 and
+   * the turnout that opens it points there.
+   */
+  const mainPieces = new Set(main.pieces.filter((p) => !sharedByDesign(p)));
+  if (!main2FromBranch && main2 && main2.pieces.some((p) => mainPieces.has(p))) {
     warnings.push(
       "Main 2 starts on track that Main 1 already runs along — they are one run, not two",
     );
   }
-  const twoMains = !!main2 && !main2.pieces.some((p) => claimed.has(p));
+  const twoMains =
+    !!main2 && (!!main2FromBranch || !main2.pieces.some((p) => mainPieces.has(p)));
+  /** The walk-1 branch that IS Main 2 — a transition module's second main. */
+  const main2AsBranch =
+    walk2 && main2 && twoMains
+      ? walk.routes.find(
+          (r) => r.id !== "main" && r.pieces.some((p) => main2.pieces.includes(p)),
+        ) ?? null
+      : null;
 
   // ⭐ WHICH SIDE MAIN 2 IS ON IS READ, NOT AUTHORED. The 1-D model needs a
   // `mainsSwapped` flag to say Main 2 draws below; here it is simply where the
   // track is. Module-local +y is above, and endplate A's track point is the
   // origin, so the sign of its first joint's offset is the answer.
   const main2Lane = twoMains
-    ? (graph.joints.find((j) => j.key === `${input.start2!.piece}.${input.start2!.joint}`)?.y ?? 1) >= 0
+    ? // A branch-born main reaches its lane after an easement, so its SIDE is
+      // how far the run gets laterally, not where its first joint sits.
+      (main2FromBranch
+        ? main2FromBranch.lateral
+        : (graph.joints.find((j) => j.key === start2Key!)?.y ?? 1)) >= 0
       ? 1
       : -1
     : 0;
@@ -6952,15 +7000,26 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   // Persisting the graph will need a run identity of its own; nothing yet reads
   // these ids back.
   const branches = [
-    ...walk.routes.filter((r) => r.id !== "main" && r.pieces.length),
-    ...(twoMains
-      ? walk2!.routes
+    ...walk.routes.filter(
+      (r) =>
+        r.id !== "main" &&
+        r.pieces.length &&
+        r.id !== main2FromBranch?.id &&
+        r.id !== main2AsBranch?.id,
+    ),
+    ...(walk2
+      ? walk2.routes
           .filter((r) => r.id !== "main" && r.pieces.length)
           .map((r) => ({ ...r, id: `main2:${r.id}`, bornAt: r.bornAt }))
       : []),
   ];
   const trackIdOf = new Map<string, string>([["main", MAIN_TRACK_ID]]);
-  if (twoMains) trackIdOf.set("main2:main", MAIN2_TRACK_ID);
+  if (twoMains) {
+    trackIdOf.set(main2FromBranch ? main2FromBranch.id : "main2:main", MAIN2_TRACK_ID);
+    // So the turnout that opens it says `divergeTrack: "main2"` rather than the
+    // id of whatever piece the branch happened to start at.
+    if (main2AsBranch) trackIdOf.set(main2AsBranch.id, MAIN2_TRACK_ID);
+  }
   for (const r of branches) trackIdOf.set(r.id, r.pieces[0]);
   // ⚠️ A CROSSOVER IS FOUND BY BOTH WALKS — once from each main, exactly as a
   // siding is found from each of its turnouts, but now across two walks. The
@@ -7008,8 +7067,11 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
             id: MAIN2_TRACK_ID,
             role: "main" as const,
             lane: main2Lane,
-            from: epA?.id ?? "A",
-            ...(epB ? { to: epB.id } : {}),
+            // ⚠️ Only a main that CROSSES the endplates says so. A transition
+            // module's second main begins at a turnout partway along and ends
+            // at one endplate or neither; claiming A→B would tell the catalogue
+            // it presents two tracks at an end where it presents one.
+            ...(main2FromBranch ? {} : { from: epA?.id ?? "A", ...(epB ? { to: epB.id } : {}) }),
             // ⚠️ Its own extent, because a second main need not run the whole
             // module: on a transition module it starts or stops partway.
             fromPos: round(Math.min(main2!.fromPos, main2!.toPos)),
@@ -7061,8 +7123,8 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   const turnouts: SchematicTurnout[] = [];
   const allTurnouts = [
     ...walk.turnouts,
-    ...(twoMains
-      ? walk2!.turnouts.map((t) => ({
+    ...(walk2
+      ? walk2.turnouts.map((t) => ({
           ...t,
           onRoute: t.onRoute === "main" ? "main2:main" : `main2:${t.onRoute}`,
           divergeRoute: t.divergeRoute ? `main2:${t.divergeRoute}` : null,
@@ -7120,7 +7182,7 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
     }[] = [];
     const routesAll = [
       ...walk.routes.map((r) => ({ r, prefix: "" })),
-      ...(twoMains ? walk2!.routes.map((r) => ({ r, prefix: "main2:" })) : []),
+      ...(walk2 ? walk2.routes.map((r) => ({ r, prefix: "main2:" })) : []),
     ];
     const seen = new Map<string, (typeof found)[number]>();
     for (const { r, prefix } of routesAll) {
@@ -7552,33 +7614,6 @@ export function moduleConversionReport(
   // ⚠️ BLOCKERS ARE NOT QUESTIONS. A question has an answer the owner can give;
   // these are shapes the piece model cannot express at all yet, so the offer is
   // withheld rather than made and then abandoned half way.
-  /**
-   * ⚠️⚠️ A TURNOUT THAT OPENS A MAIN — a single-to-double transition, or a
-   * crossover written as two bare turnouts with no connector between them.
-   *
-   * Both mains are laid as their own runs from endplate A, so a main that
-   * actually BEGINS at a turnout is laid somewhere that turnout does not reach:
-   * its diverging route then goes nowhere, `graphToDoc` drops the turnout, and
-   * the module comes out with one fewer main and no turnout at all. It did that
-   * silently on FMN-0075, whose preview promised "1 turnout" and produced none —
-   * the branch pass never even looked, because a main is laid before it runs.
-   *
-   * Withheld rather than half-converted: losing a main is losing half the
-   * module, and no answer an owner can give supplies it. The standard actively
-   * recommends building transition modules, so this shape is common and will
-   * need proper support — laying the second main off the turnout the way a
-   * branch is laid, while keeping its `main` role in the emitted document.
-   */
-  const mainIds = new Set((doc.tracks ?? []).filter((t) => t.role === "main").map((t) => t.id));
-  for (const t of doc.turnouts ?? []) {
-    if (!mainIds.has(t.divergeTrack)) continue;
-    blockers.push({
-      kind: "turnout-opens-a-main",
-      ref: t.id,
-      why: `${t.name || t.id} opens ${t.divergeTrack}, which is a main — a main that begins at a turnout cannot be laid as pieces yet, and converting anyway would drop both it and the turnout`,
-    });
-  }
-
   for (const c of doc.crossings ?? [])
     blockers.push({
       kind: "crossing",
@@ -8032,18 +8067,91 @@ export function docToGraph(
     toPos: a.x0 + a.geom.lengthInches,
   }));
 
+  /**
+   * ⭐⭐ A MAIN THAT BEGINS AT A TURNOUT is laid as a BRANCH of the one it leaves
+   * — a single-to-double transition module, which the standard actively
+   * recommends building.
+   *
+   * ⚠️ Laid here as its own run from endplate A instead, it lands where its
+   * turnout cannot reach: the diverging route then goes nowhere, the turnout is
+   * dropped, and the module comes out with one main and no turnout at all. It
+   * did that silently on FMN-0075. So it is left out of this loop entirely and
+   * the branch pass lays it, which already knows how to leave a turnout's
+   * diverging end and ease onto a lane.
+   *
+   * Its `main` ROLE is not lost by that: {@link graphToDoc} promotes the run
+   * `start2` points at back to Main 2, whichever way it was reached.
+   */
+  /**
+   * How a second main meets the turnout that opens or closes it — a transition
+   * module, which the standard actively recommends building. Two shapes, and
+   * both are common in the database:
+   *
+   * - **`from`** — the main BEGINS at the turnout (single becoming double). It
+   *   is left out of this loop entirely; the branch pass lays it, because it
+   *   already knows how to leave a diverging end and ease onto a lane.
+   * - **`to`** — the main runs from the endplate and ENDS at the turnout (double
+   *   becoming single). It is laid here and then CLOSED onto the turnout's
+   *   diverging end, exactly as a siding closes onto its far turnout.
+   *
+   * ⚠️ Laid as a plain run from endplate to endplate, either shape lands where
+   * its turnout cannot reach it: the diverging route goes nowhere, the turnout
+   * is dropped, and the module comes out with one main and no turnout. It did
+   * that silently on FMN-0075.
+   */
+  const attachment = new Map<string, { sw: SchematicTurnout; at: "from" | "to" }>();
+  for (const t of turnouts) {
+    const m = mains.find((x) => x.id === t.divergeTrack && x.id !== main.id);
+    if (!m) continue;
+    const from = m.fromPos ?? 0;
+    const to = m.toPos ?? mainLen;
+    if (from > 0 && Math.abs(t.pos - from) < 0.01) attachment.set(m.id, { sw: t, at: "from" });
+    else if (Math.abs(t.pos - to) < 0.01) attachment.set(m.id, { sw: t, at: "to" });
+    else
+      // ⚠️ Neither end: two mains joined PARTWAY ALONG is a crossover, and one
+      // written as bare turnouts with no connector track between them has no
+      // assembly to lay. ELM Yard is the case.
+      notLaid.push({
+        id: m.id,
+        why: `${t.name || t.id} joins ${m.id} at ${t.pos}″, which is neither end of it — two mains joined partway along are a crossover, and this document has no connector track between them to lay one from`,
+      });
+  }
+
   for (const m of mains) {
+    if (attachment.get(m.id)?.at === "from") continue;
     const y = laneOffsetAt(m.lane ?? 0, 0);
     const on = turnoutsOn(m.id, y);
     for (const l of on) {
       pieces.push(l.piece);
       laidTurnouts.set(l.t.id, l);
     }
+    // A main that ENDS at a turnout is closed onto its diverging end, the way a
+    // siding closes onto its far turnout. The turnout itself is already down:
+    // it sits on Main 1, which this loop lays first.
+    let endPos = m.toPos ?? mainLen;
+    const closeAt = attachment.get(m.id);
+    if (closeAt?.at === "to") {
+      const l = laidTurnouts.get(closeAt.sw.id);
+      const fj = l ? jointAt(l.piece, l.divergeId) : null;
+      if (fj) {
+        const closing = transition(
+          `${m.id}-close`,
+          { x: fj.x, y: fj.y, headingDeg: fj.headingDeg },
+          y,
+          -1,
+        );
+        if (closing) {
+          pieces.push(closing);
+          const e = jointAt(closing, "b");
+          if (e) endPos = e.x;
+        } else endPos = fj.x;
+      }
+    }
     const laidFlex = layFlex(
       m.id,
       y,
       m.fromPos ?? 0,
-      m.toPos ?? mainLen,
+      endPos,
       [...on.map((l) => l.span), ...assemblySpans],
       m.flexCuts,
     );
@@ -8236,14 +8344,38 @@ export function docToGraph(
   };
   const startAt = startOf(main);
   if (!startAt) return refuse("nothing was laid on the mainline, so the module has no starting point");
-  const second = mains[1] ? startOf(mains[1]) : null;
+  // ⚠️ WHERE MAIN 2 BEGINS is its turnout's diverging end on a transition
+  // module, not a joint out at the endplate — `startOf` looks along a lane and
+  // would land mid-run, since the run only reaches that lane after its easement.
+  const second = mains[1]
+    ? attachment.get(mains[1].id)?.at === "from"
+      ? (() => {
+          const l = laidTurnouts.get(attachment.get(mains[1].id)!.sw.id);
+          return l ? { piece: l.piece.id, joint: l.divergeId } : null;
+        })()
+      : startOf(mains[1])
+    : null;
 
-  return {
-    graph: { pieces, startAt, ...(second ? { start2: second } : {}) },
-    refused: null,
-    notLaid,
-    warnings,
-  };
+  const graph = { pieces, startAt, ...(second ? { start2: second } : {}) };
+
+  /**
+   * ⭐⭐ **WHAT THE DERIVATION WILL SAY IS PART OF THE PREVIEW.**
+   *
+   * `docToGraph` only knows what it could not LAY. Whether the laid pieces then
+   * make a module is `graphToDoc`'s business, and its warnings were going
+   * nowhere — so FMN-0075 converted to a module with no turnout at all behind a
+   * preview that promised one and raised nothing. An owner is being asked to
+   * consent to a rebuild; they have to be told everything it is going to say.
+   */
+  const derived = graphToDoc(pieces, {
+    startAt,
+    start2: second ?? null,
+    base: doc,
+    library,
+  });
+  warnings.push(...derived.warnings);
+
+  return { graph, refused: null, notLaid, warnings };
 }
 
 /** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the

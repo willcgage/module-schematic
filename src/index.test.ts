@@ -7173,7 +7173,7 @@ describe("a placeholder for a turnout nobody has identified", () => {
   });
 });
 
-// ⚠️⚠️ FOUND BY CONVERTING FMN-0075 ON THE DEPLOYED APP. A single-to-double
+// ⚠️⚠️ FOUND BY CONVERTING FMN-0075 ON THE DEPLOYED APP, and now supported. A
 // transition module's second main BEGINS at a turnout. Both mains are laid as
 // their own runs from endplate A, so that turnout reached nothing, `graphToDoc`
 // dropped it, and the module came out with no turnout at all — after a preview
@@ -7190,19 +7190,117 @@ describe("a main that begins at a turnout", () => {
     turnouts: [{ id: "sw2", pos: 9, name: "End of Double Track", onTrack: "main", divergeTrack: "main2" }],
   });
 
-  it("withholds the offer instead of dropping a main and its turnout", () => {
-    const r = moduleConversionReport(transition());
-    expect(r.offerable).toBe(false);
-    expect(r.blockers[0].kind).toBe("turnout-opens-a-main");
-    expect(r.blockers[0].why).toMatch(/which is a main/);
+  const built = () => {
+    const c = docToGraph(transition(), { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.refused).toBeNull();
+    expect(c.notLaid).toEqual([]);
+    return c;
+  };
+
+  it("lays the second main off its turnout, and joins it", () => {
+    const c = built();
+    // ⭐ `start2` is the TURNOUT'S DIVERGING END, not a joint out at the
+    // endplate — this main does not cross one.
+    expect(c.graph!.start2).toEqual({ piece: "t-sw2", joint: "diverge" });
+    const g = buildTrackGraph(c.graph!.pieces);
+    expect(g.conflicts).toEqual([]);
+    // Main 1's two endplate ends, and Main 2's far end. Nothing dangling.
+    expect(g.open).toHaveLength(3);
   });
 
-  it("and the conversion refuses too, so the two cannot disagree", () => {
-    expect(docToGraph(transition(), { turnoutPartId: "atlas-c55-n-7" }).refused)
-      .toMatch(/which is a main/);
+  it("comes back out as a MAIN, with the turnout that opens it", () => {
+    const c = built();
+    const out = graphToDoc(c.graph!.pieces, {
+      startAt: c.graph!.startAt, start2: c.graph!.start2 ?? null, base: transition(),
+    });
+    expect(out.warnings).toEqual([]);
+    const m2 = out.doc.tracks.find((t) => t.id === "main2")!;
+    expect(m2.role).toBe("main");
+    expect(m2.lane).toBe(1);
+    expect(m2.fromPos).toBeCloseTo(9, 1);
+    expect(m2.toPos).toBeCloseTo(36, 1);
+    // ⚠️ It does NOT cross the endplates, so it must not claim to: saying A→B
+    // would tell the catalogue the module presents two tracks at an end where
+    // it presents one.
+    expect(m2.from).toBeUndefined();
+    expect(m2.to).toBeUndefined();
+    // And the turnout is there, opening it — the thing that used to vanish.
+    expect(out.doc.turnouts).toHaveLength(1);
+    expect(out.doc.turnouts![0].onTrack).toBe("main");
+    expect(out.doc.turnouts![0].divergeTrack).toBe("main2");
+    expect(out.doc.turnouts![0].pos).toBeCloseTo(9, 6);
   });
 
-  // ⚠️ It must not catch an ordinary crossover, whose turnouts open a CONNECTOR.
+  it("does not report the two mains as one run", () => {
+    const c = built();
+    const out = graphToDoc(c.graph!.pieces, {
+      startAt: c.graph!.startAt, start2: c.graph!.start2 ?? null, base: transition(),
+    });
+    // The collision check is about two STARTS landing on one run; a branch-born
+    // Main 2 is inside walk 1 by design.
+    expect(out.warnings.join(" ")).not.toMatch(/one run, not two/);
+  });
+
+  // ⚠️ THE MIRROR SHAPE, and the commoner one — four production modules. Main 2
+  // runs FROM the endplate and ENDS at the turnout (double becoming single), so
+  // walk 1 reaches it through the turnout's diverging leg while walk 2 reaches
+  // it from the endplate. Treating that as a collision dropped Main 2 and
+  // re-emitted it as a spur named after its own closing curve.
+  const doubleToSingle = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 48,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+      { id: "main2", role: "main", lane: 1, fromPos: 0, toPos: 17.4 },
+    ],
+    turnouts: [{ id: "sw1", pos: 17.4, onTrack: "main", divergeTrack: "main2" }],
+  });
+
+  it("closes a main that ENDS at a turnout, and keeps it a main", () => {
+    const c = docToGraph(doubleToSingle(), { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.refused).toBeNull();
+    expect(c.notLaid).toEqual([]);
+    const g = buildTrackGraph(c.graph!.pieces);
+    expect(g.conflicts).toEqual([]);
+    expect(g.open).toHaveLength(3);
+    const out = graphToDoc(c.graph!.pieces, {
+      startAt: c.graph!.startAt, start2: c.graph!.start2 ?? null, base: doubleToSingle(),
+    });
+    expect(out.warnings.join(" ")).not.toMatch(/one run, not two/);
+    const m2 = out.doc.tracks.find((t) => t.id === "main2")!;
+    expect(m2.role).toBe("main");
+    expect(m2.fromPos).toBeCloseTo(0, 6);
+    expect(m2.toPos).toBeCloseTo(17.4, 1);
+    // ⭐ And it is not ALSO emitted as a spur under the branch's own name.
+    expect(out.doc.tracks.filter((t) => t.role === "spur" || t.role === "siding")).toEqual([]);
+    expect(out.doc.turnouts![0].divergeTrack).toBe("main2");
+  });
+
+  // ⚠️ Two mains joined PARTWAY ALONG are a crossover. Written as bare turnouts
+  // with no connector between them (ELM Yard), there is no assembly to lay —
+  // but it must be said, not silently dropped.
+  it("says so when two mains are joined partway along", () => {
+    const c = docToGraph({
+      version: 1, lengthInches: 96,
+      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+      ],
+      turnouts: [
+        { id: "sw7", pos: 40, onTrack: "main", divergeTrack: "main2" },
+        { id: "sw8", pos: 34, onTrack: "main2", divergeTrack: "main" },
+      ],
+    }, { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.refused).toBeNull();
+    expect(c.notLaid.some((n) => /neither end of it/.test(n.why))).toBe(true);
+    // ⭐ AND the derivation's own warnings reach the preview — this is what let
+    // FMN-0075 convert to a module with no turnout behind a silent preview.
+    expect(c.warnings.some((w) => /diverging route goes nowhere/.test(w))).toBe(true);
+  });
+
+  // ⚠️ An ordinary crossover's turnouts open a CONNECTOR, not a main, and must
+  // not be mistaken for this shape.
   it("leaves a crossover alone — its turnouts open a connector, not a main", () => {
     const r = moduleConversionReport({
       version: 1, lengthInches: 96,
