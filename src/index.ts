@@ -7552,6 +7552,33 @@ export function moduleConversionReport(
   // ⚠️ BLOCKERS ARE NOT QUESTIONS. A question has an answer the owner can give;
   // these are shapes the piece model cannot express at all yet, so the offer is
   // withheld rather than made and then abandoned half way.
+  /**
+   * ⚠️⚠️ A TURNOUT THAT OPENS A MAIN — a single-to-double transition, or a
+   * crossover written as two bare turnouts with no connector between them.
+   *
+   * Both mains are laid as their own runs from endplate A, so a main that
+   * actually BEGINS at a turnout is laid somewhere that turnout does not reach:
+   * its diverging route then goes nowhere, `graphToDoc` drops the turnout, and
+   * the module comes out with one fewer main and no turnout at all. It did that
+   * silently on FMN-0075, whose preview promised "1 turnout" and produced none —
+   * the branch pass never even looked, because a main is laid before it runs.
+   *
+   * Withheld rather than half-converted: losing a main is losing half the
+   * module, and no answer an owner can give supplies it. The standard actively
+   * recommends building transition modules, so this shape is common and will
+   * need proper support — laying the second main off the turnout the way a
+   * branch is laid, while keeping its `main` role in the emitted document.
+   */
+  const mainIds = new Set((doc.tracks ?? []).filter((t) => t.role === "main").map((t) => t.id));
+  for (const t of doc.turnouts ?? []) {
+    if (!mainIds.has(t.divergeTrack)) continue;
+    blockers.push({
+      kind: "turnout-opens-a-main",
+      ref: t.id,
+      why: `${t.name || t.id} opens ${t.divergeTrack}, which is a main — a main that begins at a turnout cannot be laid as pieces yet, and converting anyway would drop both it and the turnout`,
+    });
+  }
+
   for (const c of doc.crossings ?? [])
     blockers.push({
       kind: "crossing",

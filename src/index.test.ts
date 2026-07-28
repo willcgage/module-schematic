@@ -7172,3 +7172,52 @@ describe("a placeholder for a turnout nobody has identified", () => {
     expect(again.turnouts[0].from).toBe("named");
   });
 });
+
+// ⚠️⚠️ FOUND BY CONVERTING FMN-0075 ON THE DEPLOYED APP. A single-to-double
+// transition module's second main BEGINS at a turnout. Both mains are laid as
+// their own runs from endplate A, so that turnout reached nothing, `graphToDoc`
+// dropped it, and the module came out with no turnout at all — after a preview
+// that promised "1 turnout" and raised no warning. The branch pass never looked,
+// because a main is laid before it runs.
+describe("a main that begins at a turnout", () => {
+  const transition = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 48,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0 },
+      { id: "main2", role: "main", lane: 1, fromPos: 9, toPos: 36 },
+    ],
+    turnouts: [{ id: "sw2", pos: 9, name: "End of Double Track", onTrack: "main", divergeTrack: "main2" }],
+  });
+
+  it("withholds the offer instead of dropping a main and its turnout", () => {
+    const r = moduleConversionReport(transition());
+    expect(r.offerable).toBe(false);
+    expect(r.blockers[0].kind).toBe("turnout-opens-a-main");
+    expect(r.blockers[0].why).toMatch(/which is a main/);
+  });
+
+  it("and the conversion refuses too, so the two cannot disagree", () => {
+    expect(docToGraph(transition(), { turnoutPartId: "atlas-c55-n-7" }).refused)
+      .toMatch(/which is a main/);
+  });
+
+  // ⚠️ It must not catch an ordinary crossover, whose turnouts open a CONNECTOR.
+  it("leaves a crossover alone — its turnouts open a connector, not a main", () => {
+    const r = moduleConversionReport({
+      version: 1, lengthInches: 96,
+      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0, fromPos: 0, toPos: 96 },
+        { id: "main2", role: "main", lane: 1, fromPos: 0, toPos: 96 },
+        { id: "xoA", role: "crossover", lane: 1, fromPos: 37.98, toPos: 44.52, crossoverPartId: "fast-tracks-n-me55-c-6" },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 37.98, onTrack: "main", divergeTrack: "xoA" },
+        { id: "sw2", pos: 44.52, onTrack: "main2", divergeTrack: "xoA" },
+      ],
+    });
+    expect(r.blockers).toEqual([]);
+    expect(r.offerable).toBe(true);
+  });
+});
