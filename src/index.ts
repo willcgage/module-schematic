@@ -8149,7 +8149,7 @@ export function docToGraph(
    * ELM Yard's own numbers back the discrete reading: 6.0″ apart, where a #6
    * assembly's crossing run is 6.75″ and a #5's is 5.63″.
    */
-  const mainToMainPairs: { a: SchematicTurnout; b: SchematicTurnout }[] = [];
+  const mainToMainPairs: { a: SchematicTurnout; b: SchematicTurnout; pairKey: string }[] = [];
   {
     const isMain = (id: string) => mainIdsAll.has(id);
     const used = new Set<string>();
@@ -8170,9 +8170,18 @@ export function docToGraph(
       if (!partner) continue;
       used.add(t.id);
       used.add(partner.id);
-      mainToMainPairs.push({ a: t, b: partner });
+      mainToMainPairs.push({
+        a: t,
+        b: partner,
+        pairKey: [t.onTrack, t.divergeTrack].sort().join("↔"),
+      });
     }
   }
+  /** How many crossings join the same two mains: ONE is a single crossover, TWO
+   * is a scissors — and only the scissors raises the assembly question. */
+  const crossingsBetween = new Map<string, number>();
+  for (const p of mainToMainPairs)
+    crossingsBetween.set(p.pairKey, (crossingsBetween.get(p.pairKey) ?? 0) + 1);
   /** Each half of a pair diverges TOWARD the other, which is what makes them a
    * crossover rather than two turnouts pointing away from each other. */
   const divergeFarOverride = new Map<string, number>();
@@ -8282,9 +8291,25 @@ export function docToGraph(
       rotationDeg: (Math.atan2(dy, dx) * 180) / Math.PI,
       lengthInches: r3(len),
     });
-    warnings.push(
-      `${pair.a.name || pair.a.id} and ${pair.b.name || pair.b.id} are laid as two separate turnouts with a ${len.toFixed(1)}″ piece of track between them, which is what the document describes. If they are really one crossover assembly, name the product on a connector track and it will be laid as the single piece it is.`,
-    );
+    /**
+     * ⚠️ ONLY A SCISSORS RAISES THE ASSEMBLY QUESTION.
+     *
+     * A SINGLE crossover simply IS a turnout on each main with a connector
+     * between them — there is no one-piece product to have bought instead, so
+     * there is nothing to disclose and nothing to correct. Telling an owner to
+     * "name the product" would send them looking for a thing that does not
+     * exist. (Its hand — RH or LH — is which way it takes you, and like a
+     * turnout's it lives at purchase and placement, not in the model.)
+     *
+     * TWO crossings between the same pair of mains is a double crossover, and
+     * that one really might be a single moulding (ADR 0003). Absent a named
+     * product the discrete build is the honest default, and THAT is worth
+     * saying, because it is a reading of an ambiguous document.
+     */
+    if ((crossingsBetween.get(pair.pairKey) ?? 1) > 1)
+      warnings.push(
+        `${pair.a.name || pair.a.id} and ${pair.b.name || pair.b.id} are two of four turnouts crossing between the same pair of mains — a double crossover. They are laid as separate turnouts with a ${len.toFixed(1)}″ piece of track between them, which is what the document describes. If it is really a one-piece double crossover, name the product on a connector track and it will be laid as the single assembly it is.`,
+      );
   }
 
   // ── EVERY OTHER TRACK HANGS OFF A TURNOUT. Laid outward from the mains,

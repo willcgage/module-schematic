@@ -7313,12 +7313,31 @@ describe("a main that begins at a turnout", () => {
     expect(g.open).toHaveLength(4); // two mains, two ends each
   });
 
-  // ⭐ THE ASSUMPTION IS DISCLOSED. An owner who did buy an assembly has to be
-  // told we read their module the other way, and how to say so.
-  it("says which way it read the module, and how to correct it", () => {
+  /**
+   * ⭐ A SINGLE CROSSOVER RAISES NO QUESTION, so it says nothing.
+   *
+   * Will, 2026-07-28: "It might not be a double crossover, but could be a RH or
+   * LH single crossover." A single crossover simply IS a turnout on each main
+   * with a connector between them — there is no one-piece product it might have
+   * been instead, so telling an owner to "name the product" would send them
+   * looking for a thing that does not exist.
+   */
+  it("says nothing about a single crossover — there is nothing to correct", () => {
     const c = docToGraph(bareCrossover(), { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.warnings.join(" ")).not.toMatch(/name the product/);
+  });
+
+  // ⚠️ A SCISSORS is the one that might be a single moulding (ADR 0003), so the
+  // discrete reading of an ambiguous document IS worth disclosing.
+  it("discloses the reading only for a scissors — four turnouts, two crossings", () => {
+    const doc = bareCrossover();
+    doc.turnouts!.push(
+      { id: "sw9", pos: 60, name: "Crossover 3", onTrack: "main", divergeTrack: "main2" },
+      { id: "sw10", pos: 66, name: "Crossover 4", onTrack: "main2", divergeTrack: "main" },
+    );
+    const c = docToGraph(doc, { turnoutPartId: "atlas-c55-n-7" });
     const w = c.warnings.join(" ");
-    expect(w).toMatch(/two separate turnouts with a .* piece of track between them/);
+    expect(w).toMatch(/a double crossover/);
     expect(w).toMatch(/name the product on a connector track/);
   });
 
