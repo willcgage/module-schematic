@@ -96,6 +96,7 @@ import {
   partGeometry,
   buildTrackGraph,
   graphToDoc,
+  insertIntoRun,
   BUMPER_DRAWN_INCHES,
   sectionalArcInches,
   TRACK_PART_KINDS,
@@ -6308,5 +6309,102 @@ describe("a sectional curve is DRAWN as an arc", () => {
     expect(lastUp.y).toBeGreaterThan(0);
     expect(lastDown.y).toBeCloseTo(-lastUp.y, 9);
     expect(lastDown.x).toBeCloseTo(lastUp.x, 9);
+  });
+});
+
+// ─── Cutting a run to take a piece (Will, 2026-07-27) ────────────────────────
+// "When I drop a turnout on the track, it should cut the track there and
+// automatically snap to the new joints." Snapping alone cannot: the middle of a
+// run has no open joint, so the joints have to be MADE by cutting.
+describe("insertIntoRun", () => {
+  const FLEX = "atlas-c55-n-flex";
+  const SW = "atlas-c55-n-7";
+  const body = (() => {
+    const j = partGeometry(trackPart(SW)!)!.joints;
+    return j.find((x) => x.id === "through")!.x - j.find((x) => x.id === "throat")!.x;
+  })();
+  const run = (over: Partial<TrackPiece> = {}): TrackPiece => ({
+    id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 40, ...over,
+  });
+  const turnout = (): TrackPiece => ({ id: "sw", partId: SW, x: 0, y: 0, rotationDeg: 0 });
+
+  it("cuts the run in two and joins both halves to the piece", () => {
+    const got = insertIntoRun([run()], turnout(), { x: 12, y: 0 })!;
+    expect(got).not.toBeNull();
+    const graph = buildTrackGraph(got.pieces);
+    // Every joint of the new turnout's run is MADE, not merely near.
+    expect(graph.conflicts).toEqual([]);
+    expect(graph.connections).toHaveLength(2);
+    // …and the lengths still add up to the run that was there.
+    const flexTotal = got.pieces
+      .filter((p) => p.partId === FLEX)
+      .reduce((t, p) => t + (p.lengthInches ?? 0), 0);
+    expect(flexTotal + body).toBeCloseTo(40, 6);
+  });
+
+  it("walks straight through the result, so the module is the length it was", () => {
+    const got = insertIntoRun([run()], turnout(), { x: 12, y: 0 })!;
+    const w = walkTrackGraph(buildTrackGraph(got.pieces), got.pieces, { piece: "m", joint: "a" });
+    expect(w.routes[0].toPos).toBeCloseTo(40, 6);
+    expect(w.turnouts[0].id).toBe("sw");
+  });
+
+  // ⚠️ ONLY FLEX CAN BE CUT. A turnout is a moulding: you cannot saw one in half
+  // and have two of anything.
+  it("refuses to cut a part that is not flex", () => {
+    const pieces = [{ id: "sw0", partId: SW, x: 0, y: 0, rotationDeg: 0 }];
+    expect(insertIntoRun(pieces, turnout(), { x: 3, y: 0 })).toBeNull();
+  });
+
+  // ⚠️ AND THE PIECE HAS TO FIT — a #7 is six inches of the run.
+  it("refuses an insertion that would run off the end", () => {
+    expect(insertIntoRun([run({ lengthInches: 4 })], turnout(), { x: 2, y: 0 })).toBeNull();
+  });
+
+  it("ignores a drop nowhere near the run", () => {
+    expect(insertIntoRun([run()], turnout(), { x: 12, y: 20 })).toBeNull();
+  });
+
+  // A bent run keeps its radius on both sides of the cut, and the piece sits on
+  // the tangent where it landed — a straight turnout in a curve genuinely kinks,
+  // which is true of the real thing too.
+  it("cuts a bent run and keeps both halves bent", () => {
+    const bent = run({ lengthInches: 40, radiusInches: 30 });
+    const got = insertIntoRun([bent], turnout(), (() => {
+      const mid = flexRunEnd(15, 30);
+      return { x: mid.x, y: mid.y };
+    })())!;
+    expect(got).not.toBeNull();
+    for (const p of got.pieces.filter((x) => x.partId === FLEX))
+      expect(p.radiusInches).toBe(30);
+    expect(buildTrackGraph(got.pieces).connections).toHaveLength(2);
+  });
+
+  it("drops the stub when the cut lands at the very start", () => {
+    const got = insertIntoRun([run()], turnout(), { x: 0, y: 0 })!;
+    expect(got.pieces.some((p) => p.id === "m")).toBe(false);
+    expect(buildTrackGraph(got.pieces).connections).toHaveLength(1);
+  });
+});
+
+// ⚠️ A module whose document PLACES TRACK is asserting that a main exists —
+// `pos` means inches from endplate A along it. Refusing a spine there drew the
+// board and silently none of its track (FMN-0078's card).
+describe("a spine for a module that already has track", () => {
+  const base = { lengthInches: 96, geometryType: null };
+  it("still gives a blank module no main", () => {
+    expect(moduleCenterline({ ...base }).length).toBe(0);
+  });
+  it("gives one to a module with track on it", () => {
+    const c = moduleCenterline({ ...base, hasPlacedTrack: true });
+    expect(c.length).toBeGreaterThanOrEqual(2);
+    expect(c[c.length - 1].x).toBeCloseTo(96, 6);
+  });
+  it("still prefers a drawn main when there is one", () => {
+    const c = moduleCenterline({
+      ...base, hasPlacedTrack: true,
+      mainPath: [{ x: 0, y: 0 }, { x: 40, y: 5 }],
+    });
+    expect(c[c.length - 1].y).toBeCloseTo(5, 6);
   });
 });

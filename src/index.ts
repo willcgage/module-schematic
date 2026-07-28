@@ -959,6 +959,12 @@ export interface ModuleFootprintInput {
   /** A balloon / return loop — the centre-line turns back on itself, so its far
    * end is the THROAT, not an endplate; only endplate A's face is emitted (#loop). */
   loop?: boolean;
+  /**
+   * The document already places track along a main (see {@link
+   * moduleCenterline}). Set from the doc's own `tracks`; without it a module
+   * whose track was authored before it had a geometry draws as a bare board.
+   */
+  hasPlacedTrack?: boolean;
   /** Axial endplate configs (A first, then B), same as
    * {@link ModuleGeometryInput.endplateConfigs}. `"none"` at B means the module
    * presents no far endplate, so no face is emitted there (#184/#191). */
@@ -1004,7 +1010,14 @@ export function moduleCenterline(input: ModuleFootprintInput): BenchworkPoint[] 
   // No drawn main and no geometry → the owner hasn't established the mainline
   // yet. A fresh module opens as a blank board; the main is drawn as a layer,
   // not auto-derived. (Legacy modules carry a geometry, so they still derive.)
-  if (!input.geometryType) return [];
+  //
+  // ⚠️ UNLESS THE DOCUMENT ALREADY PLACES TRACK. `pos` means inches from
+  // endplate A ALONG THE MAIN, so a document with tracks on it is asserting
+  // that a main exists — refusing one then draws the board and silently none of
+  // its track, which is what a card for such a module did. The blank-module
+  // rule is about a module with NOTHING on it, and a module with track is not
+  // that. Callers pass `hasPlacedTrack` from the document they already hold.
+  if (!input.geometryType && !input.hasPlacedTrack) return [];
   const L = input.lengthInches > 0 ? input.lengthInches : 24;
   const gt = input.geometryType;
   if (gt === "dead_end") return [{ x: 0, y: 0 }];
@@ -6059,6 +6072,134 @@ export function fitFlexBetween(
     rotationDeg: norm360((Math.atan2(dy, dx) * 180) / Math.PI),
     lengthInches: Math.round(len * 1000) / 1000,
   };
+}
+
+/** A run cut in two to let a piece in. */
+export interface RunInsertion {
+  /** The whole set: the host shortened, the new piece, and the remainder. */
+  pieces: TrackPiece[];
+  /** The run that was cut, and the piece that went into it. */
+  hostId: string;
+  insertedId: string;
+}
+
+/**
+ * Drop a piece ONTO a run and cut the run to take it.
+ *
+ * ⭐ Will, 2026-07-27: *"When I drop a turnout on the track, it should cut the
+ * track there and automatically snap to the new joints."* Snapping alone cannot
+ * do this: the middle of a run has no open joint, so there is nothing to snap
+ * TO — the joints have to be made by cutting, which is exactly what a builder
+ * does with a razor saw.
+ *
+ * ⚠️ ONLY FLEX CAN BE CUT. A turnout or a sectional piece is a moulding: you
+ * cannot saw one in half and have two of anything. Dropping onto one is refused
+ * rather than fudged.
+ *
+ * ⚠️ AND THE PIECE HAS TO FIT. It consumes length along the run — a #7 is six
+ * inches of it — so an insertion that would run off the end is refused instead
+ * of silently producing a remainder of negative length.
+ */
+export function insertIntoRun(
+  pieces: TrackPiece[],
+  fresh: TrackPiece,
+  at: { x: number; y: number },
+  library = BUILT_IN_TRACK_PARTS,
+  withinInches = 1,
+): RunInsertion | null {
+  // The nearest run, measured against the rail rather than the piece's origin.
+  let host: TrackPiece | null = null;
+  let bestD = Infinity;
+  for (const piece of pieces) {
+    const part = library.find((x) => x.id === piece.partId);
+    if (part?.kind !== "flex") continue;
+    for (const { points } of pieceRoutePaths(piece, library))
+      for (let i = 1; i < points.length; i++) {
+        const d = distanceToSegment(at, points[i - 1], points[i]);
+        if (d < bestD) {
+          bestD = d;
+          host = piece;
+        }
+      }
+  }
+  if (!host || bestD > withinInches) return null;
+
+  const L = host.lengthInches ?? 0;
+  const R = host.radiusInches;
+  // How far along the host the drop lands, by walking its own arc.
+  const steps = 200;
+  let s = 0;
+  let closest = Infinity;
+  for (let i = 0; i <= steps; i++) {
+    const t = (L * i) / steps;
+    const local = flexRunEnd(t, R);
+    const world = placeLocal(host, local.x, local.y);
+    const d = Math.hypot(world.x - at.x, world.y - at.y);
+    if (d < closest) {
+      closest = d;
+      s = t;
+    }
+  }
+
+  // Sit the new piece on the run, pointing the way the run points there.
+  const cutLocal = flexRunEnd(s, R);
+  const cut = placeLocal(host, cutLocal.x, cutLocal.y);
+  const heading = norm360(host.rotationDeg + (host.flipped ? -cutLocal.headingDeg : cutLocal.headingDeg));
+  const placed: TrackPiece = { ...fresh, x: cut.x, y: cut.y, rotationDeg: heading };
+
+  // What it consumes along the run: entry joint to the one the run leaves by.
+  const js = placedJoints([placed], library);
+  const entry = js.find((j) => j.joint === "throat" || j.joint === "a");
+  const exit = js.find((j) => j.joint === "through" || j.joint === "b");
+  if (!entry || !exit) return null;
+  const body = Math.hypot(exit.x - entry.x, exit.y - entry.y);
+  const rest = L - s - body;
+  if (s < 0 || rest < 0) return null;
+
+  const ids = new Set(pieces.map((p) => p.id));
+  let n = 1;
+  while (ids.has(`${host.id}b${n}`)) n += 1;
+  const tail: TrackPiece = {
+    ...host,
+    id: `${host.id}b${n}`,
+    x: exit.x,
+    y: exit.y,
+    rotationDeg: exit.headingDeg,
+    lengthInches: rest,
+  };
+
+  const out = pieces.map((p) => (p.id === host!.id ? { ...p, lengthInches: s } : p));
+  // A cut at the very start or end leaves a stub of nothing — drop it rather
+  // than leaving a zero-length run for the graph to puzzle over.
+  const kept = out.filter((p) => p.id !== host!.id || s > 0);
+  return {
+    pieces: [...kept, placed, ...(rest > 0 ? [tail] : [])],
+    hostId: host.id,
+    insertedId: placed.id,
+  };
+}
+
+/** A point in a piece's own frame, put on the board. */
+function placeLocal(piece: TrackPiece, x: number, y: number): { x: number; y: number } {
+  const rad = (piece.rotationDeg * Math.PI) / 180;
+  const ly = piece.flipped ? -y : y;
+  return {
+    x: piece.x + x * Math.cos(rad) - ly * Math.sin(rad),
+    y: piece.y + x * Math.sin(rad) + ly * Math.cos(rad),
+  };
+}
+
+function distanceToSegment(
+  p: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const len2 = vx * vx + vy * vy;
+  if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2));
+  return Math.hypot(p.x - (a.x + t * vx), p.y - (a.y + t * vy));
 }
 
 /** A route the walk found: a continuous run of pieces a train can travel. */
