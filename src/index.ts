@@ -3423,7 +3423,20 @@ export interface TrackPart {
    * {@link secondaryFrogAngle}, which no single turnout has, and
    * {@link piecesPerAssembly} — because its lengths describe the HALF, not the
    * finished crossover. */
-  kind: "turnout" | "wye" | "curved-turnout" | "crossover" | "crossing" | "flex" | "bumper";
+  kind:
+    | "turnout"
+    | "wye"
+    | "curved-turnout"
+    | "crossover"
+    | "crossing"
+    | "flex"
+    /** ⚠️ A SECTIONAL PIECE IS NOT FLEX CUT TO LENGTH, even though the rail ends
+     * up in the same place. Its length belongs to the PART and cannot be
+     * changed, because an owner has a box of them and cannot cut one — which is
+     * the whole reason to model it separately from flex. */
+    | "straight"
+    | "curve"
+    | "bumper";
   /** Manufacturer part numbers by hand, where the part has a hand. */
   partNumbers?: { left?: string; right?: string; single?: string };
   /** Frog number N (the 1:N ratio). Definitional, so no provenance needed. */
@@ -3489,6 +3502,23 @@ export interface TrackPart {
   divergingLength?: PartDimension;
   /** Diverging route radius (straight turnouts). */
   divergingRadius?: PartDimension;
+  /**
+   * SECTIONAL CURVE only: the radius it is built to.
+   *
+   * ⚠️ Distinct from {@link outerRadius}/{@link innerRadius}, which are the two
+   * routes of a CURVED TURNOUT. A plain curve has one radius, and giving it the
+   * "outer" one would say there is another.
+   */
+  radius?: PartDimension;
+  /**
+   * SECTIONAL CURVE only: how much of a circle the piece covers, degrees.
+   *
+   * ⭐ Radius and arc are how curves are SOLD ("19″ radius, 10°"), so they are
+   * what an owner can read off the box. The piece's length is the arc between
+   * them and is never stored — a chord recorded as a length would quietly
+   * shorten every curve on the module.
+   */
+  arcDegrees?: number;
   /** Curved turnouts: the two concentric radii. */
   outerRadius?: PartDimension;
   innerRadius?: PartDimension;
@@ -4865,6 +4895,9 @@ export interface StoredTrackPart {
   outerRadiusInches?: number | null;
   innerRadiusInches?: number | null;
   radiusSource?: string | null;
+  /** Sectional curve: its single radius, and how far it turns. */
+  radiusInches?: number | null;
+  arcDegrees?: number | null;
   actualAngleDeg?: number | null;
   actualAngleSource?: string | null;
   measurementNote?: string | null;
@@ -4908,17 +4941,22 @@ export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
         }
       : dim(row.leadInches, row.leadSource);
 
-  const kind = row.kind;
+  // ⚠️ EVERY KIND, not a hand-picked few. This allow-list had three entries and
+  // silently turned everything else into a TURNOUT — so a stored crossover,
+  // flex, bumper or sectional piece came back claiming to be a turnout and was
+  // then blocked for having no points offset, blaming a measurement that was
+  // never going to exist. Kinds are added to the type often enough that the
+  // list has to live next to it.
+  const kind = TRACK_PART_KINDS.includes(row.kind as TrackPart["kind"])
+    ? (row.kind as TrackPart["kind"])
+    : "turnout";
   const part: TrackPart = {
     id: row.slug,
     manufacturer: row.manufacturer,
     line: row.line,
     scale: "N",
     name: row.name,
-    kind:
-      kind === "wye" || kind === "curved-turnout" || kind === "crossing"
-        ? kind
-        : "turnout",
+    kind,
   };
   const numbers = {
     ...(row.partNumberLeft ? { left: row.partNumberLeft } : {}),
@@ -4953,6 +4991,13 @@ export function storedPartToTrackPart(row: StoredTrackPart): TrackPart {
   const inner = dim(row.innerRadiusInches, row.radiusSource);
   if (outer) part.outerRadius = outer;
   if (inner) part.innerRadius = inner;
+  // ⚠️ A SECTIONAL CURVE'S OWN RADIUS, not one of a curved turnout's pair.
+  // Without this an admin could enter a curve's radius and arc and the part
+  // would still come back unplaceable, with the palette blaming a missing
+  // radius that had just been typed in.
+  const radius = dim(row.radiusInches, row.radiusSource);
+  if (radius) part.radius = radius;
+  if (typeof row.arcDegrees === "number") part.arcDegrees = row.arcDegrees;
   if (typeof row.actualAngleDeg === "number")
     part.actualAngle = {
       deg: row.actualAngleDeg,
@@ -5277,6 +5322,13 @@ export function partGeometryGap(part: TrackPart): string | null {
   // bumper as much as of a product. Blocking it for want of a dimension would
   // withhold the one piece whose whole meaning is independent of its size.
   if (part.kind === "bumper") return null;
+  if (part.kind === "straight")
+    return part.overallLength ? null : "no overall length — a sectional straight IS its length";
+  if (part.kind === "curve") {
+    if (!part.radius) return "no radius — a sectional curve is a radius and an arc";
+    if (part.arcDegrees == null) return "no arc — the radius alone does not say how far it turns";
+    return null;
+  }
   if (part.kind === "crossover")
     return (
       "a crossover fixture builds one HALF of the assembly (piecesPerAssembly), " +
@@ -5319,6 +5371,26 @@ export function partGeometry(
   library = BUILT_IN_TRACK_PARTS,
 ): PartGeometry | null {
   if (partGeometryGap(part)) return null;
+
+  if (part.kind === "straight" || part.kind === "curve") {
+    // ⭐ THE SAME ARC DEFINITION BENT FLEX USES (`flexRunEnd`), so a sectional
+    // curve and a bent run of flex of the same radius land in exactly the same
+    // place. Two definitions of an arc in one library would be a bug waiting
+    // for someone to lay one against the other.
+    const end =
+      part.kind === "curve"
+        ? flexRunEnd(sectionalArcInches(part), part.radius!.inches)
+        : { x: part.overallLength!.inches, y: 0, headingDeg: 0 };
+    return {
+      joints: [
+        { id: "a", role: "throat", x: 0, y: 0, angleDeg: 180 },
+        { id: "b", role: "through", x: end.x, y: end.y, angleDeg: end.headingDeg },
+      ],
+      routes: [["a", "b"]],
+      source: (part.kind === "curve" ? part.radius : part.overallLength)?.source ?? "unverified",
+      divergingEndMeasured: false,
+    };
+  }
 
   if (part.kind === "bumper") {
     // ⭐ ONE JOINT, AND NO ROUTE THROUGH IT — which is the entire point. A
@@ -5668,7 +5740,34 @@ export const JOINT_SNAP_INCHES = 0.01;
  * scrap. A named product supplies its own `overallLength` and this stops
  * applying.
  */
+/** Every kind of part the library can hold. Beside the type it mirrors, so a
+ * new kind is one edit and not two. */
+export const TRACK_PART_KINDS: TrackPart["kind"][] = [
+  "turnout",
+  "wye",
+  "curved-turnout",
+  "crossover",
+  "crossing",
+  "flex",
+  "straight",
+  "curve",
+  "bumper",
+];
+
 export const BUMPER_DRAWN_INCHES = 0.75;
+
+/**
+ * How long a sectional curve's RAIL is — the arc, not the chord across it.
+ *
+ * ⚠️ Curves are sold as a radius and an arc, never as a length, and the chord is
+ * always shorter. Recording one as the piece's length would put everything past
+ * that curve closer to endplate A than it is — the same mistake the walk exists
+ * to avoid, arriving through the parts library instead.
+ */
+export function sectionalArcInches(part: TrackPart): number {
+  if (part.kind !== "curve" || !part.radius || part.arcDegrees == null) return 0;
+  return (part.radius.inches * Math.abs(part.arcDegrees) * Math.PI) / 180;
+}
 
 /**
  * Where a bent run's far end lands, and which way it points — in the piece's own
@@ -6045,6 +6144,12 @@ export function walkTrackGraph(
       const piece = pieceById.get(a.piece);
       const part = piece ? partOf(a.piece) : undefined;
       if (piece && part?.kind === "flex") return piece.lengthInches ?? 0;
+      // ⚠️ AND A SECTIONAL CURVE BY ITS ARC. Missing this measured one 19″ 30°
+      // section as its 9.83″ chord instead of 9.95″ of rail — an eighth of an
+      // inch per section, compounding all the way along a curved module. The
+      // invariant is not "flex is special"; it is that a curve's rail is longer
+      // than the straight line across it, whoever made the curve.
+      if (part?.kind === "curve") return sectionalArcInches(part);
     }
     return Math.hypot(a.x - b.x, a.y - b.y);
   };

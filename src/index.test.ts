@@ -97,6 +97,9 @@ import {
   buildTrackGraph,
   graphToDoc,
   BUMPER_DRAWN_INCHES,
+  sectionalArcInches,
+  TRACK_PART_KINDS,
+  flexRunEnd,
   pieceHand,
   piecePartNumber,
   fitFlexBetween,
@@ -6160,5 +6163,114 @@ describe("a bumper", () => {
     const past = { ...loose, x: bmp.x + BUMPER_DRAWN_INCHES, y: bmp.y };
     expect(snapPiece(past, pieces)).toBeNull();
     expect(placedJoints(pieces).filter((j) => j.piece === "bmp")).toHaveLength(1);
+  });
+});
+
+// ─── Sectional straights and curves (#198) ───────────────────────────────────
+// ⚠️ A SECTIONAL PIECE IS NOT FLEX CUT TO LENGTH, even though the rail ends up
+// in the same place: its length belongs to the PART, because an owner has a box
+// of them and cannot cut one.
+describe("sectional track", () => {
+  const straight = (inches: number): TrackPart => ({
+    id: "x-straight", manufacturer: "X", line: "Code 55", scale: "N",
+    name: `${inches}″ Straight`, kind: "straight",
+    overallLength: { inches, source: "manufacturer" },
+  });
+  const curve = (radius: number, arcDegrees: number): TrackPart => ({
+    id: "x-curve", manufacturer: "X", line: "Code 55", scale: "N",
+    name: `${radius}″ ${arcDegrees}°`, kind: "curve",
+    radius: { inches: radius, source: "manufacturer" }, arcDegrees,
+  });
+
+  it("places a straight at exactly its own length", () => {
+    const geo = partGeometry(straight(5), [straight(5)])!;
+    expect(geo.joints.find((j) => j.id === "b")).toMatchObject({ x: 5, y: 0, angleDeg: 0 });
+    expect(geo.routes).toEqual([["a", "b"]]);
+  });
+
+  // ⭐ THE SAME ARC DEFINITION BENT FLEX USES, so a sectional curve and a bent
+  // run of the same radius land in the same place. Two definitions of an arc in
+  // one library is a bug waiting for someone to lay one against the other.
+  it("puts a curve exactly where bent flex of the same radius would end", () => {
+    const part = curve(19, 30);
+    const geo = partGeometry(part, [part])!;
+    const b = geo.joints.find((j) => j.id === "b")!;
+    const bent = flexRunEnd(sectionalArcInches(part), 19);
+    expect(b.x).toBeCloseTo(bent.x, 9);
+    expect(b.y).toBeCloseTo(bent.y, 9);
+    expect(b.angleDeg).toBeCloseTo(30, 9);
+  });
+
+  // ⚠️ THE ARC, NEVER THE CHORD. A 19″ 30° section is 9.95″ of rail across a
+  // 9.83″ chord; storing the chord would pull everything past it toward
+  // endplate A.
+  it("measures a curve along its rail", () => {
+    const part = curve(19, 30);
+    const arc = sectionalArcInches(part);
+    expect(arc).toBeCloseTo((19 * 30 * Math.PI) / 180, 9);
+    const geo = partGeometry(part, [part])!;
+    const b = geo.joints.find((j) => j.id === "b")!;
+    expect(arc).toBeGreaterThan(Math.hypot(b.x, b.y));
+  });
+
+  it("walks a curve by its arc, so what follows sits where it really is", () => {
+    const part = curve(19, 30);
+    const lib = [...BUILT_IN_TRACK_PARTS, part];
+    const pieces: TrackPiece[] = [{ id: "c", partId: "x-curve", x: 0, y: 0, rotationDeg: 0 }];
+    const end = placedJoints(pieces, lib).find((j) => j.joint === "b")!;
+    pieces.push({
+      id: "f", partId: "atlas-c55-n-flex", x: end.x, y: end.y,
+      rotationDeg: end.headingDeg, lengthInches: 10,
+    });
+    const w = walkTrackGraph(buildTrackGraph(pieces, lib), pieces, { piece: "c", joint: "a" }, lib);
+    expect(w.routes[0].toPos).toBeCloseTo(sectionalArcInches(part) + 10, 6);
+  });
+
+  // The blocked list is the parts backlog, so it has to name the missing number.
+  it("says exactly what a sectional part is missing", () => {
+    expect(partGeometryGap({ ...straight(5), overallLength: undefined })).toMatch(/IS its length/);
+    expect(partGeometryGap({ ...curve(19, 30), radius: undefined })).toMatch(/radius and an arc/);
+    expect(partGeometryGap({ ...curve(19, 30), arcDegrees: undefined })).toMatch(/how far it turns/);
+    expect(partGeometryGap(straight(5))).toBeNull();
+    expect(partGeometryGap(curve(19, 30))).toBeNull();
+  });
+
+  // ⚠️ An admin can type a curve's radius and arc, and the part must come back
+  // PLACEABLE — otherwise the palette blames a missing radius that was just
+  // entered.
+  it("takes a curve entered in the admin editor", () => {
+    const [part] = mergeStoredParts(
+      [{
+        slug: "x-curve-stored", manufacturer: "X", line: "Code 55", name: "19″ 30°",
+        kind: "curve", radiusInches: 19, arcDegrees: 30, radiusSource: "manufacturer",
+      }],
+      [],
+    );
+    expect(part.radius?.inches).toBe(19);
+    expect(part.arcDegrees).toBe(30);
+    expect(partGeometryGap(part)).toBeNull();
+  });
+});
+
+// ⚠️ A stored kind must survive the mapping. This allow-list had three entries
+// and turned everything else into a TURNOUT, which was then blocked for having
+// no points offset — blaming a measurement that was never going to exist.
+describe("a stored part keeps its kind", () => {
+  it("maps every kind the library can hold", () => {
+    for (const kind of TRACK_PART_KINDS) {
+      const [part] = mergeStoredParts(
+        [{ slug: `s-${kind}`, manufacturer: "X", line: "L", name: kind, kind }],
+        [],
+      );
+      expect(part.kind, kind).toBe(kind);
+    }
+  });
+
+  it("still falls back to turnout for a kind it has never heard of", () => {
+    const [part] = mergeStoredParts(
+      [{ slug: "s-x", manufacturer: "X", line: "L", name: "?", kind: "monorail" }],
+      [],
+    );
+    expect(part.kind).toBe("turnout");
   });
 });
