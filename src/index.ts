@@ -89,9 +89,24 @@ export const FREEMO_ENDPLATE_WIDTH_MIN_INCHES = 12;
  * ("Endplates shall be 6 inches high and a minimum 12 inches wide"). 24″ is
  * simply a common real-world width. Don't present it as required. */
 export const FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES = 24;
-/** Free-moN §2.0 **standard**: "Double track endplates must have a track spacing
+/**
+ * Free-moN §2.0 **standard**: "Double track endplates must have a track spacing
  * of 1.125 inches (1 1/8 inches). Track spacing shall be measured along the
- * track center line." The one definition both apps read. */
+ * track center line." The one definition both apps read.
+ *
+ * ⚠️⚠️ **READ THE SCOPE, NOT JUST THE NUMBER.** This governs a **double-track
+ * ENDPLATE**, and reaches **4″ inboard** of it — §2.0's other standard is that
+ * track crossing an endplate be "perpendicular, straight, and level for at least
+ * 4 inches from the outside face". **Beyond those 4 inches the standard says
+ * nothing about how far apart the mains run**, and every real crossover draws
+ * them closer than this (the Fast Tracks N fixtures are 1.09″).
+ *
+ * ⛔ So this is a value to BUILD TO at an endplate, and **never a test to
+ * measure mid-module track against**. Used as one it amber-flagged ordinary,
+ * correctly built trackwork as departing from the standard (Will, 2026-07-28).
+ * It is also the default LANE PITCH for drawing parallel track, which is a
+ * separate job — a drawing convention, not a rule anything conforms to.
+ */
 export const FREEMO_TRACK_SPACING_INCHES = 1.125;
 /** Free-moN §2.0 **standard**: track crossing an endplate must be "not less than
  * 4 inches from either fascia" (and perpendicular, straight and level for 4″). */
@@ -185,12 +200,17 @@ export function laneOffsetAt(
 }
 
 /**
- * The pinches a document's crossovers impose — one per crossover connector that
- * names a part whose {@link TrackPart.trackSpacing} differs from the standard.
+ * The pinches a document's crossovers impose — one per crossover connector whose
+ * part is built to a different spacing from the mains either side of it.
  *
- * A crossover with no part named, or one built to the standard spacing, imposes
- * nothing: an owner who hasn't said what they built gets the straight pair they
- * had before, which is the only honest default.
+ * ⚠️ A PINCH IS GEOMETRY, NOT A FAULT. §2.0 fixes the 1.125″ spacing AT THE
+ * ENDPLATE; what the mains do in between is the builder's business, and every
+ * real crossover draws them closer. This says where the drawing must narrow, and
+ * nothing about conformance.
+ *
+ * A crossover with no part named, or one built to the same spacing as the mains,
+ * imposes nothing: an owner who hasn't said what they built gets the straight
+ * pair they had before, which is the only honest default.
  */
 export function crossoverPinches(
   tracks: Array<{
@@ -3549,14 +3569,19 @@ export interface TrackPart {
   crossingAngleDeg?: number;
   /** Centre-to-centre distance of the two parallel tracks a {@link kind}
    * `crossover` joins. A crossover fixture is BUILT for one spacing — it is not
-   * adjustable — so this decides whether the part suits a given standard at all.
+   * adjustable — so this is what the mains must pinch to where it sits.
    *
-   * ⚠️ READ {@link FREEMO_TRACK_SPACING_INCHES} ALONGSIDE THIS. Free-moN §2.0
-   * fixes double-track spacing at exactly 1.125″; the Fast Tracks N crossovers
-   * are built to 1.09″. That 0.035″ is small but it is REAL and it is not a
-   * tolerance — the fixture cannot be built to another spacing. Recorded rather
-   * than reconciled: it is a fact about the product, and an owner deciding what
-   * to buy is better served by the true number than by a convenient one. */
+   * ⚠️ **NOT A CONFORMANCE TEST.** {@link FREEMO_TRACK_SPACING_INCHES} is fixed
+   * by §2.0 **at the endplate** — "double track endplates must have a track
+   * spacing of 1.125 inches", perpendicular, straight and level for 4″ from the
+   * outside face. What the two mains do in between is the module builder's
+   * business, and EVERY real crossover pinches them closer: the Fast Tracks N
+   * fixtures are 1.09″. Earlier wording here said this "decides whether the part
+   * suits a given standard at all", which is wrong and put an amber
+   * non-conformance note on ordinary, correctly built trackwork.
+   *
+   * Recorded because it is a fact about the product an owner needs when buying,
+   * and because the drawing has to pinch the mains to it. */
   trackSpacing?: PartDimension;
   /** The SECOND frog angle on a part that has two — the SCISSORS of a double
    * crossover, the X where its two opposite diverging routes meet and cross.
