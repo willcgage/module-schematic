@@ -298,6 +298,24 @@ export interface SchematicTrack {
    * fouling the track. Absent = derive it from the clearance points (#19). */
   measuredUsableInches?: number | null;
 }
+/**
+ * A turnout.
+ *
+ * ⭐ **THE WORD IS "TURNOUT", NOT "SWITCH".** They were used interchangeably
+ * across both apps; this is the one name. The Free-moN standard says turnout
+ * ("main-line turnouts at least #6") and so does the NMRA, every user-facing
+ * string already said it, and "switch" is ambiguous three ways for us — the
+ * points assembly, an electrical switch, and *switching*, the operation of
+ * moving cars, which we need as its own word.
+ *
+ * ⚠️ TWO DELIBERATE EXCEPTIONS, both still correct usage:
+ * 1. **A manufacturer's own product name, quoted as they sell it.** Atlas sells
+ *    a "#7 LH Switch" (2052). Renaming their product makes it un-findable in a
+ *    catalogue, which is the opposite of what a parts library is for.
+ * 2. **The points assembly and its geometry** — "switch points", and the
+ *    "switch angle" that {@link TurnoutClosure.switchSlope} carries. That is a
+ *    part OF a turnout, not another word FOR one.
+ */
 export interface SchematicTurnout {
   id: string;
   pos: number;
@@ -3000,7 +3018,7 @@ export function nextId(prefix: string, existing: string[]): string {
 }
 
 /**
- * Build a passing siding as one unit: the siding track, a switch at each end,
+ * Build a passing siding as one unit: the siding track, a turnout at each end,
  * and control-point signals for both directions at each end (prototype Station
  * Entering Signal). Returns the new items to merge into the editor state.
  */
@@ -3041,7 +3059,7 @@ export function buildPassingSiding(state: EditorState): {
     { id: swE, name: "East Siding", pos: toPos, onTrack: MAIN_TRACK_ID, divergeTrack: sidId, kind: "right" },
   ];
 
-  // One control point at each end, each grouping its switch and both-direction
+  // One control point at each end, each grouping its turnout and both-direction
   // signals on the main (prototype Station Entering Signal).
   const cpIds = state.controlPoints.map((c) => c.id);
   const cpW = nextId("cp", cpIds);
@@ -6027,7 +6045,7 @@ export function walkTrackGraph(
               : Math.max(0, body - lead);
         const frogPos = pos + toFrog;
         if (here.joint === "diverge" || here.joint === "legB") {
-          // Arrived by a diverging end: this route has run into the far switch
+          // Arrived by a diverging end: this route has run into the far turnout
           // of a siding, which is what makes it a siding rather than a spur.
           //
           // ⚠️ ITS EXTENT IS THE FAR TURNOUT'S POSITION, not this branch's
@@ -6099,7 +6117,7 @@ export function walkTrackGraph(
     // Walking it again would put the same track in the layout twice, on two
     // lanes, with the far turnout diverging onto the copy. A piece belongs to
     // exactly ONE route, so if this branch starts on a piece a route already
-    // holds, the answer is that route: the far switch diverges onto the siding
+    // holds, the answer is that route: the far turnout diverges onto the siding
     // that is already there.
     const already = routes.find((r) => r.pieces.includes(byKey.get(start)!.piece));
     if (already) {
@@ -6404,7 +6422,7 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   for (const t of allTurnouts) {
     const diverge = t.divergeRoute ? trackIdOf.get(t.divergeRoute) : undefined;
     if (!diverge) {
-      // A switch whose diverging route reaches nothing is an unfinished layout,
+      // A turnout whose diverging route reaches nothing is an unfinished layout,
       // not an operating turnout. Said out loud rather than emitted with a
       // dangling reference for the dispatcher view to trip over.
       warnings.push(
