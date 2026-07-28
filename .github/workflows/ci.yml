@@ -1,0 +1,40 @@
+name: CI
+
+# This package is the contract between modulerepo (which authors schematics) and
+# free-dispatcher (which renders them), so a break here reaches both apps at
+# once. Until now the only automation was publish.yml, which typechecks and
+# tests at RELEASE time — after the point where a review could have caught it.
+#
+# Not filtered by `paths`: a job that is skipped on some PRs cannot serve as a
+# required status check without blocking those PRs forever.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck, test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # publish.yml never runs this directly — it relies on `prepublishOnly`, so
+      # a broken build would first surface mid-publish. tsup emits CJS, ESM and
+      # the declaration files that both consuming apps typecheck against.
+      - run: npm run build
