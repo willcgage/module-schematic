@@ -7276,27 +7276,69 @@ describe("a main that begins at a turnout", () => {
     expect(out.doc.turnouts![0].divergeTrack).toBe("main2");
   });
 
-  // ⚠️ Two mains joined PARTWAY ALONG are a crossover. Written as bare turnouts
-  // with no connector between them (ELM Yard), there is no assembly to lay —
-  // but it must be said, not silently dropped.
-  it("says so when two mains are joined partway along", () => {
-    const c = docToGraph({
-      version: 1, lengthInches: 96,
-      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
-      tracks: [
-        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
-        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
-      ],
-      turnouts: [
-        { id: "sw7", pos: 40, onTrack: "main", divergeTrack: "main2" },
-        { id: "sw8", pos: 34, onTrack: "main2", divergeTrack: "main" },
-      ],
-    }, { turnoutPartId: "atlas-c55-n-7" });
+  /**
+   * ⭐⭐ TWO TURNOUTS JOINING THE MAINS, WITH NO CONNECTOR TRACK RECORDED —
+   * ELM Yard. Will, 2026-07-28: it might not be a manufactured assembly at all;
+   * "the builder/owner used turnouts and a piece of track between the diverging
+   * routes." The document does not say which, and the difference is real, so the
+   * DISCRETE build is the default because it is what the document literally
+   * describes and it invents least.
+   *
+   * ELM Yard's own numbers agree: its two turnouts are 6.0″ apart, where a #6
+   * assembly's crossing run is 6.75″ and a #5's is 5.63″.
+   */
+  const bareCrossover = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+      { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+    ],
+    turnouts: [
+      { id: "sw7", pos: 40, name: "Crossover 1", onTrack: "main", divergeTrack: "main2" },
+      { id: "sw8", pos: 34, name: "Crossover 2", onTrack: "main2", divergeTrack: "main" },
+    ],
+  });
+
+  it("lays two turnouts and cuts a connector between them", () => {
+    const c = docToGraph(bareCrossover(), { turnoutPartId: "atlas-c55-n-7" });
     expect(c.refused).toBeNull();
-    expect(c.notLaid.some((n) => /neither end of it/.test(n.why))).toBe(true);
-    // ⭐ AND the derivation's own warnings reach the preview — this is what let
-    // FMN-0075 convert to a module with no turnout behind a silent preview.
-    expect(c.warnings.some((w) => /diverging route goes nowhere/.test(w))).toBe(true);
+    expect(c.notLaid).toEqual([]);
+    // A piece of flex, not a crossover product — because no product was named.
+    const conn = c.graph!.pieces.find((p) => p.id.startsWith("xc-"))!;
+    expect(conn).toBeTruthy();
+    expect(conn.partId).toBe("atlas-c55-n-flex");
+    const g = buildTrackGraph(c.graph!.pieces);
+    expect(g.conflicts).toEqual([]);
+    expect(g.open).toHaveLength(4); // two mains, two ends each
+  });
+
+  // ⭐ THE ASSUMPTION IS DISCLOSED. An owner who did buy an assembly has to be
+  // told we read their module the other way, and how to say so.
+  it("says which way it read the module, and how to correct it", () => {
+    const c = docToGraph(bareCrossover(), { turnoutPartId: "atlas-c55-n-7" });
+    const w = c.warnings.join(" ");
+    expect(w).toMatch(/two separate turnouts with a .* piece of track between them/);
+    expect(w).toMatch(/name the product on a connector track/);
+  });
+
+  // ⚠️ Each half must diverge TOWARD the other. Its diverging track is a MAIN,
+  // whose ends are the whole module, so the ordinary far-end rule has nothing
+  // useful to sign and pointed it away from the turnout it feeds.
+  it("faces the two halves at each other", () => {
+    const c = docToGraph(bareCrossover(), { turnoutPartId: "atlas-c55-n-7" });
+    const out = graphToDoc(c.graph!.pieces, {
+      startAt: c.graph!.startAt, start2: c.graph!.start2 ?? null, base: bareCrossover(),
+    });
+    const conn = out.doc.tracks.find((t) => t.role === "crossover")!;
+    expect(conn).toBeTruthy();
+    // Its extent is its turnouts' positions — 34→40, not the arc length one
+    // walk accumulated, because each walk only knows its OWN turnouts.
+    expect(conn.fromPos).toBeCloseTo(34, 1);
+    expect(conn.toPos).toBeCloseTo(40, 1);
+    // And it lies BETWEEN the mains, not out past them.
+    expect(conn.lane).toBe(1);
+    expect((out.doc.turnouts ?? []).map((t) => t.divergeTrack)).toEqual([conn.id, conn.id]);
   });
 
   // ⚠️ An ordinary crossover's turnouts open a CONNECTOR, not a main, and must

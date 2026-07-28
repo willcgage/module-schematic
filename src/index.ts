@@ -7272,8 +7272,21 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   for (const t of tracks) {
     if (t.role === "main") continue;
     const ends = turnouts.filter((sw) => sw.divergeTrack === t.id);
-    if (ends.length >= 2 && new Set(ends.map((sw) => sw.onTrack)).size >= 2)
-      t.role = "crossover";
+    if (!(ends.length >= 2 && new Set(ends.map((sw) => sw.onTrack)).size >= 2)) continue;
+    t.role = "crossover";
+    // ⭐ ITS EXTENT IS ITS TURNOUTS' POSITIONS — the same rule a siding follows,
+    // and for the same reason: `fromPos`/`toPos` mean where a track sits ALONG
+    // THE MODULE, not how much rail it has.
+    //
+    // ⚠️ A crossover needs this more than a siding does, because it is found
+    // from BOTH mains and each walk only knows its OWN turnouts. The walk that
+    // emitted it could not see the turnout at the far end, so it fell back to
+    // accumulated arc length and put a 34→40 connector at 40→46.
+    const at = ends.map((sw) => sw.pos);
+    t.fromPos = round(Math.min(...at));
+    t.toPos = round(Math.max(...at));
+    // And it lies BETWEEN the mains rather than out past them.
+    t.lane = main2Lane || 1;
   }
 
   // ⭐ ANCHORED FEATURES ARE PLACED BY THE PIECE THEY ARE BESIDE, not by a
@@ -7858,9 +7871,14 @@ export function docToGraph(
     const ends = [branch?.fromPos, branch?.toPos].filter(
       (n): n is number => typeof n === "number" && Number.isFinite(n),
     );
-    const divergeFarPos = ends.length
-      ? ends.reduce((a, b) => (Math.abs(b - t.pos) > Math.abs(a - t.pos) ? b : a))
-      : undefined;
+    const divergeFarPos =
+      // ⭐ A crossover half diverges TOWARD its partner. Its diverging track is a
+      // MAIN, whose ends are the whole module, so the ordinary rule has nothing
+      // useful to sign and would point it away from the turnout it feeds.
+      divergeFarOverride.get(t.id) ??
+      (ends.length
+        ? ends.reduce((a, b) => (Math.abs(b - t.pos) > Math.abs(a - t.pos) ? b : a))
+        : undefined);
     const facing = turnoutFacing({
       pos: t.pos,
       divergeFarPos,
@@ -8099,6 +8117,7 @@ export function docToGraph(
    * is dropped, and the module comes out with one main and no turnout. It did
    * that silently on FMN-0075.
    */
+  const mainIdsAll = new Set(mains.map((m) => m.id));
   const attachment = new Map<string, { sw: SchematicTurnout; at: "from" | "to" }>();
   for (const t of turnouts) {
     const m = mains.find((x) => x.id === t.divergeTrack && x.id !== main.id);
@@ -8107,14 +8126,59 @@ export function docToGraph(
     const to = m.toPos ?? mainLen;
     if (from > 0 && Math.abs(t.pos - from) < 0.01) attachment.set(m.id, { sw: t, at: "from" });
     else if (Math.abs(t.pos - to) < 0.01) attachment.set(m.id, { sw: t, at: "to" });
-    else
-      // ⚠️ Neither end: two mains joined PARTWAY ALONG is a crossover, and one
-      // written as bare turnouts with no connector track between them has no
-      // assembly to lay. ELM Yard is the case.
-      notLaid.push({
-        id: m.id,
-        why: `${t.name || t.id} joins ${m.id} at ${t.pos}″, which is neither end of it — two mains joined partway along are a crossover, and this document has no connector track between them to lay one from`,
-      });
+  }
+
+  /**
+   * ⭐⭐ TWO TURNOUTS THAT JOIN THE MAINS TO EACH OTHER, with no connector track
+   * recorded between them — ELM Yard's `sw7` on Main 1 → Main 2 and `sw8` on
+   * Main 2 → Main 1, six inches apart.
+   *
+   * ⚠️ **DO NOT ASSUME A MANUFACTURED ASSEMBLY.** It could be a one-piece double
+   * crossover, or it could be exactly what it says: two ordinary turnouts with a
+   * piece of track between their diverging routes, which is how plenty of people
+   * build a crossover. The document does not say, and the difference is real —
+   * an assembly is 20″ of moulding at a fixed spacing, a hand-built pair is
+   * whatever the builder cut.
+   *
+   * So the discrete build is the default, because it is what the document
+   * literally describes and because it invents least: two turnouts the owner
+   * identifies like any other, and a connector cut to fit between them. An owner
+   * who DID buy an assembly says so the way FMN-0078 does — by naming a crossover
+   * product on a connector track — and {@link crossoverAssembly} takes over.
+   *
+   * ELM Yard's own numbers back the discrete reading: 6.0″ apart, where a #6
+   * assembly's crossing run is 6.75″ and a #5's is 5.63″.
+   */
+  const mainToMainPairs: { a: SchematicTurnout; b: SchematicTurnout }[] = [];
+  {
+    const isMain = (id: string) => mainIdsAll.has(id);
+    const used = new Set<string>();
+    for (const t of turnouts) {
+      if (used.has(t.id) || !isMain(t.onTrack) || !isMain(t.divergeTrack)) continue;
+      if (t.onTrack === t.divergeTrack) continue;
+      // Its partner runs the other way between the same two mains. Nearest by
+      // position, so a module with several crossovers pairs them correctly.
+      const partner = turnouts
+        .filter(
+          (u) =>
+            !used.has(u.id) &&
+            u.id !== t.id &&
+            u.onTrack === t.divergeTrack &&
+            u.divergeTrack === t.onTrack,
+        )
+        .sort((x, y) => Math.abs(x.pos - t.pos) - Math.abs(y.pos - t.pos))[0];
+      if (!partner) continue;
+      used.add(t.id);
+      used.add(partner.id);
+      mainToMainPairs.push({ a: t, b: partner });
+    }
+  }
+  /** Each half of a pair diverges TOWARD the other, which is what makes them a
+   * crossover rather than two turnouts pointing away from each other. */
+  const divergeFarOverride = new Map<string, number>();
+  for (const { a, b } of mainToMainPairs) {
+    divergeFarOverride.set(a.id, b.pos);
+    divergeFarOverride.set(b.id, a.pos);
   }
 
   for (const m of mains) {
@@ -8188,6 +8252,40 @@ export function docToGraph(
   // the piece, not branches hanging off a turnout. Marking them done keeps the
   // final sweep from reporting a crossover that was laid perfectly well.
   for (const id of assemblyTracks) done.add(id);
+
+  // ── THE HAND-BUILT CROSSOVER: a connector cut to fit between two turnouts
+  // that face each other across the mains. No part, because there is no part —
+  // it is a piece of flex the builder cut, which is the whole point of reading
+  // this shape as a discrete build rather than an assembly.
+  for (const [i, pair] of mainToMainPairs.entries()) {
+    const la = laidTurnouts.get(pair.a.id);
+    const lb = laidTurnouts.get(pair.b.id);
+    if (!la || !lb) continue;
+    const ja = jointAt(la.piece, la.divergeId);
+    const jb = jointAt(lb.piece, lb.divergeId);
+    if (!ja || !jb) continue;
+    const dx = jb.x - ja.x;
+    const dy = jb.y - ja.y;
+    const len = Math.hypot(dx, dy);
+    if (!(len > 1e-6)) {
+      notLaid.push({
+        id: pair.a.divergeTrack,
+        why: `${pair.a.name || pair.a.id} and ${pair.b.name || pair.b.id} meet at the same point, so there is no track between them to lay`,
+      });
+      continue;
+    }
+    pieces.push({
+      id: `xc-${i}`,
+      partId: flexId,
+      x: ja.x,
+      y: ja.y,
+      rotationDeg: (Math.atan2(dy, dx) * 180) / Math.PI,
+      lengthInches: r3(len),
+    });
+    warnings.push(
+      `${pair.a.name || pair.a.id} and ${pair.b.name || pair.b.id} are laid as two separate turnouts with a ${len.toFixed(1)}″ piece of track between them, which is what the document describes. If they are really one crossover assembly, name the product on a connector track and it will be laid as the single piece it is.`,
+    );
+  }
 
   // ── EVERY OTHER TRACK HANGS OFF A TURNOUT. Laid outward from the mains,
   // repeating until nothing new is reachable — which is how a ladder three
