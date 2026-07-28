@@ -128,6 +128,8 @@ import {
   flexPartFor,
   maxFlexPieceInches,
   DEFAULT_FLEX_PART_ID,
+  moduleConversionReport,
+  type SchematicTurnout,
 } from "./index";
 
 /** Round to hundredths for readable span/length assertions. */
@@ -6406,5 +6408,167 @@ describe("a spine for a module that already has track", () => {
       mainPath: [{ x: 0, y: 0 }, { x: 40, y: 5 }],
     });
     expect(c[c.length - 1].y).toBeCloseTo(5, 6);
+  });
+});
+
+// ⭐⭐ THE FINDING THAT SHAPED THIS: across the production database not one
+// turnout names a part and most state no frog number either. Converting a drawn
+// module to pieces is blocked by not knowing WHICH TURNOUT IT IS far more often
+// than by any missing measurement — so conversion asks rather than guesses, and
+// is offered per module rather than run silently (ADR 0001 amendment).
+describe("what a 1-D document would become as pieces", () => {
+  const doc = (over: Partial<ModuleSchematicDoc> = {}): ModuleSchematicDoc => ({
+    version: 1,
+    lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [{ id: "main", role: "main", lane: 0 }],
+    ...over,
+  });
+  const to = (over: Partial<SchematicTurnout> = {}): SchematicTurnout => ({
+    id: "sw1", pos: 24, onTrack: "main", divergeTrack: "spur", ...over,
+  });
+
+  it("asks nothing of a module with no turnouts", () => {
+    const r = moduleConversionReport(doc());
+    expect(r.readyWithoutAsking).toBe(true);
+    expect(r.unanswered).toEqual([]);
+  });
+
+  it("resolves a turnout by its frog number when a part IS that number", () => {
+    const r = moduleConversionReport(doc({ turnouts: [to({ size: 7 })] }));
+    expect(r.turnouts[0].partId).toBe("atlas-c55-n-7");
+    expect(r.turnouts[0].from).toBe("frog-number");
+    expect(r.readyWithoutAsking).toBe(true);
+  });
+
+  it("⭐ NEVER converts a #6 into the #7 we happen to have measured", () => {
+    const r = moduleConversionReport(doc({ turnouts: [to({ size: 6 })] }));
+    expect(r.turnouts[0].partId).toBeNull();
+    expect(r.turnouts[0].why).toMatch(/no measured #6/);
+    expect(r.unanswered).toEqual(["sw1"]);
+    // Still offerable — this is a question, and the owner can answer it.
+    expect(r.offerable).toBe(true);
+  });
+
+  it("says so plainly when the document never said what the turnout is", () => {
+    const r = moduleConversionReport(doc({ turnouts: [to()] }));
+    expect(r.turnouts[0].why).toMatch(/never says what this turnout is/);
+    expect(r.turnouts[0].size).toBeUndefined();
+  });
+
+  it("a named part beats a frog number, and carries its provenance", () => {
+    const r = moduleConversionReport(
+      doc({ turnouts: [to({ size: 7, partId: "atlas-c55-n-10" })] }),
+    );
+    expect(r.turnouts[0].partId).toBe("atlas-c55-n-10");
+    expect(r.turnouts[0].from).toBe("named");
+    expect(r.turnouts[0].source).toBeTruthy();
+  });
+
+  it("blames the measurement, not the owner, for a named part we cannot place", () => {
+    const r = moduleConversionReport(
+      doc({ turnouts: [to({ partId: "fast-tracks-n-me55-t-6" })] }),
+    );
+    expect(r.turnouts[0].partId).toBeNull();
+    expect(r.turnouts[0].why).toMatch(/no points offset/);
+  });
+
+  it("offers only parts that can actually be drawn, exact frog first", () => {
+    const r = moduleConversionReport(doc({ turnouts: [to({ size: 10 })] }));
+    expect(r.turnouts[0].candidates[0]).toBe("atlas-c55-n-10");
+    expect(r.turnouts[0].candidates).not.toContain("fast-tracks-n-me55-t-10");
+  });
+
+  // ⚠️ A BLOCKER IS NOT A QUESTION. No answer supplies a shape the model cannot
+  // express, so the offer is withheld rather than made and then abandoned.
+  it("withholds the offer where there is a diamond", () => {
+    const r = moduleConversionReport(
+      doc({ crossings: [{ id: "x1", pos: 30, tracks: ["main", "spur"] }] }),
+    );
+    expect(r.offerable).toBe(false);
+    expect(r.blockers[0].kind).toBe("crossing");
+  });
+
+  it("withholds the offer on a balloon, whose radii were never recorded", () => {
+    const r = moduleConversionReport(doc({ loop: true }));
+    expect(r.offerable).toBe(false);
+    expect(r.blockers[0].why).toMatch(/inventing/);
+  });
+
+  it("does not re-report a module that is already pieces", () => {
+    const r = moduleConversionReport(
+      doc({ graph: { pieces: [{ id: "p1", partId: "atlas-c55-n-flex", x: 0, y: 0, rotationDeg: 0 }], startAt: { piece: "p1", joint: "a" } } }),
+    );
+    expect(r.alreadyGraph).toBe(true);
+    expect(r.offerable).toBe(false);
+  });
+});
+
+// ⚠️ FOUND BY RUNNING THE REPORT OVER THE PRODUCTION DATABASE, not by reasoning.
+// Four real modules draw named, capacity-bearing tracks that no turnout reaches
+// — Idaho Falls Grain Yard has five yard tracks and NO turnouts at all. The 1-D
+// model draws them from lane + fromPos and never notices; a piece has to join
+// something. Reporting only on turnouts called all four "ready".
+describe("track the document draws but nothing connects", () => {
+  const doc = (over: Partial<ModuleSchematicDoc> = {}): ModuleSchematicDoc => ({
+    version: 1,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [{ id: "main", role: "main", lane: 0 }],
+    ...over,
+  });
+
+  it("spots a yard track no turnout diverges onto", () => {
+    const r = moduleConversionReport(doc({
+      tracks: [
+        { id: "main", role: "main", lane: 0 },
+        { id: "mt15", role: "siding", lane: 2, trackName: "yard 1", capacityFeet: 1760 },
+      ],
+    }));
+    expect(r.orphanTracks.map((t) => t.id)).toEqual(["mt15"]);
+    expect(r.orphanTracks[0].trackName).toBe("yard 1");
+    expect(r.readyWithoutAsking).toBe(false);
+    // Still offerable: the owner can say where it joins. It is a question.
+    expect(r.offerable).toBe(true);
+  });
+
+  it("a main is reached by definition — it starts at the endplate", () => {
+    const r = moduleConversionReport(doc({
+      tracks: [
+        { id: "main", role: "main", lane: 0 },
+        { id: "main2", role: "main", lane: 1 },
+      ],
+    }));
+    expect(r.orphanTracks).toEqual([]);
+    expect(r.readyWithoutAsking).toBe(true);
+  });
+
+  it("⚠️ being a turnout's HOST does not give a track a way in", () => {
+    // Magnolia Yard's shape: sw1 sits ON sid3 and diverges onto sid1, so sid3
+    // hosts a turnout and is still joined to nothing itself.
+    const r = moduleConversionReport(doc({
+      tracks: [
+        { id: "main", role: "main", lane: 0 },
+        { id: "sid3", role: "siding", lane: 3 },
+        { id: "sid1", role: "spur", lane: 1 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 18, size: 7, onTrack: "sid3", divergeTrack: "sid1" },
+      ],
+    }));
+    expect(r.orphanTracks.map((t) => t.id)).toEqual(["sid3"]);
+  });
+
+  it("says nothing about a properly connected module", () => {
+    const r = moduleConversionReport(doc({
+      tracks: [
+        { id: "main", role: "main", lane: 0 },
+        { id: "sid", role: "siding", lane: 1 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 6, size: 7, onTrack: "main", divergeTrack: "sid" },
+      ],
+    }));
+    expect(r.orphanTracks).toEqual([]);
+    expect(r.readyWithoutAsking).toBe(true);
   });
 });

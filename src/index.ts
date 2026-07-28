@@ -6919,6 +6919,248 @@ export function deriveGraphDoc(
   return { doc: out.doc, warnings: out.warnings };
 }
 
+/**
+ * What a turnout in a 1-D document would become as a piece — or what it is
+ * missing before it can become anything.
+ *
+ * ⭐⭐ **IDENTITY IS THE GATE, NOT GEOMETRY.** This is the thing that surprised
+ * us and it is worth stating plainly: converting a drawn module to pieces is
+ * blocked far more often by not knowing WHICH TURNOUT IT IS than by any missing
+ * measurement. Across the production database not one turnout names a part, and
+ * most state no frog number either — so for those there is nothing to look up.
+ * No amount of measuring fixes that; only the owner knows what they laid, which
+ * is exactly why conversion asks instead of guessing.
+ */
+export interface TurnoutIdentity {
+  /** The turnout's id in the document. */
+  id: string;
+  name?: string | null;
+  pos: number;
+  /** The frog number the document states, if any. */
+  size?: number | null;
+  /** A part the document already names — the strongest possible answer. */
+  statedPartId?: string | null;
+  /** The part this turnout converts to; null = the owner has to say. */
+  partId: string | null;
+  /** How `partId` was arrived at. */
+  from: "named" | "frog-number" | "unresolved";
+  /**
+   * The weakest provenance behind the chosen part's geometry, so a caller can
+   * tell a turnout placed from real readings from one placed off a catalogue
+   * figure. Null when unresolved.
+   */
+  source: DimensionSource | null;
+  /** Why it cannot be resolved — null when it can. */
+  why: string | null;
+  /**
+   * Parts the owner could reasonably pick, best first: an exact frog match
+   * ahead of the rest. Only PLACEABLE parts are offered — listing one that
+   * cannot be drawn would be an answer that does not answer.
+   */
+  candidates: string[];
+}
+
+/** Something that stops a whole document converting, whatever the owner says. */
+export interface ConversionBlocker {
+  /** `crossing` · `curved-turnout` · `loop` — the shapes with no piece to be. */
+  kind: string;
+  /** The document object it came from, where there is one. */
+  ref?: string;
+  why: string;
+}
+
+/**
+ * A track the document draws but nothing in it connects — no turnout diverges
+ * onto it.
+ *
+ * ⚠️⚠️ **THE 1-D MODEL TOLERATES THIS AND THE GRAPH CANNOT.** A siding is drawn
+ * from its `lane` and its `fromPos`/`toPos` alone, so a document can carry a
+ * named, capacity-bearing yard track that joins nothing at all and still look
+ * completely normal. Real ones do: Idaho Falls Grain Yard has five yard tracks
+ * and not one turnout. A piece, by contrast, has to be joined to something.
+ *
+ * So these are surfaced rather than converted. Dropping them would lose an
+ * owner's named track and its capacity silently, and inventing a turnout to
+ * reach it would be exactly the fabrication ADR 0001 forbids — the owner is the
+ * only one who knows where it actually joins.
+ */
+export interface OrphanTrack {
+  id: string;
+  trackName?: string;
+  role: TrackRole;
+  why: string;
+}
+
+export interface ModuleConversionReport {
+  /** Already authored as pieces — there is nothing to convert. */
+  alreadyGraph: boolean;
+  /**
+   * The rebuild can be offered. False when {@link blockers} is non-empty: those
+   * are shapes no answer can supply, so offering would promise something that
+   * cannot finish.
+   */
+  offerable: boolean;
+  /**
+   * True when the rebuild could run right now with nothing asked.
+   *
+   * ⚠️ Requires BOTH that every turnout resolves and that no track is orphaned.
+   * Checking only the turnouts claimed four production modules were ready when
+   * converting them would have quietly dropped nine named tracks.
+   */
+  readyWithoutAsking: boolean;
+  turnouts: TurnoutIdentity[];
+  /** Ids of the turnouts the owner must identify first. */
+  unanswered: string[];
+  orphanTracks: OrphanTrack[];
+  blockers: ConversionBlocker[];
+}
+
+/** A part that IS this frog number and can actually be drawn — never a nearby
+ * one. A #6 is not a #5 (see {@link partExtentForSize}); silently converting a
+ * #6 into the #7 we happen to have measured would put a real turnout's frog in
+ * a place the owner never built it. */
+function placeableTurnoutParts(library: TrackPart[], kind: TrackPart["kind"][]): TrackPart[] {
+  return library.filter((p) => kind.includes(p.kind) && partGeometryGap(p) == null);
+}
+
+/**
+ * What would happen if this document were rebuilt as pieces — WITHOUT rebuilding
+ * anything.
+ *
+ * This exists so an owner can be shown the offer and its cost before they accept
+ * it (ADR 0001 amendment, 2026-07-27: conversion is opt-in PER MODULE, never
+ * silent). It is pure, cheap, reads no geometry, and is safe to run on every
+ * module in a list.
+ *
+ * ⚠️ **A document with a graph is NOT re-reported.** It is already the thing
+ * conversion produces.
+ */
+export function moduleConversionReport(
+  doc: ModuleSchematicDoc,
+  library = BUILT_IN_TRACK_PARTS,
+): ModuleConversionReport {
+  if (doc.graph?.pieces?.length) {
+    return {
+      alreadyGraph: true,
+      offerable: false,
+      readyWithoutAsking: false,
+      turnouts: [],
+      unanswered: [],
+      orphanTracks: [],
+      blockers: [],
+    };
+  }
+
+  const straight = placeableTurnoutParts(library, ["turnout"]);
+  const curved = placeableTurnoutParts(library, ["curved-turnout"]);
+  const blockers: ConversionBlocker[] = [];
+
+  const turnouts: TurnoutIdentity[] = (doc.turnouts ?? []).map((t) => {
+    const wantCurved = t.curved === true;
+    const pool = wantCurved ? curved : straight;
+    const base = {
+      id: t.id,
+      name: t.name,
+      pos: t.pos,
+      size: t.size,
+      statedPartId: t.partId,
+    };
+    // An exact frog match first, then everything placeable — the owner may know
+    // the part even where the document's frog number is wrong or absent.
+    const exact = t.size == null ? [] : pool.filter((p) => p.frogNumber === t.size);
+    const candidates = [...exact, ...pool.filter((p) => !exact.includes(p))].map((p) => p.id);
+    const resolve = (part: TrackPart, from: TurnoutIdentity["from"]): TurnoutIdentity => ({
+      ...base,
+      partId: part.id,
+      from,
+      source: partGeometry(part, library)?.source ?? null,
+      why: null,
+      candidates,
+    });
+
+    // 1. The document names a part. Strongest answer there is — provided we can
+    //    draw it. A named part we cannot place is still unanswered, but the
+    //    reason names the measurement rather than the owner.
+    if (t.partId) {
+      const named = library.find((p) => p.id === t.partId);
+      if (named && partGeometryGap(named) == null) return resolve(named, "named");
+      return {
+        ...base,
+        partId: null,
+        from: "unresolved",
+        source: null,
+        why: named
+          ? `this turnout names ${named.id}, which cannot be placed yet — ${partGeometryGap(named)}`
+          : `this turnout names a part the library does not have (${t.partId})`,
+        candidates,
+      };
+    }
+
+    // 2. A frog number, and a placeable part that IS that frog number.
+    if (t.size != null && exact.length) return resolve(exact[0], "frog-number");
+
+    // 3. Everything else is a question for the owner. The two reasons are
+    //    genuinely different and an owner can act on the difference: one is a
+    //    measurement nobody has taken, the other is a fact only they hold.
+    return {
+      ...base,
+      partId: null,
+      from: "unresolved",
+      source: null,
+      why:
+        t.size == null
+          ? "the document never says what this turnout is — no part, no frog number"
+          : wantCurved
+            ? `no curved turnout is placeable yet, so a curved #${t.size} cannot be converted`
+            : `no measured #${t.size} in the parts library yet`,
+      candidates,
+    };
+  });
+
+  // ⚠️ BLOCKERS ARE NOT QUESTIONS. A question has an answer the owner can give;
+  // these are shapes the piece model cannot express at all yet, so the offer is
+  // withheld rather than made and then abandoned half way.
+  for (const c of doc.crossings ?? [])
+    blockers.push({
+      kind: "crossing",
+      ref: c.id,
+      why: "crossing geometry is not modelled yet, so a diamond has no piece to become",
+    });
+  if (doc.loop)
+    blockers.push({
+      kind: "loop",
+      why:
+        "a balloon's curve radii were never recorded, and laying the loop would mean " +
+        "inventing them — the one thing ADR 0001 forbids",
+    });
+
+  // A track is reached by a turnout DIVERGING onto it. Appearing as a turnout's
+  // `onTrack` does not count: that says something branches OFF this track, which
+  // still leaves it needing a way in of its own.
+  const reached = new Set((doc.turnouts ?? []).map((t) => t.divergeTrack));
+  const orphanTracks: OrphanTrack[] = (doc.tracks ?? [])
+    // A main is reached by definition — it starts at the endplate.
+    .filter((t) => t.role !== "main" && !reached.has(t.id))
+    .map((t) => ({
+      id: t.id,
+      ...(t.trackName ? { trackName: t.trackName } : {}),
+      role: t.role,
+      why: "no turnout in the document diverges onto this track, so there is nothing to join it to",
+    }));
+
+  const unanswered = turnouts.filter((t) => !t.partId).map((t) => t.id);
+  return {
+    alreadyGraph: false,
+    offerable: blockers.length === 0,
+    readyWithoutAsking:
+      blockers.length === 0 && unanswered.length === 0 && orphanTracks.length === 0,
+    turnouts,
+    unanswered,
+    orphanTracks,
+    blockers,
+  };
+}
+
 /** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the
  * points, `y` = lateral offset from the through route. */
 export interface FrogCasting {
