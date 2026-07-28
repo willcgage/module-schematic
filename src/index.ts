@@ -6519,7 +6519,21 @@ export function walkTrackGraph(
         route.closedBy = here.piece;
         break;
       }
-      const pick = opts.find((r) => r.includes("through")) ?? opts[0];
+      // ⭐ THROUGH A CROSSOVER, STAY ON THE TRACK YOU ARE ON. Its four routes
+      // are two straights and two crossings, and none of them is called
+      // "through" — so the old rule fell through to `opts[0]` and a main could
+      // walk out on the other main. The straight route is the one whose far end
+      // is on the same track, which the joint ids say: a1/b1 are one track,
+      // a2/b2 the other. A crossing is a route a train CHOOSES, exactly like a
+      // turnout's diverging leg, so it is left for the branch pass.
+      const sameTrack = (r: [string, string]) => {
+        const other = r[0] === here.joint ? r[1] : r[0];
+        return other.slice(-1) === here.joint.slice(-1);
+      };
+      const pick =
+        (partOf(here.piece)?.kind === "crossover" ? opts.find(sameTrack) : undefined) ??
+        opts.find((r) => r.includes("through")) ??
+        opts[0];
       const exitJoint = pick[0] === here.joint ? pick[1] : pick[0];
       const exit = byKey.get(`${here.piece}.${exitJoint}`);
       const part = partOf(here.piece);
@@ -6792,16 +6806,28 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
    * MAIN 2 is its own walk, from its own end of the endplate.
    *
    * ⚠️ It is a SEPARATE RUN, not a branch: the two mains of a double-track
-   * module never touch (what would join them is a crossover, and no crossover
-   * can be placed yet — the fixture builds one half). So it is walked
-   * independently and its routes are kept apart by a prefix, because both walks
-   * name their own route "main".
+   * module never touch along their length. So it is walked independently and its
+   * routes are kept apart by a prefix, because both walks name their own route
+   * "main".
    */
   const walk2 = input.start2
     ? walkTrackGraph(graph, pieces, input.start2, library)
     : null;
   const main2 = walk2?.routes.find((r) => r.id === "main") ?? null;
-  const claimed = new Set(walk.routes.flatMap((r) => r.pieces));
+  /**
+   * ⚠️⚠️ **A CROSSOVER IS THE ONE PIECE TWO ROUTES MAY BOTH HOLD.** Everywhere
+   * else "this piece is already in a route" means the two starts landed on the
+   * same run and emitting it twice would put one piece of track in the document
+   * as two. A double crossover is the exception BY CONSTRUCTION: both mains run
+   * straight through the same assembly, which is what it is for. Counting it as
+   * a collision made an ordinary double-track module with a crossover report its
+   * two mains as one run and emit neither.
+   */
+  const sharedByDesign = (id: string) => {
+    const piece = pieces.find((p) => p.id === id);
+    return library.find((p) => p.id === piece?.partId)?.kind === "crossover";
+  };
+  const claimed = new Set(walk.routes.flatMap((r) => r.pieces).filter((p) => !sharedByDesign(p)));
   if (main2 && main2.pieces.some((p) => claimed.has(p))) {
     // Both starts landed on the same run. Emitting it twice would put one piece
     // of track in the document as two, on two lanes.
@@ -6969,6 +6995,107 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
       ...(part ? { partId: part.id } : {}),
     });
   }
+  /**
+   * ⭐⭐ A DOUBLE CROSSOVER IS ONE PIECE, AND THE DOCUMENT NEEDS FOUR TURNOUTS
+   * AND TWO CONNECTORS OUT OF IT.
+   *
+   * Emitted here rather than through the walk's turnout machinery, because the
+   * walk records one turnout per PIECE and this piece carries four point-sets.
+   * Everything needed is already known: {@link crossoverAssembly} says where the
+   * point-sets sit inside the assembly, and the walk's own
+   * {@link RouteSpan.fromPos} says where the assembly sits on each main. So the
+   * operations view gets the four turnouts and both crossing moves it needs,
+   * while the physical view keeps drawing the single moulding that is really
+   * there.
+   *
+   * ⚠️ It only emits when BOTH mains actually run through the assembly. Half a
+   * double crossover is not a thing, and a piece reached from one main only
+   * means the other main is not connected to it — which the open-end and
+   * unreachable reporting already says, without inventing a turnout here.
+   */
+  const crossoverSpans = (() => {
+    const found: {
+      piece: string;
+      part: TrackPart;
+      /** By track index (1 = joints a1/b1, 2 = a2/b2): route id + the two
+       * point-set positions along that route. */
+      byTrack: Map<number, { routeId: string; at: [number, number] }>;
+    }[] = [];
+    const routesAll = [
+      ...walk.routes.map((r) => ({ r, prefix: "" })),
+      ...(twoMains ? walk2!.routes.map((r) => ({ r, prefix: "main2:" })) : []),
+    ];
+    const seen = new Map<string, (typeof found)[number]>();
+    for (const { r, prefix } of routesAll) {
+      for (const sp of r.spans) {
+        const piece = pieceById.get(sp.piece);
+        const part = piece ? library.find((p) => p.id === piece.partId) : undefined;
+        if (!part || part.kind !== "crossover") continue;
+        const g = crossoverAssembly(part);
+        if (!g) continue;
+        const [p1, p2] = g.pointsAtInches;
+        // Entered from the west end the point-sets are p1 then p2 along; from
+        // the east end the assembly is walked backwards.
+        const west = sp.entryJoint.startsWith("a");
+        const at: [number, number] = west
+          ? [sp.fromPos + p1, sp.fromPos + p2]
+          : [sp.fromPos + (g.lengthInches - p2), sp.fromPos + (g.lengthInches - p1)];
+        const track = sp.entryJoint.endsWith("2") ? 2 : 1;
+        const routeId = r.id === "main" && prefix ? "main2:main" : `${prefix}${r.id}`;
+        const rec =
+          seen.get(sp.piece) ?? { piece: sp.piece, part, byTrack: new Map() };
+        rec.byTrack.set(track, { routeId, at });
+        seen.set(sp.piece, rec);
+      }
+    }
+    for (const rec of seen.values()) if (rec.byTrack.size === 2) found.push(rec);
+    return found;
+  })();
+
+  for (const xo of crossoverSpans) {
+    const one = xo.byTrack.get(1)!;
+    const two = xo.byTrack.get(2)!;
+    const onA = trackIdOf.get(one.routeId) ?? MAIN_TRACK_ID;
+    const onB = trackIdOf.get(two.routeId) ?? MAIN2_TRACK_ID;
+    // The two crossing moves. A goes track 1 → track 2, B the other way; each
+    // spans the same stretch of the module, which is what a scissors looks like.
+    const legs: { id: string; from: [string, number]; to: [string, number] }[] = [
+      { id: `${xo.piece}-a`, from: [onA, one.at[0]], to: [onB, two.at[1]] },
+      { id: `${xo.piece}-b`, from: [onB, two.at[0]], to: [onA, one.at[1]] },
+    ];
+    for (const leg of legs) {
+      tracks.push({
+        id: leg.id,
+        role: "crossover",
+        // The connector lives between the mains, so it takes Main 2's lane —
+        // the same lane the 1-D model has always drawn a crossover in.
+        lane: main2Lane ?? 1,
+        fromPos: round(Math.min(leg.from[1], leg.to[1])),
+        toPos: round(Math.max(leg.from[1], leg.to[1])),
+        trackName: xo.part.name ?? "Crossover",
+        crossoverPartId: xo.part.id,
+      });
+      turnouts.push(
+        {
+          id: `${leg.id}-1`,
+          pos: round(leg.from[1]),
+          onTrack: leg.from[0],
+          divergeTrack: leg.id,
+          name: xo.part.name ?? "Crossover",
+          ...(xo.part.frogNumber != null ? { size: xo.part.frogNumber } : {}),
+        },
+        {
+          id: `${leg.id}-2`,
+          pos: round(leg.to[1]),
+          onTrack: leg.to[0],
+          divergeTrack: leg.id,
+          name: xo.part.name ?? "Crossover",
+          ...(xo.part.frogNumber != null ? { size: xo.part.frogNumber } : {}),
+        },
+      );
+    }
+  }
+
   turnouts.sort((a, b) => a.pos - b.pos);
 
   /**
@@ -7420,9 +7547,28 @@ export function docToGraph(
     );
 
   const partById = new Map(library.map((p) => [p.id, p]));
+
+  /**
+   * ⭐ Turnouts that are a CROSSOVER ASSEMBLY'S OWN POINT-SETS.
+   *
+   * The assembly answers for them, so they are neither asked about nor laid
+   * individually. Without this an owner is asked "which turnout is this?" about
+   * four point-sets of a product they have already named — and on FMN-0078,
+   * whose crossovers are #6, the whole conversion refused for want of a measured
+   * #6 turnout that has nothing to do with it.
+   */
+  const inAssembly = new Set<string>();
+  for (const t of doc.tracks ?? []) {
+    if (t.role !== "crossover" || !t.crossoverPartId) continue;
+    const part = partById.get(t.crossoverPartId);
+    if (!part || part.kind !== "crossover" || partGeometryGap(part)) continue;
+    for (const sw of doc.turnouts ?? []) if (sw.divergeTrack === t.id) inAssembly.add(sw.id);
+  }
+
   const chosen = new Map<string, TrackPart>();
   const unknown: string[] = [];
   for (const t of report.turnouts) {
+    if (inAssembly.has(t.id)) continue;
     const id = answers.overrides?.[t.id] ?? (t.partId ? t.partId : answers.turnoutPartId) ?? null;
     const part = id ? partById.get(id) : undefined;
     if (!part || partGeometryGap(part)) unknown.push(t.id);
@@ -7556,6 +7702,27 @@ export function docToGraph(
     return { t, piece, span, divergeId };
   };
 
+  /**
+   * Re-aim a straight flex piece so its far end lands exactly on a point.
+   *
+   * A run that has to meet something slightly off its lane — a crossover pinches
+   * the mains together — is eased over by the builder, and the angle is far
+   * below anything drawable (0.035″ over a 30″ piece is 0.07°). Doing it by
+   * re-aiming the piece keeps the joint EXACT, which is what the graph needs.
+   */
+  const aimEndAt = (piece: TrackPiece, to: { x: number; y: number }) => {
+    const dx = to.x - piece.x;
+    const dy = to.y - piece.y;
+    const len = Math.hypot(dx, dy);
+    if (!(len > 0)) return;
+    // ⚠️ THE ANGLE IS NOT ROUNDED. Rounding it to three places moved the far end
+    // by ~1.5e-5″ — harmless against JOINT_SNAP_INCHES, but this joint is meant
+    // to be exact BY CONSTRUCTION, and "close enough to snap" is the habit that
+    // lets real drift in.
+    piece.rotationDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    piece.lengthInches = len;
+  };
+
   /** Lay the plain track of one straight run at `hostY`, between two positions,
    * around the bodies already sitting in it. */
   const layFlex = (
@@ -7567,17 +7734,16 @@ export function docToGraph(
     cuts?: number[] | null,
   ) => {
     const out = flexPieces({ fromPos, toPos, maxPieceInches: maxPiece, occupied, cuts: cuts ?? null });
-    out.forEach((f, i) =>
-      pieces.push({
-        id: `f-${label}-${i}`,
-        partId: flexId,
-        x: f.fromPos,
-        y: hostY,
-        rotationDeg: 0,
-        lengthInches: r3(f.lengthInches),
-      }),
-    );
-    return out;
+    const placed: TrackPiece[] = out.map((f, i) => ({
+      id: `f-${label}-${i}`,
+      partId: flexId,
+      x: f.fromPos,
+      y: hostY,
+      rotationDeg: 0,
+      lengthInches: r3(f.lengthInches),
+    }));
+    pieces.push(...placed);
+    return placed;
   };
 
   /**
@@ -7628,12 +7794,81 @@ export function docToGraph(
     return laid.filter((l) => !clashed.has(l.t.id));
   };
 
+  /**
+   * ⭐⭐ A DOUBLE CROSSOVER IS LAID AS **ONE PIECE** (Will, 2026-07-28).
+   *
+   * Found by its connectors: crossover-role tracks naming a placeable crossover
+   * product. The four turnouts the document lists are the assembly's own
+   * point-sets, so they are NOT laid individually — doing that is what made the
+   * FMN-0078 rebuild collapse.
+   *
+   * ⚠️ **THE PRODUCT'S GEOMETRY WINS, AND ITS POSITION IS THE OWNER'S.** A real
+   * #6 assembly is 20.14″ with its point-sets 6.54″ apart; a document may record
+   * them anywhere. So it is centred on the mean of the recorded positions — the
+   * crossover stays where the owner put it — and any discrepancy is reported
+   * rather than silently absorbed.
+   */
+  const assemblies = (() => {
+    const out: {
+      part: TrackPart;
+      geom: NonNullable<ReturnType<typeof crossoverAssembly>>;
+      x0: number;
+      trackIds: Set<string>;
+      turnoutIds: Set<string>;
+    }[] = [];
+    const byPart = new Map<string, SchematicTrack[]>();
+    for (const t of tracks) {
+      if (t.role !== "crossover" || !t.crossoverPartId) continue;
+      const list = byPart.get(t.crossoverPartId) ?? [];
+      list.push(t);
+      byPart.set(t.crossoverPartId, list);
+    }
+    for (const [partId, connectors] of byPart) {
+      const part = partById.get(partId);
+      if (!part || part.kind !== "crossover" || partGeometryGap(part)) continue;
+      const geom = crossoverAssembly(part);
+      if (!geom) continue;
+      const trackIds = new Set(connectors.map((c) => c.id));
+      const mine = turnouts.filter((t) => trackIds.has(t.divergeTrack));
+      if (!mine.length) continue;
+      const centre = mine.reduce((a, t) => a + t.pos, 0) / mine.length;
+      const x0 = centre - geom.lengthInches / 2;
+      const spread = Math.max(...mine.map((t) => t.pos)) - Math.min(...mine.map((t) => t.pos));
+      if (Math.abs(spread - geom.crossingRunInches) > 0.05)
+        warnings.push(
+          `this document puts the crossover's point-sets ${spread.toFixed(2)}″ apart, but a ${part.name ?? partId} is ${geom.crossingRunInches.toFixed(2)}″ — the assembly is laid to its own dimensions, centred where the document has it`,
+        );
+      out.push({ part, geom, x0, trackIds, turnoutIds: new Set(mine.map((t) => t.id)) });
+    }
+    return out;
+  })();
+  /** Connectors that belong to an assembly are ITS business, not branches. */
+  const assemblyTracks = new Set(assemblies.flatMap((a) => [...a.trackIds]));
+
   // ── THE MAINS. Both run along the module's axis; Main 2 sits a lane over.
   const main = trackById.get(MAIN_TRACK_ID) ?? tracks.find((t) => t.role === "main");
   if (!main) return refuse("this module's document has no mainline to convert");
   const mains = [main, ...tracks.filter((t) => t.role === "main" && t.id !== main.id)];
   const laidTurnouts = new Map<string, ReturnType<typeof layTurnout>>();
   const done = new Set<string>();
+
+  // The assemblies go down first: they sit ON the mains, so the flex has to be
+  // cut around them, and Main 2 has to be brought in to meet them.
+  const mainY = laneOffsetAt(mains[0]?.lane ?? 0, 0);
+  for (const [i, a] of assemblies.entries()) {
+    pieces.push({
+      id: `xo-${i}`,
+      partId: a.part.id,
+      x: r3(a.x0),
+      y: mainY,
+      rotationDeg: 0,
+      ...(a.part.name ? { name: a.part.name } : {}),
+    });
+  }
+  const assemblySpans: OccupiedSpan[] = assemblies.map((a) => ({
+    fromPos: a.x0,
+    toPos: a.x0 + a.geom.lengthInches,
+  }));
 
   for (const m of mains) {
     const y = laneOffsetAt(m.lane ?? 0, 0);
@@ -7642,9 +7877,47 @@ export function docToGraph(
       pieces.push(l.piece);
       laidTurnouts.set(l.t.id, l);
     }
-    layFlex(m.id, y, m.fromPos ?? 0, m.toPos ?? mainLen, on.map((l) => l.span), m.flexCuts);
+    const laidFlex = layFlex(
+      m.id,
+      y,
+      m.fromPos ?? 0,
+      m.toPos ?? mainLen,
+      [...on.map((l) => l.span), ...assemblySpans],
+      m.flexCuts,
+    );
+    /**
+     * ⚠️⚠️ **THE PINCH.** A #6 assembly is 1.09″ wide while the mains run
+     * {@link FREEMO_TRACK_SPACING_INCHES} apart, so Main 2's rail has to come in
+     * 0.035″ to meet it and go back out the other side. In the graph this is not
+     * a special case at all — the piece IS 1.09″ wide and the flex bends to
+     * reach it, which is exactly what retires `LanePinch`, `laneOffsetAt`'s
+     * pinch handling and `PINCH_EASE_INCHES` from the 1-D model.
+     *
+     * ⚠️ NOT a departure from the standard: §2.0 fixes the spacing AT THE
+     * ENDPLATE, and every real double crossover pinches the mains closer.
+     */
+    if (m !== mains[0]) {
+      for (const a of assemblies) {
+        const west = a.x0;
+        const east = a.x0 + a.geom.lengthInches;
+        const target = mainY + a.geom.spacingInches;
+        for (const f of laidFlex) {
+          const end = f.x + (f.lengthInches ?? 0);
+          if (Math.abs(end - west) < 1e-6) aimEndAt(f, { x: west, y: target });
+          else if (Math.abs(f.x - east) < 1e-6) {
+            f.y = target;
+            aimEndAt(f, { x: end, y: y });
+          }
+        }
+      }
+    }
     done.add(m.id);
   }
+
+  // An assembly's connectors are already on the board — they are routes THROUGH
+  // the piece, not branches hanging off a turnout. Marking them done keeps the
+  // final sweep from reporting a crossover that was laid perfectly well.
+  for (const id of assemblyTracks) done.add(id);
 
   // ── EVERY OTHER TRACK HANGS OFF A TURNOUT. Laid outward from the mains,
   // repeating until nothing new is reachable — which is how a ladder three

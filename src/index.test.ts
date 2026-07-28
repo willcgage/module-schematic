@@ -6941,3 +6941,95 @@ describe("a double crossover is one assembly", () => {
     expect(js.find((j) => j.joint === "a2")!.y).toBeCloseTo(1.09, 6);
   });
 });
+
+// ⭐⭐ Rebuilding a module that has a REAL double crossover. Will, 2026-07-28:
+// "the code needs to build the double crossover more carefully so it is as clean
+// as possible for the 2D and Dispatcher view."
+describe("rebuilding a module with a double crossover", () => {
+  const XO = "fast-tracks-n-me55-c-6";
+  const doc = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0, fromPos: 0, toPos: 96 },
+      { id: "main2", role: "main", lane: 1, fromPos: 0, toPos: 96 },
+      { id: "xoA", role: "crossover", lane: 1, fromPos: 37.98, toPos: 44.52, trackName: "Crossover", crossoverPartId: XO },
+      { id: "xoB", role: "crossover", lane: 1, fromPos: 37.98, toPos: 44.52, trackName: "Crossover", crossoverPartId: XO },
+    ],
+    turnouts: [
+      { id: "sw1", pos: 37.98, size: 6, onTrack: "main", divergeTrack: "xoA" },
+      { id: "sw2", pos: 44.52, size: 6, onTrack: "main2", divergeTrack: "xoA" },
+      { id: "sw3", pos: 37.98, size: 6, onTrack: "main2", divergeTrack: "xoB" },
+      { id: "sw4", pos: 44.52, size: 6, onTrack: "main", divergeTrack: "xoB" },
+    ],
+  });
+
+  // ⭐ The owner already named the product. Asking "which turnout is this?" about
+  // its four point-sets — and refusing for want of a measured #6 TURNOUT, which
+  // has nothing to do with it — is what used to happen.
+  it("asks nothing: the assembly answers for its own point-sets", () => {
+    const c = docToGraph(doc());
+    expect(c.refused).toBeNull();
+    expect(c.notLaid).toEqual([]);
+    expect(c.warnings).toEqual([]);
+  });
+
+  it("lays ONE assembly, not four turnouts", () => {
+    const c = docToGraph(doc());
+    const xo = c.graph!.pieces.filter((p) => p.partId === XO);
+    expect(xo).toHaveLength(1);
+    expect(c.graph!.pieces.some((p) => p.id.startsWith("t-"))).toBe(false);
+    // Centred where the document put it: the mean of the recorded point-sets.
+    expect(xo[0].x + 20.14 / 2).toBeCloseTo(41.25, 2);
+  });
+
+  // ⚠️ THE PINCH. The assembly is 1.09″ wide, the mains run 1.125″ apart, so
+  // Main 2 comes in to meet it and goes back out — by construction, not by a
+  // special case. NOT a departure from the standard: §2.0 fixes the spacing AT
+  // THE ENDPLATE.
+  it("brings Main 2 in to meet the assembly and back out again", () => {
+    const c = docToGraph(doc());
+    const joints = placedJoints(c.graph!.pieces);
+    const westIn = joints.find((j) => j.piece === "f-main2-1" && j.joint === "b")!;
+    expect(westIn.y).toBeCloseTo(1.09, 6);
+    const east = c.graph!.pieces.find((p) => p.id === "f-main2-2")!;
+    expect(east.y).toBeCloseTo(1.09, 6);
+    // The ease is real but far below anything drawable.
+    expect(Math.abs(c.graph!.pieces.find((p) => p.id === "f-main2-1")!.rotationDeg)).toBeLessThan(3);
+    // And it JOINS — a pinch that only looked right would leave an open end.
+    const g = buildTrackGraph(c.graph!.pieces);
+    expect(g.conflicts).toEqual([]);
+    expect(g.open).toHaveLength(4); // two mains, two ends each
+  });
+
+  it("gives the dispatcher view four turnouts and both crossing moves", () => {
+    const c = docToGraph(doc());
+    const out = graphToDoc(c.graph!.pieces, {
+      startAt: c.graph!.startAt, start2: c.graph!.start2 ?? null, base: doc(),
+    });
+    expect(out.warnings).toEqual([]);
+    const conns = out.doc.tracks.filter((t) => t.role === "crossover");
+    expect(conns).toHaveLength(2);
+    for (const t of conns) {
+      expect(t.crossoverPartId).toBe(XO);
+      expect(t.fromPos).toBeCloseTo(37.98, 1);
+      expect(t.toPos).toBeCloseTo(44.52, 1);
+    }
+    const sws = out.doc.turnouts ?? [];
+    expect(sws).toHaveLength(4);
+    // Two on each main, at each point-set — which is what a scissors is.
+    expect(sws.filter((t) => t.onTrack === "main")).toHaveLength(2);
+    expect(sws.filter((t) => t.onTrack === "main2")).toHaveLength(2);
+    expect(sws.map((t) => Math.round(t.pos * 100) / 100).sort((a, b) => a - b))
+      .toEqual([37.98, 37.98, 44.52, 44.52]);
+  });
+
+  it("says so when the document's point-sets do not match the product", () => {
+    const d = doc();
+    // The old FMN-0078 numbers: 2.5″ apart, where a #6 is 6.54″.
+    d.turnouts![1].pos = 40.48;
+    d.turnouts![3].pos = 40.48;
+    const c = docToGraph(d);
+    expect(c.warnings.join(" ")).toMatch(/point-sets .* apart, but a .* is 6\.54/);
+  });
+});
