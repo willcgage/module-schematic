@@ -96,6 +96,8 @@ import {
   partGeometry,
   buildTrackGraph,
   graphToDoc,
+  fitFlexBetween,
+  JOINT_SNAP_INCHES,
   pieceRoutePaths,
   snapPiece,
   deriveGraphDoc,
@@ -112,7 +114,6 @@ import {
   type LanePinch,
   turnoutClosure,
   leadInchesForSize,
-  BUILT_IN_TRACK_PARTS,
   partExtent,
   leadInchesForSize,
   resizeFlexPiece,
@@ -5831,5 +5832,172 @@ describe("a double-track module", () => {
     const { doc } = emit(pieces);
     expect(doc.turnouts![0].onTrack).toBe("main2");
     expect(doc.turnouts![0].divergeTrack).toBe("yd");
+  });
+});
+
+// ─── Crossovers (ADR 0001) ───────────────────────────────────────────────────
+// A single crossover needs no new part: it is a turnout on each main with a
+// connector between them, which the graph can already hold. What it needs is to
+// be RECOGNISED — as a crossover rather than a siding, and once rather than
+// twice.
+describe("a crossover between the two mains", () => {
+  const FLEX = "atlas-c55-n-flex";
+  const SW = "atlas-c55-n-7";
+  const LEAD = trackPart(SW)!.lead!.inches;
+  const SPACING = FREEMO_TRACK_SPACING_INCHES;
+
+  /** Two mains with a turnout on each, joined by a connector. */
+  const crossover = (): TrackPiece[] => {
+    const pieces: TrackPiece[] = [
+      { id: "m1a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 30 - LEAD },
+      { id: "sw1", partId: SW, x: 30 - LEAD, y: 0, rotationDeg: 0 },
+      { id: "m2a", partId: FLEX, x: 0, y: SPACING, rotationDeg: 0, lengthInches: 30 - LEAD },
+      // The Main 2 turnout faces back the other way, so its diverging leg
+      // reaches down toward Main 1's.
+      { id: "sw2", partId: SW, x: 30 - LEAD, y: SPACING, rotationDeg: 0, flipped: true },
+    ];
+    const a = placedJoints(pieces).find((j) => j.key === "sw1.diverge")!;
+    const b = placedJoints(pieces).find((j) => j.key === "sw2.diverge")!;
+    pieces.push({
+      id: "xo",
+      partId: FLEX,
+      x: a.x,
+      y: a.y,
+      rotationDeg: (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI,
+      lengthInches: Math.hypot(b.x - a.x, b.y - a.y),
+    });
+    // Each main continues past its turnout.
+    for (const [id, sw] of [["m1b", "sw1"], ["m2b", "sw2"]] as const) {
+      const th = placedJoints(pieces).find((j) => j.key === `${sw}.through`)!;
+      pieces.push({ id, partId: FLEX, x: th.x, y: th.y, rotationDeg: 0, lengthInches: 40 });
+    }
+    return pieces;
+  };
+  const emit = (pieces: TrackPiece[]) =>
+    graphToDoc(pieces, {
+      startAt: { piece: "m1a", joint: "a" },
+      start2: { piece: "m2a", joint: "a" },
+    });
+
+  it("connects the two mains, and calls it a crossover", () => {
+    const { doc, warnings } = emit(crossover());
+    const xo = doc.tracks.find((t) => t.id === "xo")!;
+    expect(xo.role).toBe("crossover");
+    expect(warnings).toEqual([]);
+  });
+
+  // ⚠️ FOUND FROM BOTH MAINS. A siding is discovered twice, once from each of
+  // its turnouts; a crossover is discovered twice from two different WALKS. Left
+  // alone it would be two connectors in the document where the module has one.
+  it("emits ONE connector, with both turnouts pointing at it", () => {
+    const { doc } = emit(crossover());
+    expect(doc.tracks.filter((t) => t.id === "xo")).toHaveLength(1);
+    const ends = doc.turnouts!.filter((t) => t.divergeTrack === "xo");
+    expect(ends).toHaveLength(2);
+    expect(new Set(ends.map((t) => t.onTrack))).toEqual(new Set(["main", "main2"]));
+  });
+
+  // ⭐ AND THE DISPATCHER VIEW DRAWS IT AS ONE. `moduleFeatures` decides by the
+  // same test — turnouts on two different lanes — so the document and the
+  // drawing cannot disagree about what this is.
+  it("reaches the operations view as a crossover, not a siding", () => {
+    const { doc } = emit(crossover());
+    const f = moduleFeatures({
+      ...doc,
+      endplates: [
+        { id: "A", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+        { id: "B", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+      ],
+    });
+    // A crossover is drawn as a diagonal, so it is NOT in the lane-paralleling
+    // extra tracks…
+    expect(f.extraTracks.some((t) => t.id === "xo")).toBe(false);
+    // …and both mains are there for it to run between.
+    expect(f.doubleMain).toBe(true);
+  });
+
+  it("still calls a siding a siding — both its turnouts are on one main", () => {
+    const pieces: TrackPiece[] = [
+      { id: "m1a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 13 - LEAD },
+      { id: "sw1", partId: SW, x: 13 - LEAD, y: 0, rotationDeg: 0 },
+      { id: "mid", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 1 },
+    ];
+    const B = (() => {
+      const j = partGeometry(trackPart(SW)!)!.joints;
+      return j.find((x) => x.id === "through")!.x - j.find((x) => x.id === "throat")!.x;
+    })();
+    pieces[2] = { id: "mid", partId: FLEX, x: 13 - LEAD + B, y: 0, rotationDeg: 0, lengthInches: (73 + LEAD - B) - (13 - LEAD + B) };
+    pieces.push({ id: "sw2", partId: SW, x: 73 + LEAD, y: 0, rotationDeg: 180, flipped: true });
+    const jw = placedJoints(pieces).find((j) => j.key === "sw1.diverge")!;
+    const je = placedJoints(pieces).find((j) => j.key === "sw2.diverge")!;
+    pieces.push({ id: "sid", partId: FLEX, x: jw.x, y: jw.y, rotationDeg: 0, lengthInches: Math.hypot(je.x - jw.x, je.y - jw.y) });
+    const { doc } = graphToDoc(pieces, { startAt: { piece: "m1a", joint: "a" } });
+    expect(doc.tracks.find((t) => t.id === "sid")!.role).toBe("siding");
+  });
+});
+
+// ─── Cutting flex to fit (ADR 0001) ──────────────────────────────────────────
+describe("fitFlexBetween", () => {
+  const FLEX = "atlas-c55-n-flex";
+  const SW = "atlas-c55-n-7";
+  const LEAD = trackPart(SW)!.lead!.inches;
+  const SPACING = FREEMO_TRACK_SPACING_INCHES;
+
+  const twoTurnouts = (): TrackPiece[] => [
+    { id: "m1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 30 - LEAD },
+    { id: "sw1", partId: SW, x: 30 - LEAD, y: 0, rotationDeg: 0 },
+    { id: "m2", partId: FLEX, x: 0, y: SPACING, rotationDeg: 0, lengthInches: 30 - LEAD },
+    { id: "sw2", partId: SW, x: 30 - LEAD, y: SPACING, rotationDeg: 0, flipped: true },
+  ];
+
+  // ⭐ THE THING THAT MAKES A CROSSOVER BUILDABLE BY HAND.
+  it("cuts a run to land exactly on the joint opposite", () => {
+    const others = twoTurnouts();
+    const a = placedJoints(others).find((j) => j.key === "sw1.diverge")!;
+    const b = placedJoints(others).find((j) => j.key === "sw2.diverge")!;
+    // ⚠️ Two #7s facing each other across a 1.125″ spacing have their diverging
+    // ends almost touching — the legs climb 0.61″ each — so the connector is
+    // SHORT. That is the real geometry, and the reason a purpose-built crossover
+    // product exists. Laid at the right start, pointing the wrong way and the
+    // wrong length.
+    const rough: TrackPiece = { id: "xo", partId: FLEX, x: a.x, y: a.y, rotationDeg: 0, lengthInches: 0.3 };
+    const fitted = fitFlexBetween(rough, others)!;
+    expect(fitted).not.toBeNull();
+    const end = placedJoints([fitted]).find((j) => j.joint === "b")!;
+    expect(Math.hypot(end.x - b.x, end.y - b.y)).toBeLessThan(JOINT_SNAP_INCHES);
+    // …and it is genuinely joined, by the graph's own rule.
+    const graph = buildTrackGraph([...others, fitted]);
+    expect(graph.connections.some((c) => [c.a, c.b].includes("sw2.diverge"))).toBe(true);
+    expect(graph.conflicts).toEqual([]);
+  });
+
+  it("leaves a bend alone — an arc meeting a second point is over-constrained", () => {
+    const others = twoTurnouts();
+    const a = placedJoints(others).find((j) => j.key === "sw1.diverge")!;
+    const bent: TrackPiece = {
+      id: "xo", partId: FLEX, x: a.x, y: a.y, rotationDeg: 0, lengthInches: 2, radiusInches: 24,
+    };
+    expect(fitFlexBetween(bent, others)).toBeNull();
+  });
+
+  it("will not reach for a joint that already holds a connection", () => {
+    const others = twoTurnouts();
+    const a = placedJoints(others).find((j) => j.key === "sw1.diverge")!;
+    // m1's far end is joined to sw1's throat, so it is not on offer.
+    const toward: TrackPiece = {
+      id: "x", partId: FLEX, x: a.x, y: a.y, rotationDeg: 180, lengthInches: 0.2,
+    };
+    const fitted = fitFlexBetween(toward, others, BUILT_IN_TRACK_PARTS, 0.5);
+    // Either nothing in reach, or something that is genuinely open — never the
+    // occupied junction behind it.
+    if (fitted) {
+      const end = placedJoints([fitted]).find((j) => j.joint === "b")!;
+      expect(Math.hypot(end.x - (30 - LEAD), end.y - 0)).toBeGreaterThan(JOINT_SNAP_INCHES);
+    }
+  });
+
+  it("does nothing for a part that is not flex", () => {
+    const others = twoTurnouts();
+    expect(fitFlexBetween(others[1], others)).toBeNull();
   });
 });

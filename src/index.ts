@@ -5772,6 +5772,59 @@ export function snapPiece(
   };
 }
 
+/**
+ * Cut a run of flex to fit BETWEEN two joints — the piece's near end already
+ * where it belongs, its far end brought onto another open joint.
+ *
+ * ⭐ WITHOUT THIS A CROSSOVER CANNOT BE BUILT BY HAND. A piece snaps by ONE end,
+ * and a flex run's length handle drags along its own axis, so the far end can
+ * never be steered onto the turnout opposite: an owner would have to type an
+ * angle and a length to a hundredth of an inch. Cutting a piece to fit between
+ * two fixed points is exactly what a builder does with flex, and it is the last
+ * thing standing between "two mains" and "two mains joined".
+ *
+ * ⚠️ STRAIGHT RUNS ONLY. A bend is already fixed by its radius; asking an arc to
+ * meet a second point as well over-constrains it, and quietly re-bending an
+ * owner's curve to reach something is not a fit, it is a guess.
+ */
+export function fitFlexBetween(
+  piece: TrackPiece,
+  others: TrackPiece[],
+  library = BUILT_IN_TRACK_PARTS,
+  withinInches = 0.5,
+): TrackPiece | null {
+  const part = library.find((p) => p.id === piece.partId);
+  if (part?.kind !== "flex" || piece.radiusInches) return null;
+  const mine = placedJoints([piece], library);
+  const far = mine.find((j) => j.joint === "b");
+  const near = mine.find((j) => j.joint === "a");
+  if (!far || !near) return null;
+  const graph = buildTrackGraph(others, library);
+  const taken = new Set(graph.connections.flatMap((c) => [c.a, c.b]));
+  let best: { j: PlacedJoint; d: number } | null = null;
+  for (const j of graph.joints) {
+    if (taken.has(j.key)) continue; // an occupied joint is not on offer
+    // ⚠️ NOR THE ONE THIS PIECE ALREADY STARTS ON. A short connector's far end
+    // is often nearer its own near-end joint than the joint opposite — a
+    // crossover's diverging ends are a tenth of an inch apart — so the nearest
+    // open joint is the piece's own, and fitting to it asks for a run of zero
+    // length. That is what "the crossover cannot be built" looked like.
+    if (Math.hypot(j.x - near.x, j.y - near.y) <= JOINT_SNAP_INCHES) continue;
+    const d = Math.hypot(j.x - far.x, j.y - far.y);
+    if (d <= withinInches && (!best || d < best.d)) best = { j, d };
+  }
+  if (!best) return null;
+  const dx = best.j.x - piece.x;
+  const dy = best.j.y - piece.y;
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0)) return null;
+  return {
+    ...piece,
+    rotationDeg: norm360((Math.atan2(dy, dx) * 180) / Math.PI),
+    lengthInches: Math.round(len * 1000) / 1000,
+  };
+}
+
 /** A route the walk found: a continuous run of pieces a train can travel. */
 export interface GraphRoute {
   id: string;
@@ -6218,6 +6271,18 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   const trackIdOf = new Map<string, string>([["main", MAIN_TRACK_ID]]);
   if (twoMains) trackIdOf.set("main2:main", MAIN2_TRACK_ID);
   for (const r of branches) trackIdOf.set(r.id, r.pieces[0]);
+  // ⚠️ A CROSSOVER IS FOUND BY BOTH WALKS — once from each main, exactly as a
+  // siding is found from each of its turnouts, but now across two walks. The
+  // two finds name the same first piece, so they resolve to the same track id
+  // and the second is dropped rather than emitted as a phantom second
+  // connector. Both turnouts still point at the one that remains.
+  const emitted = new Set<string>();
+  const uniqueBranches = branches.filter((r) => {
+    const id = trackIdOf.get(r.id)!;
+    if (emitted.has(id)) return false;
+    emitted.add(id);
+    return true;
+  });
 
   // LANE is an ordinal: which side, and how many tracks out. The side is the
   // sign of how far the run reaches laterally; the magnitude is its rank among
@@ -6226,9 +6291,9 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
   // ⚠️ MAIN 2 ALREADY OCCUPIES A LANE on its own side, so branches there start
   // at 2. Ranking branches alone put the first siding above the main on lane 1
   // — the same lane as Main 2 — and the two drew on top of each other.
-  const laneOf = (r: GraphRoute): number => {
+  const laneOf = (r: GraphRoute, among: GraphRoute[]): number => {
     const side = Math.sign(r.lateral) || 1;
-    const sameSide = branches
+    const sameSide = among
       .filter((x) => (Math.sign(x.lateral) || 1) === side)
       .sort((a, b) => Math.abs(a.lateral) - Math.abs(b.lateral));
     const taken = side === main2Lane ? 1 : 0;
@@ -6259,7 +6324,7 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
         ]
       : []),
   ];
-  for (const r of branches) {
+  for (const r of uniqueBranches) {
     const id = trackIdOf.get(r.id)!;
     const meta = input.meta?.[id] ?? {};
     tracks.push({
@@ -6267,7 +6332,7 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
       // It runs back into a second turnout, or it doesn't. That is the whole
       // difference between a siding and a spur, and it is read, not declared.
       role: r.endsAt ? "siding" : "spur",
-      lane: laneOf(r),
+      lane: laneOf(r, uniqueBranches),
       fromPos: round(Math.min(r.fromPos, r.toPos)),
       toPos: round(Math.max(r.fromPos, r.toPos)),
       ...(meta.trackName ? { trackName: meta.trackName } : {}),
@@ -6329,6 +6394,25 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
     });
   }
   turnouts.sort((a, b) => a.pos - b.pos);
+
+  /**
+   * ⭐ A CONNECTOR BETWEEN TWO DIFFERENT MAINS IS A CROSSOVER, not a siding.
+   *
+   * Both are "a track with a turnout at each end"; what separates them is
+   * whether those turnouts sit on the SAME track. A siding leaves the main and
+   * comes back to it; a crossover goes somewhere else. That is the same test
+   * `moduleFeatures` applies to decide whether to draw a diagonal or a
+   * lane-paralleling band, so deciding it here means the document says what the
+   * drawing will do instead of leaving both to work it out separately.
+   *
+   * Read, not authored — like everything else in this model.
+   */
+  for (const t of tracks) {
+    if (t.role === "main") continue;
+    const ends = turnouts.filter((sw) => sw.divergeTrack === t.id);
+    if (ends.length >= 2 && new Set(ends.map((sw) => sw.onTrack)).size >= 2)
+      t.role = "crossover";
+  }
 
   // ⭐ ANCHORED FEATURES ARE PLACED BY THE PIECE THEY ARE BESIDE, not by a
   // number about the module. Unanchored ones keep exactly the positions their
