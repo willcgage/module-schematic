@@ -5492,13 +5492,23 @@ export interface PartGeometry {
  * builder's business, and every real double crossover pinches them closer.
  *
  * The derivation:
- * - **Length** is `overallLength × piecesPerAssembly`. Fast Tracks' figure is
- *   ONE HALF — the fixture builds a symmetrical half you make twice and butt
- *   together after turning the second 180°.
+ * - **Length IS `overallLength`.** ⚠️ `piecesPerAssembly` counts BUILDS, not
+ *   length: you make the fixture's half twice and turn the second 180°, and the
+ *   two diagonals then SUPERIMPOSE into the scissors — they occupy the same
+ *   stretch of track, they do not sit end to end. Multiplying by it gave a #6 a
+ *   20.14″ body with **6.8″ of plain approach track moulded on each end**.
+ *   `minimumLength` settles it independently: the shortest #6 build is 9.31″,
+ *   which reads as "trim the approach to 1.38″" — and only reads that way if the
+ *   assembly is L. Under 2L a "minimum" would still carry a 6″ approach.
  * - **The crossing run** `W = spacing / tan θ` is how far along the track a route
  *   takes to cross to the other one. The two point-sets on the SAME track are
  *   therefore `W` apart — 6.54″ for a #6 at 1.09″, not the 2.5″ my own FMN-0078
  *   fixture claimed.
+ * - **The approach**, `(length − W) / 2`, is what is left over at each end: the
+ *   straight tie strip from the start of the moulding to the start of the points.
+ *   ⭐ Will named this as the measurement that has to be right (2026-07-28), and
+ *   it is where the through routes take their rail joints. 1.76″ on a #6, 2.45″
+ *   on a #8 — it grows with the frog, as it must.
  * - Both crossing routes are centred on the assembly, so they meet in the middle
  *   at `2θ` — which is exactly the {@link TrackPart.secondaryFrogAngle} Fast
  *   Tracks publish, an independent check that this reading is right.
@@ -5509,6 +5519,14 @@ export function crossoverAssembly(part: TrackPart): {
   spacingInches: number;
   /** Along-track distance a crossing route takes to reach the other track. */
   crossingRunInches: number;
+  /**
+   * Start of the moulding → start of the points, at each end.
+   *
+   * ⭐ The measurement that has to be right for the drawing to read as track:
+   * it is the plain tie strip a crossover begins and ends with, and therefore
+   * where the through routes are jointed.
+   */
+  approachInches: number;
   /** Where the four point-sets sit along the assembly. */
   pointsAtInches: [number, number];
   /** The X where the two crossing routes meet — a real diamond in the middle. */
@@ -5518,7 +5536,8 @@ export function crossoverAssembly(part: TrackPart): {
   const spacing = part.trackSpacing?.inches;
   const n = part.frogNumber;
   if (!overall || !spacing || !n) return null;
-  const lengthInches = overall * (part.piecesPerAssembly ?? 1);
+  // ⚠️ NOT × piecesPerAssembly — see the note above. That counts builds.
+  const lengthInches = overall;
   // tan θ = 1/N for a frog of number N. Use the part's own measured angle where
   // it has one — Atlas build to sectional angles rather than true frog ratios.
   const tan = part.actualAngle ? Math.tan((part.actualAngle.deg * Math.PI) / 180) : 1 / n;
@@ -5530,6 +5549,7 @@ export function crossoverAssembly(part: TrackPart): {
     lengthInches,
     spacingInches: spacing,
     crossingRunInches,
+    approachInches: mid - half,
     pointsAtInches: [mid - half, mid + half],
     scissorsAtInches: mid,
   };

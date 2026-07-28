@@ -6899,11 +6899,37 @@ describe("a double crossover is one assembly", () => {
     expect(g.routes).toContainEqual(["a2", "b1"]);
   });
 
-  it("reads the published length as ONE HALF and doubles it", () => {
+  // ⚠️ `piecesPerAssembly` counts BUILDS, not length: the two halves SUPERIMPOSE
+  // into the scissors, they do not sit end to end. Doubling gave a #6 a 20.14″
+  // body with 6.8″ of plain approach moulded on each end.
+  it("takes the published length as the assembly, not half of it", () => {
     const a = crossoverAssembly(six())!;
     expect(six().overallLength!.inches).toBeCloseTo(10.07, 6);
     expect(six().piecesPerAssembly).toBe(2);
-    expect(a.lengthInches).toBeCloseTo(20.14, 6);
+    expect(a.lengthInches).toBeCloseTo(10.07, 6);
+  });
+
+  /**
+   * ⭐ THE APPROACH — start of the moulding to the start of the points, which
+   * Will named as the measurement that has to be right (2026-07-28). It is what
+   * is left over once the crossing run is taken out, and it is where the through
+   * routes are jointed.
+   *
+   * `minimumLength` corroborates the reading independently: the shortest #6
+   * build is 9.31″, which comes out as a 1.38″ approach — i.e. "trim the
+   * approach as short as the fixture allows". Under the doubled length a
+   * *minimum* build would still carry a 6″ approach, which is not a minimum of
+   * anything.
+   */
+  it("leaves a real tie strip before the points, and it grows with the frog", () => {
+    const six6 = crossoverAssembly(six())!;
+    expect(six6.approachInches).toBeCloseTo(1.764, 3);
+    expect(six6.approachInches).toBeCloseTo(six6.pointsAtInches[0], 6);
+    const eight = crossoverAssembly(trackPart("fast-tracks-n-me55-c-8")!)!;
+    expect(eight.approachInches).toBeCloseTo(2.448, 3);
+    expect(eight.approachInches).toBeGreaterThan(six6.approachInches);
+    // Length is the approach at each end plus the crossing between them.
+    expect(2 * six6.approachInches + six6.crossingRunInches).toBeCloseTo(six6.lengthInches, 6);
   });
 
   // ⭐ THE FALSIFIER. The scissors X is where the two crossing routes meet, so
@@ -6928,6 +6954,7 @@ describe("a double crossover is one assembly", () => {
     expect(a.pointsAtInches[1] - a.pointsAtInches[0]).toBeCloseTo(a.crossingRunInches, 6);
     // Centred, so the scissors lands in the middle of the assembly.
     expect(a.scissorsAtInches).toBeCloseTo(a.lengthInches / 2, 6);
+    expect(a.pointsAtInches[0]).toBeCloseTo(1.764, 3);
   });
 
   // ⚠️ Drawn as a chord, the rail would leave the railhead for most of the
@@ -6945,9 +6972,9 @@ describe("a double crossover is one assembly", () => {
     // It stays on its own track until the point-set, then crosses.
     expect(crossing.points[0].y).toBeCloseTo(0, 6);
     expect(crossing.points[1].y).toBeCloseTo(0, 6);
-    expect(crossing.points[1].x).toBeCloseTo(6.799, 3);
+    expect(crossing.points[1].x).toBeCloseTo(1.764, 3);
     expect(crossing.points[2].y).toBeCloseTo(1.09, 6);
-    expect(crossing.points[3].x).toBeCloseTo(20.14, 6);
+    expect(crossing.points[3].x).toBeCloseTo(10.07, 6);
   });
 
   it("a placed assembly's four joints land where the graph can join them", () => {
@@ -6957,7 +6984,7 @@ describe("a double crossover is one assembly", () => {
     const js = placedJoints([piece]);
     expect(js).toHaveLength(4);
     expect(js.find((j) => j.joint === "a1")!.x).toBeCloseTo(10, 6);
-    expect(js.find((j) => j.joint === "b1")!.x).toBeCloseTo(30.14, 6);
+    expect(js.find((j) => j.joint === "b1")!.x).toBeCloseTo(20.07, 6);
     expect(js.find((j) => j.joint === "a2")!.y).toBeCloseTo(1.09, 6);
   });
 });
@@ -7000,7 +7027,7 @@ describe("rebuilding a module with a double crossover", () => {
     expect(xo).toHaveLength(1);
     expect(c.graph!.pieces.some((p) => p.id.startsWith("t-"))).toBe(false);
     // Centred where the document put it: the mean of the recorded point-sets.
-    expect(xo[0].x + 20.14 / 2).toBeCloseTo(41.25, 2);
+    expect(xo[0].x + 10.07 / 2).toBeCloseTo(41.25, 2);
   });
 
   // ⚠️ THE PINCH. The assembly is 1.09″ wide, the mains run 1.125″ apart, so
