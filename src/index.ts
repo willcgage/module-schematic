@@ -7433,12 +7433,44 @@ export function docToGraph(
     return out;
   };
 
-  /** Every turnout sitting ON a track, laid, with its body span. */
-  const turnoutsOn = (trackId: string, hostY: number) =>
-    turnouts
+  /**
+   * Every turnout sitting ON a track, laid, with its body span — minus any whose
+   * mouldings would occupy the same rail.
+   *
+   * ⚠️⚠️ **TWO TURNOUTS CANNOT SHARE AN INCH OF TRACK, AND NOTHING ELSE NOTICES.**
+   * {@link flexPieces} deliberately MERGES overlapping occupied spans, so the
+   * flex is cut around the union and the two pieces are simply left intersecting;
+   * the walk then threads a path through geometry that cannot exist and emits a
+   * module nobody has. FMN-0078 is the case: its scissors crossover puts two
+   * turnouts 2.5″ apart, and an Atlas #7 is 6″ long — the rebuild produced two
+   * turnouts at 91.9″ and called the crossovers sidings.
+   *
+   * A real scissors is ONE assembly for exactly this reason. Dropping the pair
+   * and saying so leaves a module that is honestly missing its crossover, rather
+   * than one that is quietly wrong.
+   */
+  const turnoutsOn = (trackId: string, hostY: number) => {
+    const laid = turnouts
       .filter((t) => t.onTrack === trackId && chosen.has(t.id))
-      .sort((a, b) => a.pos - b.pos)
-      .map((t) => layTurnout(t, hostY));
+      .map((t) => layTurnout(t, hostY))
+      .sort((a, b) => a.span.fromPos - b.span.fromPos);
+    const clashed = new Set<string>();
+    for (let i = 1; i < laid.length; i += 1) {
+      const prev = laid[i - 1];
+      const cur = laid[i];
+      if (cur.span.fromPos < prev.span.toPos - 1e-6) {
+        clashed.add(prev.t.id);
+        clashed.add(cur.t.id);
+        const gap = Math.abs(cur.t.pos - prev.t.pos);
+        const body = prev.span.toPos - prev.span.fromPos;
+        notLaid.push({
+          id: cur.t.divergeTrack,
+          why: `${prev.t.name || prev.t.id} and ${cur.t.name || cur.t.id} are ${gap.toFixed(1)}″ apart on the same track, but the turnout chosen is ${body.toFixed(1)}″ long — their mouldings would overlap, which is why this is sold as one assembly rather than two turnouts`,
+        });
+      }
+    }
+    return laid.filter((l) => !clashed.has(l.t.id));
+  };
 
   // ── THE MAINS. Both run along the module's axis; Main 2 sits a lane over.
   const main = trackById.get(MAIN_TRACK_ID) ?? tracks.find((t) => t.role === "main");

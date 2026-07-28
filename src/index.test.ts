@@ -6793,3 +6793,61 @@ describe("a crossover connector is laid straight between the mains", () => {
     expect(g.conflicts).toEqual([]);
   });
 });
+
+// ⚠️⚠️ FOUND BY APPLYING THE REBUILD ON THE DEPLOYED APP (FMN-0078). Two Atlas
+// #7s 2.5″ apart have overlapping 6″ mouldings. `flexPieces` MERGES overlapping
+// occupied spans by design, so nothing complained: the pieces were left
+// intersecting and the walk threaded a path through geometry that cannot exist,
+// emitting two turnouts at 91.9″ and calling the crossovers sidings. A silently
+// wrong module is the worst failure this whole design exists to avoid.
+describe("two turnouts cannot share an inch of track", () => {
+  const scissors = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0, fromPos: 0, toPos: 96 },
+      { id: "main2", role: "main", lane: 1, fromPos: 0, toPos: 96 },
+      { id: "xoA", role: "crossover", lane: 1, fromPos: 40, toPos: 42.5, trackName: "Crossover" },
+      { id: "xoB", role: "crossover", lane: 1, fromPos: 40, toPos: 42.5, trackName: "Crossover" },
+    ],
+    turnouts: [
+      { id: "sw1", pos: 40, name: "Crossover", onTrack: "main", divergeTrack: "xoA" },
+      { id: "sw2", pos: 42.5, name: "Crossover", onTrack: "main2", divergeTrack: "xoA" },
+      { id: "sw3", pos: 42.5, name: "Crossover", onTrack: "main", divergeTrack: "xoB" },
+      { id: "sw4", pos: 40, name: "Crossover", onTrack: "main2", divergeTrack: "xoB" },
+    ],
+  });
+
+  it("refuses the overlapping pair and says why, instead of emitting nonsense", () => {
+    const c = docToGraph(scissors(), { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.refused).toBeNull();
+    expect(c.notLaid.length).toBeGreaterThan(0);
+    expect(c.notLaid[0].why).toMatch(/mouldings would overlap/);
+    expect(c.notLaid[0].why).toMatch(/2\.5/);
+    // Neither of the clashing turnouts is laid — half a scissors is not a thing.
+    const ids = c.graph!.pieces.map((p) => p.id);
+    expect(ids).not.toContain("t-sw1");
+    expect(ids).not.toContain("t-sw3");
+  });
+
+  it("still lays the two mains, and emits no turnout nobody placed", () => {
+    const c = docToGraph(scissors(), { turnoutPartId: "atlas-c55-n-7" });
+    const out = graphToDoc(c.graph!.pieces, {
+      startAt: c.graph!.startAt, start2: c.graph!.start2 ?? null, base: scissors(),
+    });
+    expect(out.doc.tracks.filter((t) => t.role === "main")).toHaveLength(2);
+    expect(out.doc.turnouts ?? []).toEqual([]);
+  });
+
+  it("a pair with room between them is untouched", () => {
+    const doc = scissors();
+    doc.turnouts = [
+      { id: "sw1", pos: 20, onTrack: "main", divergeTrack: "xoA" },
+      { id: "sw2", pos: 20, onTrack: "main2", divergeTrack: "xoA" },
+    ];
+    doc.tracks = doc.tracks.filter((t) => t.id !== "xoB");
+    const c = docToGraph(doc, { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.notLaid).toEqual([]);
+    expect(c.graph!.pieces.map((p) => p.id)).toContain("t-sw1");
+  });
+});
