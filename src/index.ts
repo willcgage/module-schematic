@@ -293,6 +293,15 @@ export interface SchematicTrack {
    * the crossover at the spacing it was actually built to — the Fast Tracks N
    * fixtures are 1.09″ against Free-moN's 1.125″, and the difference is real. */
   crossoverPartId?: string | null;
+  /**
+   * Which end of this track is CLOSED BY A BUMPER — deliberately the end of the
+   * line, rather than track that merely stops.
+   *
+   * ⭐ The difference is operational, not decorative: a bumpered end is where a
+   * cut of cars can be shoved to, and it is where usable length runs out. An
+   * end that just stops might only be unfinished.
+   */
+  bumperAt?: "from" | "to" | null;
   /** The owner's MEASURED usable length, real inches (#20) — for what the
    * drawing can't know: a bumper post short of the drawn end, a structure
    * fouling the track. Absent = derive it from the clearance points (#19). */
@@ -3414,7 +3423,7 @@ export interface TrackPart {
    * {@link secondaryFrogAngle}, which no single turnout has, and
    * {@link piecesPerAssembly} — because its lengths describe the HALF, not the
    * finished crossover. */
-  kind: "turnout" | "wye" | "curved-turnout" | "crossover" | "crossing" | "flex";
+  kind: "turnout" | "wye" | "curved-turnout" | "crossover" | "crossing" | "flex" | "bumper";
   /** Manufacturer part numbers by hand, where the part has a hand. */
   partNumbers?: { left?: string; right?: string; single?: string };
   /** Frog number N (the 1:N ratio). Definitional, so no provenance needed. */
@@ -4108,11 +4117,33 @@ export const FAST_TRACKS_N_ME55_CROSSOVERS: TrackPart[] = (
 export const DEFAULT_FLEX_PART_ID = "atlas-c55-n-flex";
 
 /** Every built-in part, across manufacturers. */
+/**
+ * A bumper that is not a product.
+ *
+ * ⭐ DELIBERATELY GENERIC, AND CARRYING NO DIMENSIONS AT ALL. Owners build these
+ * out of a tie and a scrap of rail as often as they buy them, and what a bumper
+ * MEANS — this end of the track is closed on purpose — does not depend on which
+ * one it is. Recording an invented length here would be exactly the mistake the
+ * rest of this library exists to avoid; a named product can be added with its
+ * own measurement, and will draw at it.
+ */
+export const GENERIC_END_OF_TRACK: TrackPart[] = [
+  {
+    id: "generic-bumper",
+    manufacturer: "Generic",
+    line: "N scale",
+    scale: "N",
+    name: "Bumper",
+    kind: "bumper",
+  },
+];
+
 export const BUILT_IN_TRACK_PARTS: TrackPart[] = [
   ...ATLAS_CODE55_N,
   ...FAST_TRACKS_N_ME55,
   ...FAST_TRACKS_N_ME55_CROSSOVERS,
   ...FLEX_TRACK_PARTS,
+  ...GENERIC_END_OF_TRACK,
 ];
 
 /** Every flex product a track can be laid with. */
@@ -5241,6 +5272,11 @@ export interface PartGeometry {
  */
 export function partGeometryGap(part: TrackPart): string | null {
   if (part.kind === "flex") return null;
+  // ⭐ A BUMPER NEEDS NO MEASUREMENT TO BE PLACEABLE. Its job is to say that an
+  // end of track is closed deliberately, and that is true of a hand-built tie
+  // bumper as much as of a product. Blocking it for want of a dimension would
+  // withhold the one piece whose whole meaning is independent of its size.
+  if (part.kind === "bumper") return null;
   if (part.kind === "crossover")
     return (
       "a crossover fixture builds one HALF of the assembly (piecesPerAssembly), " +
@@ -5283,6 +5319,19 @@ export function partGeometry(
   library = BUILT_IN_TRACK_PARTS,
 ): PartGeometry | null {
   if (partGeometryGap(part)) return null;
+
+  if (part.kind === "bumper") {
+    // ⭐ ONE JOINT, AND NO ROUTE THROUGH IT — which is the entire point. A
+    // bumper is where track STOPS, so the graph closes that end by
+    // construction: the joint it takes is no longer open, and the walk that
+    // reaches it has nowhere further to go. Nothing has to be flagged.
+    return {
+      joints: [{ id: "a", role: "throat", x: 0, y: 0, angleDeg: 180 }],
+      routes: [],
+      source: part.overallLength?.source ?? "unverified",
+      divergingEndMeasured: false,
+    };
+  }
 
   if (part.kind === "flex") {
     // Flex has no fixed geometry — it is the one piece a builder cuts. Its ends
@@ -5411,6 +5460,17 @@ export function pieceRoutePaths(
   };
 
   const out: { route: [string, string]; points: { x: number; y: number }[] }[] = [];
+
+  // ⚠️ A BUMPER HAS NO ROUTE, so the loop below would draw nothing at all and
+  // the piece would be invisible and un-clickable. This polyline is its BODY,
+  // not a path through it — the repeated joint id says there is nowhere to go.
+  if (part.kind === "bumper") {
+    const at = joints[0];
+    if (!at) return out;
+    const len = part.overallLength?.inches ?? BUMPER_DRAWN_INCHES;
+    return [{ route: ["a", "a"], points: [{ x: at.x, y: at.y }, place(len, 0)] }];
+  }
+
   for (const route of geo.routes) {
     const a = at(route[0]);
     const b = at(route[1]);
@@ -5598,6 +5658,17 @@ export interface TrackGraph {
  * tight enough that nothing joins by accident, loose enough to absorb the
  * rounding of a drag. */
 export const JOINT_SNAP_INCHES = 0.01;
+
+/**
+ * How long a bumper draws when it is not a named product.
+ *
+ * ⚠️ A DRAWING DEFAULT, NOT A MEASUREMENT, and deliberately not recorded as one
+ * on any part. What a bumper is FOR — saying this end of the track is closed on
+ * purpose — does not depend on its length, and plenty are a tie and a bit of
+ * scrap. A named product supplies its own `overallLength` and this stops
+ * applying.
+ */
+export const BUMPER_DRAWN_INCHES = 0.75;
 
 /**
  * Where a bent run's far end lands, and which way it points — in the piece's own
@@ -5884,6 +5955,9 @@ export interface GraphRoute {
   bornAt: string | null;
   /** The turnout it runs back into. Set = a SIDING; null = it dead-ends. */
   endsAt: string | null;
+  /** The piece that CLOSES this route — a bumper. Set = the track ends here on
+   * purpose; null = it simply stops, which may just mean unfinished. */
+  closedBy: string | null;
   pieces: string[];
   /** The same pieces, each with where it starts and ends along the route. */
   spans: RouteSpan[];
@@ -5989,7 +6063,8 @@ export function walkTrackGraph(
     bornAt: string | null,
   ): GraphRoute => {
     const route: GraphRoute = {
-      id, fromPos: startPos, toPos: startPos, bornAt, endsAt: null, pieces: [], spans: [], lateral: 0,
+      id, fromPos: startPos, toPos: startPos, bornAt, endsAt: null, closedBy: null,
+      pieces: [], spans: [], lateral: 0,
     };
     let cur: string | undefined = startKey;
     let pos = startPos;
@@ -6004,7 +6079,18 @@ export function walkTrackGraph(
       // joint we came in by. At a turnout prefer the THROUGH route, so the walk
       // stays on the line it is on and the diverging leg becomes a branch.
       const opts = geo.routes.filter((r) => r.includes(here.joint));
-      if (!opts.length) break;
+      if (!opts.length) {
+        // ⭐ NOWHERE TO GO — a bumper. The route ends here DELIBERATELY, which
+        // is a different thing from running out of track, and the difference is
+        // the whole reason bumpers exist in the model.
+        //
+        // ⚠️ It must be recorded as REACHED. Breaking out without it left the
+        // bumper looking like stray track that nothing connects, which is the
+        // opposite of what it says.
+        route.pieces.push(here.piece);
+        route.closedBy = here.piece;
+        break;
+      }
       const pick = opts.find((r) => r.includes("through")) ?? opts[0];
       const exitJoint = pick[0] === here.joint ? pick[1] : pick[0];
       const exit = byKey.get(`${here.piece}.${exitJoint}`);
@@ -6356,6 +6442,9 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
       lane: 0,
       from: epA?.id ?? "A",
       ...(epB ? { to: epB.id } : {}),
+      // A main can be closed too — that is a pocket module, where the track
+      // runs in and stops rather than crossing to a second endplate.
+      ...(main.closedBy ? { bumperAt: "to" as const } : {}),
     },
     ...(twoMains
       ? [
@@ -6384,6 +6473,11 @@ export function graphToDoc(pieces: TrackPiece[], input: GraphDocInput): GraphDoc
       lane: laneOf(r, uniqueBranches),
       fromPos: round(Math.min(r.fromPos, r.toPos)),
       toPos: round(Math.max(r.fromPos, r.toPos)),
+      // ⚠️ ALWAYS THE `to` END, and not because of an assumption: a branch's
+      // positions are ARC LENGTH FROM ITS THROAT, so they only ever grow — a
+      // spur running physically back toward endplate A still ends at the larger
+      // number. The closed end is the far one from the turnout, by definition.
+      ...(r.closedBy ? { bumperAt: "to" as const } : {}),
       ...(meta.trackName ? { trackName: meta.trackName } : {}),
       ...(meta.capacityFeet != null ? { capacityFeet: meta.capacityFeet } : {}),
       ...(meta.moduleTrackId != null ? { moduleTrackId: meta.moduleTrackId } : {}),

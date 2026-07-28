@@ -96,6 +96,7 @@ import {
   partGeometry,
   buildTrackGraph,
   graphToDoc,
+  BUMPER_DRAWN_INCHES,
   pieceHand,
   piecePartNumber,
   fitFlexBetween,
@@ -4833,11 +4834,13 @@ describe("part geometry", () => {
   it("says WHY a part cannot be placed, rather than silently omitting it", () => {
     const { placeable, blocked } = partsPlaceable();
     expect(placeable.length + blocked.length).toBe(BUILT_IN_TRACK_PARTS.length);
-    // Everything Atlas measured, plus both flex products.
+    // Everything Atlas measured, plus both flex products — and the bumper,
+    // which is placeable with NO dimensions because what it means does not
+    // depend on its size.
     expect(placeable.map((p) => p.id).sort()).toEqual([
       "atlas-c55-n-10", "atlas-c55-n-5", "atlas-c55-n-7",
       "atlas-c55-n-flex", "atlas-c55-n-wye", "atlas-c55-n-wye-35",
-      "me-c55-n-flex",
+      "generic-bumper", "me-c55-n-flex",
     ]);
     // Every Fast Tracks turnout and wye is blocked for ONE reason, and it is a
     // reading, not a modelling problem: they publish no points offset.
@@ -6049,5 +6052,113 @@ describe("pieceHand", () => {
     // Only the SIDE moved, and it moved because the track did.
     expect(Math.sign(left.tracks.find((t) => t.id === "sp")!.lane)).toBe(1);
     expect(Math.sign(right.tracks.find((t) => t.id === "sp")!.lane)).toBe(-1);
+  });
+});
+
+// ─── Bumpers (ADR 0001) ──────────────────────────────────────────────────────
+// The one piece that is a MODEL CONCEPT as well as a product: it says this end
+// of the track is closed on purpose, which is a different thing from track that
+// merely stops.
+describe("a bumper", () => {
+  const FLEX = "atlas-c55-n-flex";
+  const SW = "atlas-c55-n-7";
+  const BUMPER = "generic-bumper";
+  const LEAD = trackPart(SW)!.lead!.inches;
+
+  /** A main with a spur, and optionally a bumper on the spur's far end. */
+  const spurLayout = (bumper: boolean) => {
+    const pieces: TrackPiece[] = [
+      { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 20 - LEAD },
+      { id: "s1", partId: SW, x: 20 - LEAD, y: 0, rotationDeg: 0 },
+    ];
+    const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
+    pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 24 });
+    if (bumper) {
+      const end = placedJoints(pieces).find((j) => j.key === "sp.b")!;
+      // Facing back down the spur, as a bumper does.
+      pieces.push({ id: "bmp", partId: BUMPER, x: end.x, y: end.y, rotationDeg: end.headingDeg });
+    }
+    return pieces;
+  };
+  const emit = (pieces: TrackPiece[]) => graphToDoc(pieces, { startAt: { piece: "m", joint: "a" } });
+
+  it("is placeable with no dimensions at all", () => {
+    const { placeable } = partsPlaceable();
+    expect(placeable.some((p) => p.id === BUMPER)).toBe(true);
+    expect(trackPart(BUMPER)!.overallLength).toBeUndefined();
+  });
+
+  // ⭐ THE POINT. Snapping a bumper on takes the joint, so the end simply is not
+  // open any more — nothing has to be flagged, and nothing can disagree.
+  it("closes the open end by taking it, not by setting a flag", () => {
+    const before = buildTrackGraph(spurLayout(false));
+    expect(before.open).toContain("sp.b");
+    const after = buildTrackGraph(spurLayout(true));
+    expect(after.open).not.toContain("sp.b");
+    expect(after.conflicts).toEqual([]);
+  });
+
+  // ⚠️ AND IT IS NOT STRAY TRACK. The walk has nowhere to go from a bumper, and
+  // an earlier version broke out without recording it — so the piece that says
+  // "this end is finished" was itself reported as track nothing connects.
+  it("is reached by the walk, and says which track it closed", () => {
+    const { doc, warnings } = emit(spurLayout(true));
+    expect(warnings).toEqual([]);
+    expect(doc.tracks.find((t) => t.id === "sp")!.bumperAt).toBe("to");
+  });
+
+  it("leaves a track that merely stops unmarked", () => {
+    const { doc } = emit(spurLayout(false));
+    expect(doc.tracks.find((t) => t.id === "sp")!.bumperAt).toBeUndefined();
+  });
+
+  // ⚠️ A BRANCH'S POSITIONS ARE ARC LENGTH FROM ITS THROAT, so they only ever
+  // grow — a spur running physically back toward endplate A still ends at the
+  // LARGER number, and its bumper is at `to`. Easy to misread as an x position.
+  it("marks `to` even on a spur that physically runs backwards", () => {
+    const pieces: TrackPiece[] = [
+      { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 40 - LEAD },
+      // Facing west, so its diverging route heads back toward endplate A.
+      { id: "s1", partId: SW, x: 40 - LEAD, y: 0, rotationDeg: 180, flipped: true },
+    ];
+    const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
+    pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 180, lengthInches: 15 });
+    const end = placedJoints(pieces).find((j) => j.key === "sp.b")!;
+    pieces.push({ id: "bmp", partId: BUMPER, x: end.x, y: end.y, rotationDeg: end.headingDeg });
+    const { doc } = graphToDoc(pieces, { startAt: { piece: "m", joint: "a" } });
+    const spur = doc.tracks.find((t) => t.id === "sp")!;
+    expect(spur.bumperAt).toBe("to");
+    expect(spur.fromPos).toBeLessThan(spur.toPos!);
+    // It really is running west: its far end sits BEHIND its throat on the board.
+    const far = placedJoints(pieces).find((j) => j.key === "sp.b")!;
+    const throat = placedJoints(pieces).find((j) => j.key === "s1.throat")!;
+    expect(far.x).toBeLessThan(throat.x);
+  });
+
+  // A pocket module: the main runs in and stops, on purpose.
+  it("closes a MAIN, which is what a pocket module is", () => {
+    const pieces: TrackPiece[] = [
+      { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 16 },
+    ];
+    const end = placedJoints(pieces).find((j) => j.key === "m.b")!;
+    pieces.push({ id: "bmp", partId: BUMPER, x: end.x, y: end.y, rotationDeg: end.headingDeg });
+    const { doc, warnings } = graphToDoc(pieces, { startAt: { piece: "m", joint: "a" } });
+    expect(doc.tracks.find((t) => t.id === "main")!.bumperAt).toBe("to");
+    expect(doc.lengthInches).toBe(16);
+    expect(warnings).toEqual([]);
+  });
+
+  // Nothing can be attached to the back of a bumper: it has one joint, and the
+  // rail stops there.
+  it("offers nowhere to continue past it", () => {
+    const pieces = spurLayout(true);
+    const loose: TrackPiece = {
+      id: "x", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 6,
+    };
+    const bmp = placedJoints(pieces).find((j) => j.piece === "bmp")!;
+    // Dropped right where a bumper's far side would be, if it had one.
+    const past = { ...loose, x: bmp.x + BUMPER_DRAWN_INCHES, y: bmp.y };
+    expect(snapPiece(past, pieces)).toBeNull();
+    expect(placedJoints(pieces).filter((j) => j.piece === "bmp")).toHaveLength(1);
   });
 });
