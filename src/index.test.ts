@@ -130,6 +130,7 @@ import {
   DEFAULT_FLEX_PART_ID,
   moduleConversionReport,
   docToGraph,
+  genericTurnoutPart,
   crossoverAssembly,
   turnoutOccupiedSpan,
   type ConversionAnswers,
@@ -2952,8 +2953,20 @@ describe("track parts library (#179 stage 3)", () => {
       inches: 2.40625,
       source: "measured",
     });
+    // ⭐ Narrowed, and sharpened: a derived lead may appear ONLY on a stand-in.
+    // The invariant this protects is that no part claiming to be a PRODUCT
+    // carries a guessed dimension. A provisional part exists precisely to carry
+    // an interpolation, and says so — so the test now pins both halves.
     for (const p of BUILT_IN_TRACK_PARTS) {
-      if (p.lead) expect(p.lead.source).toBe("measured");
+      if (!p.lead) continue;
+      if (p.provisional) expect(p.lead.source).toBe("derived");
+      else expect(p.lead.source).toBe("measured");
+    }
+    // And a stand-in never pretends to be someone's product.
+    for (const p of BUILT_IN_TRACK_PARTS.filter((x) => x.provisional)) {
+      expect(p.manufacturer).toBe("Generic");
+      expect(p.partNumbers).toBeUndefined();
+      expect(p.name).toMatch(/unknown/i);
     }
   });
 
@@ -4858,7 +4871,14 @@ describe("part geometry", () => {
       "atlas-c55-n-10", "atlas-c55-n-5", "atlas-c55-n-7",
       "atlas-c55-n-flex", "atlas-c55-n-wye", "atlas-c55-n-wye-35",
       "fast-tracks-n-me55-c-6", "fast-tracks-n-me55-c-8",
-      "generic-bumper", "me-c55-n-flex",
+      "generic-bumper",
+      // The placeholders for a turnout nobody has identified. Placeable is the
+      // truth about them — they can be drawn — and the palette groups them under
+      // "Generic" with "(make unknown)" in the name. What they must never be is
+      // ADOPTED automatically, which `placeableTurnoutParts` prevents.
+      "generic-turnout-10", "generic-turnout-4", "generic-turnout-5",
+      "generic-turnout-6", "generic-turnout-7", "generic-turnout-8",
+      "me-c55-n-flex",
     ]);
     // Every Fast Tracks turnout and wye is blocked for ONE reason, and it is a
     // reading, not a modelling problem: they publish no points offset.
@@ -7079,5 +7099,76 @@ describe("a crossover's point-sets are already answered", () => {
   it("agrees with what docToGraph actually requires", () => {
     expect(moduleConversionReport(doc()).readyWithoutAsking).toBe(true);
     expect(docToGraph(doc()).refused).toBeNull();
+  });
+});
+
+// ⭐ The last question ADR 0002 left open: what an owner does when they cannot
+// say what a turnout is. Across the production database 35 turnouts state no
+// part and no frog number, so "we simply don't convert" blocks most of it.
+describe("a placeholder for a turnout nobody has identified", () => {
+  const doc = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0 },
+      { id: "sp", role: "spur", lane: 1, fromPos: 20, toPos: 60, trackName: "Team Track" },
+    ],
+    turnouts: [{ id: "sw1", pos: 20, onTrack: "main", divergeTrack: "sp" }],
+  });
+
+  it("is the turnout's working geometry — no moulding in front of the points", () => {
+    const p = genericTurnoutPart(6);
+    expect(p.pointsOffset!.inches).toBe(0);
+    // Points offset is the one dimension a frog number cannot yield: the
+    // measured #5/#7/#10 read 1.75/0.625/0.5625, which is moulding, not geometry.
+    expect(p.frogOffset!.inches).toBeCloseTo(p.lead!.inches, 6);
+    expect(p.overallLength!.inches).toBeCloseTo(
+      leadInchesForSize(6) + pastFrogInchesForSize(6), 6,
+    );
+  });
+
+  it("says its shape is derived, and declines to claim a body", () => {
+    const p = genericTurnoutPart(6);
+    for (const d of [p.pointsOffset, p.lead, p.frogOffset, p.overallLength])
+      expect(d!.source).toBe("derived");
+    expect(partGeometry(p)!.source).toBe("derived");
+    // ⭐ `partExtent` requires MEASURED dimensions, so it returns null and no
+    // renderer draws a boundary saying "this is where your turnout ends".
+    expect(partExtent(p)).toBeNull();
+  });
+
+  // ⛔ THE HALF THAT MATTERS MOST. A stand-in is something an owner CHOOSES.
+  it("is never adopted automatically for a bare frog number", () => {
+    const d = doc();
+    d.turnouts![0].size = 6;
+    const r = moduleConversionReport(d);
+    expect(r.turnouts[0].partId).toBeNull();
+    expect(r.turnouts[0].why).toMatch(/no measured #6/);
+    expect(r.turnouts[0].candidates).not.toContain("generic-turnout-6");
+    expect(r.unanswered).toEqual(["sw1"]);
+    // …and nothing derived from a frog number quietly uses one either.
+    expect(turnoutPartForSize(6)?.provisional).toBeFalsy();
+    expect(leadInchesForSize(7)).toBeCloseTo(3.59375, 6); // the measured Atlas #7
+  });
+
+  it("converts the module when the owner picks one", () => {
+    const c = docToGraph(doc(), { turnoutPartId: "generic-turnout-6" });
+    expect(c.refused).toBeNull();
+    expect(c.notLaid).toEqual([]);
+    const piece = c.graph!.pieces.find((p) => p.id === "t-sw1")!;
+    expect(piece.partId).toBe("generic-turnout-6");
+  });
+
+  it("leaves the document saying it is a stand-in, so it can be corrected", () => {
+    const c = docToGraph(doc(), { turnoutPartId: "generic-turnout-6" });
+    const out = graphToDoc(c.graph!.pieces, { startAt: c.graph!.startAt, base: doc() });
+    const sw = out.doc.turnouts![0];
+    expect(sw.partId).toBe("generic-turnout-6");
+    expect(sw.size).toBe(6);
+    // Round-trips back to a report that still knows it was answered by a
+    // placeholder — the owner's uncertainty is not lost by converting.
+    const again = moduleConversionReport(out.doc);
+    expect(again.turnouts[0].partId).toBe("generic-turnout-6");
+    expect(again.turnouts[0].from).toBe("named");
   });
 });

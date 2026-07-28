@@ -3488,6 +3488,16 @@ export interface TrackPart {
    * and `minimumLength` a floor, and nothing may infer where an owner's actual
    * turnout ends from either of them. */
   buildable?: boolean;
+  /**
+   * This part stands in for one nobody has identified — its shape is
+   * interpolated, not read off anything.
+   *
+   * ⛔ A provisional part must never be adopted automatically, offered beside
+   * real products as an equal, or allowed to look measured. It exists so an
+   * owner who cannot answer "which turnout is this?" is not blocked, and so that
+   * what they could not answer stays visible afterwards.
+   */
+  provisional?: boolean;
   /** The shortest the part can be built. Buildable parts only. */
   minimumLength?: PartDimension;
   /** How many identical pieces built on this fixture make ONE finished part.
@@ -4175,6 +4185,81 @@ export const DEFAULT_FLEX_PART_ID = "atlas-c55-n-flex";
  * rest of this library exists to avoid; a named product can be added with its
  * own measurement, and will draw at it.
  */
+/** Frog numbers a placeholder is offered for. #6 is the standard's floor for a
+ * main line; #4 and #5 are ordinary in yards. Outside the measured 5–10 range
+ * the interpolators extrapolate, which is acceptable in a part that already
+ * says it is a stand-in. */
+export const GENERIC_TURNOUT_FROG_NUMBERS = [4, 5, 6, 7, 8, 10] as const;
+
+/**
+ * A turnout nobody has identified — "it's a #6, I don't know whose".
+ *
+ * ⭐⭐ **IT IS THE TURNOUT'S WORKING GEOMETRY AND NOTHING ELSE**: points → frog
+ * → end, with **no moulded approach track in front of the points**. That is not
+ * a shortcut, it is the only honest shape available. `pointsOffset` is the one
+ * dimension a frog number cannot yield — the measured Atlas parts read 1.75″,
+ * 0.625″ and 0.5625″ for #5, #7 and #10, which is a moulding decision and not
+ * geometry, so there is nothing to interpolate along. Zero is therefore not a
+ * guess about the owner's part; it says we are modelling the turnout and not
+ * some product's tie strip. It is also what a hand-laid turnout actually is.
+ *
+ * ⭐ **The lead and the length past the frog ARE derivable**, by interpolating
+ * the measured parts ({@link leadInchesForSize}, {@link pastFrogInchesForSize})
+ * — the same interpolation the 1-D model has always drawn an unidentified `#N`
+ * with. Nothing new is invented here; what changes is that it is now labelled.
+ *
+ * ⚠️ **EVERY DIMENSION IS `derived`.** Two things follow, both wanted:
+ * {@link partGeometry} reports `source: "derived"`, so any surface can say the
+ * shape is provisional; and {@link partExtent} returns **null**, so the drawing
+ * declines to claim where this turnout's body ends rather than laundering an
+ * interpolation into a boundary an owner would read as measured.
+ *
+ * ⛔ **NEVER ADOPTED AUTOMATICALLY.** A placeholder is something an owner
+ * chooses when they cannot answer; resolving a bare `#6` to one behind their
+ * back would be exactly the invention ADR 0001 forbids. See
+ * {@link moduleConversionReport}, which excludes provisional parts from both
+ * automatic resolution and its candidate list.
+ */
+export function genericTurnoutPart(
+  frogNumber: number,
+  library = ATLAS_CODE55_N,
+): TrackPart {
+  const derived: DimensionSource = "derived";
+  const lead = leadInchesForSize(frogNumber, library);
+  const past = pastFrogInchesForSize(frogNumber, library);
+  const why =
+    `Interpolated across the measured parts by frog number — a stand-in, not a reading. ` +
+    `No points offset: it is not a function of the frog number (the measured #5, #7 and #10 ` +
+    `read 1.75″, 0.625″ and 0.5625″), so this part begins AT the points, as a hand-laid ` +
+    `turnout does.`;
+  return {
+    id: `generic-turnout-${frogNumber}`,
+    manufacturer: "Generic",
+    line: "N scale",
+    scale: "N",
+    name: `#${frogNumber} Turnout (make unknown)`,
+    kind: "turnout",
+    frogNumber,
+    provisional: true,
+    pointsOffset: { inches: 0, source: derived, note: why },
+    lead: { inches: lead, source: derived, note: why },
+    frogOffset: { inches: lead, source: derived, note: why },
+    overallLength: { inches: lead + past, source: derived, note: why },
+  };
+}
+
+/** The placeholders, one per {@link GENERIC_TURNOUT_FROG_NUMBERS}. */
+export const GENERIC_TURNOUTS: TrackPart[] = GENERIC_TURNOUT_FROG_NUMBERS.map((n) =>
+  genericTurnoutPart(n),
+);
+
+/** Parts that stand in for one nobody has identified — offered only where an
+ * owner is being asked what something is, and never mixed in with real products
+ * as though they were equivalent. */
+export function provisionalParts(library = BUILT_IN_TRACK_PARTS): TrackPart[] {
+  return library.filter((p) => p.provisional);
+}
+
 export const GENERIC_END_OF_TRACK: TrackPart[] = [
   {
     id: "generic-bumper",
@@ -4192,6 +4277,10 @@ export const BUILT_IN_TRACK_PARTS: TrackPart[] = [
   ...FAST_TRACKS_N_ME55_CROSSOVERS,
   ...FLEX_TRACK_PARTS,
   ...GENERIC_END_OF_TRACK,
+  // ⚠️ LAST, AND PROVISIONAL. These are stand-ins, not products; every path that
+  // resolves a turnout automatically filters them out, and every picker that
+  // offers them must say what they are.
+  ...GENERIC_TURNOUTS,
 ];
 
 /** Every flex product a track can be laid with. */
@@ -4577,7 +4666,11 @@ export function turnoutPartForSize(
   size: number,
   library = BUILT_IN_TRACK_PARTS,
 ): TrackPart | null {
-  const turnouts = library.filter((p) => p.kind === "turnout" && p.frogNumber != null);
+  // ⛔ A PROVISIONAL PART IS NEVER WHAT A BARE `#N` MEANS. It is a stand-in an
+  // owner chooses; adopting one here would answer a question nobody asked.
+  const turnouts = library.filter(
+    (p) => p.kind === "turnout" && p.frogNumber != null && !p.provisional,
+  );
   if (!turnouts.length) return null;
   const dist = (p: TrackPart) => Math.abs((p.frogNumber as number) - size);
   return turnouts.reduce((best, p) => {
@@ -4596,7 +4689,11 @@ export function turnoutPartForSize(
 function measuredLeadPoints(library: TrackPart[]): Array<{ n: number; lead: number }> {
   return library
     .filter(
-      (p) => p.kind === "turnout" && p.frogNumber != null && p.lead?.source === "measured",
+      (p) =>
+        p.kind === "turnout" &&
+        p.frogNumber != null &&
+        p.lead?.source === "measured" &&
+        !p.provisional,
     )
     .map((p) => ({ n: p.frogNumber as number, lead: p.lead!.inches }))
     .sort((a, b) => a.n - b.n);
@@ -4623,7 +4720,7 @@ export function leadInchesForSize(size: number, library = BUILT_IN_TRACK_PARTS):
   // straight past an Atlas #6 that had one. Search for the dimension, not the
   // part.
   const exact = library.find(
-    (p) => p.kind === "turnout" && p.frogNumber === size && p.lead != null,
+    (p) => p.kind === "turnout" && p.frogNumber === size && p.lead != null && !p.provisional,
   );
   if (exact) return exact.lead!.inches;
 
@@ -7318,7 +7415,12 @@ export interface ModuleConversionReport {
  * #6 into the #7 we happen to have measured would put a real turnout's frog in
  * a place the owner never built it. */
 function placeableTurnoutParts(library: TrackPart[], kind: TrackPart["kind"][]): TrackPart[] {
-  return library.filter((p) => kind.includes(p.kind) && partGeometryGap(p) == null);
+  // ⛔ NO STAND-INS. This answers "which real part is this?", both for automatic
+  // resolution and for the candidates offered beside it. A placeholder is a
+  // separate, explicitly-chosen fallback — see `provisionalParts`.
+  return library.filter(
+    (p) => kind.includes(p.kind) && !p.provisional && partGeometryGap(p) == null,
+  );
 }
 
 /**
