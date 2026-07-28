@@ -7161,6 +7161,408 @@ export function moduleConversionReport(
   };
 }
 
+/**
+ * What the owner said when offered the rebuild.
+ *
+ * ⭐ **ONE ANSWER FOR THE WHOLE MODULE.** Owners lay one kind of turnout
+ * throughout, or at most two, so asking per turnout asks the same question eight
+ * times on a yard. The module-wide answer IS the question; `overrides` is for the
+ * odd one out. (Will's call, 2026-07-27 — it turns 41 questions across the
+ * production database into 14.)
+ */
+export interface ConversionAnswers {
+  /** "The turnouts on this module are…" — a part id from the library. */
+  turnoutPartId?: string | null;
+  /** The exceptions, by turnout id. Beats {@link turnoutPartId}. */
+  overrides?: Record<string, string>;
+}
+
+export interface DocToGraphResult {
+  /** The graph to store, or null when the document could not be converted. */
+  graph: NonNullable<ModuleSchematicDoc["graph"]> | null;
+  /** Why the whole conversion was refused — null when it ran. */
+  refused: string | null;
+  /**
+   * Track the conversion could not lay, each with a reason.
+   *
+   * ⚠️ **A REAL LOSS, AND THE OWNER MUST SEE IT.** Unshown, a "successful"
+   * rebuild would quietly be missing a named siding.
+   */
+  notLaid: { id: string; why: string }[];
+  warnings: string[];
+}
+
+/** Below this a transition curve is not something anyone laid by hand. Flagged,
+ * never corrected — the house rule (see {@link FREEMO_MAIN_MIN_RADIUS_INCHES}). */
+const CONVERSION_TIGHT_RADIUS_INCHES = 12;
+
+/**
+ * Rebuild a 1-D document as a graph of placed pieces.
+ *
+ * ⭐ **THE OWNER ASKED FOR THIS ONE MODULE** (ADR 0001 amendment, 2026-07-27).
+ * Nothing calls it on a schedule, on load, or in bulk. Conversion supplies
+ * geometry the 1-D document never recorded, which is what the original
+ * constraint forbade doing behind an owner's back; done in front of them, having
+ * shown them {@link moduleConversionReport} and taken their answer, it is an
+ * edit they made.
+ *
+ * ⚠️ **STRAIGHT HOSTS ONLY.** A run is laid along its host's axis, so a module
+ * whose main is DRAWN with bends is refused rather than quietly straightened.
+ * Every module in production today has a straight main; the refusal is there so
+ * the first curved one is a message and not a flattened drawing.
+ *
+ * ⭐ **PIECES CHAIN FROM MEASURED JOINTS, NOT FROM ABSOLUTE ARITHMETIC.** Each
+ * piece is placed, its real joints are read back with {@link placedJoints}, and
+ * the next starts from one of those. Connection then holds BY CONSTRUCTION
+ * rather than by two independent calculations agreeing to within
+ * {@link JOINT_SNAP_INCHES} — a hundredth of an inch is far too tight to hit by
+ * coincidence.
+ *
+ * ⚠️⚠️ **A TURNOUT'S THROAT GOES AT `pos − lead`, NOT AT `pos − pointsOffset`.**
+ * That is the inverse of what {@link walkTrackGraph} reports, which is the only
+ * thing that makes convert-then-derive an identity. It is deliberately NOT
+ * {@link turnoutOccupiedSpan}'s anchor, and the two disagree by
+ * `lead − pointsOffset` — 2.97″ on an Atlas #7. That disagreement is real and
+ * unresolved: see the note on {@link moduleConversionReport}. Because of it the
+ * flex gaps here are measured off the placed pieces' OWN joints rather than
+ * through the 1-D helper, so whichever anchor turns out to be right, the track
+ * still meets the turnout it was cut for.
+ */
+export function docToGraph(
+  doc: ModuleSchematicDoc,
+  answers: ConversionAnswers = {},
+  library = BUILT_IN_TRACK_PARTS,
+): DocToGraphResult {
+  const refuse = (why: string): DocToGraphResult => ({
+    graph: null,
+    refused: why,
+    notLaid: [],
+    warnings: [],
+  });
+
+  const report = moduleConversionReport(doc, library);
+  if (report.alreadyGraph) return refuse("this module is already authored as pieces");
+  if (!report.offerable) return refuse(report.blockers.map((b) => b.why).join("; "));
+  if ((doc.mainPath?.length ?? 0) > 2)
+    return refuse(
+      "this module's mainline is drawn with bends, and laying it as pieces would need each bend's radius — convert it once curved runs are supported",
+    );
+
+  const partById = new Map(library.map((p) => [p.id, p]));
+  const chosen = new Map<string, TrackPart>();
+  const unknown: string[] = [];
+  for (const t of report.turnouts) {
+    const id = answers.overrides?.[t.id] ?? (t.partId ? t.partId : answers.turnoutPartId) ?? null;
+    const part = id ? partById.get(id) : undefined;
+    if (!part || partGeometryGap(part)) unknown.push(t.id);
+    else chosen.set(t.id, part);
+  }
+  if (unknown.length)
+    return refuse(
+      `${unknown.length} turnout${unknown.length === 1 ? "" : "s"} still need identifying: ${unknown.join(", ")}`,
+    );
+
+  const flexId = DEFAULT_FLEX_PART_ID;
+  if (!partById.get(flexId)) return refuse("the parts library has no flex track to lay plain track with");
+  const maxPiece = maxFlexPieceInches(flexId, library);
+
+  const tracks = doc.tracks ?? [];
+  const trackById = new Map(tracks.map((t) => [t.id, t]));
+  const turnouts = doc.turnouts ?? [];
+  const mainLen =
+    doc.lengthInches ??
+    Math.max(0, ...tracks.map((t) => t.toPos ?? 0), ...turnouts.map((t) => t.pos));
+  if (!(mainLen > 0)) return refuse("this module has no length to lay track along");
+
+  const pieces: TrackPiece[] = [];
+  const notLaid: { id: string; why: string }[] = [];
+  const warnings: string[] = [];
+  const rad = (d: number) => (d * Math.PI) / 180;
+  /** Signed turn, −180…180 — a heading difference has a SIDE, and `norm360`
+   * would report a small left turn as 359°. */
+  const norm180 = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
+  const r3 = (n: number) => Math.round(n * 1000) / 1000;
+  const jointsOf = (p: TrackPiece) => placedJoints([p], library);
+  const jointAt = (p: TrackPiece, id: string) => jointsOf(p).find((j) => j.joint === id) ?? null;
+  type Cursor = { x: number; y: number; headingDeg: number };
+
+  /**
+   * A transition curve: leave `from` on its current heading, arrive parallel to
+   * the module axis at `toY`.
+   *
+   * ⭐ **THE RADIUS IS DERIVED, NOT INVENTED.** Turning through θ moves a run
+   * R(1 − cos θ) sideways, so the document's own lane offset and the part's own
+   * frog angle fix R between them. Nothing here is a preference. It is also what
+   * track physically does: the turnout throws the rail out at the frog angle and
+   * a curve brings it back parallel. The 1-D model's instant jump to a lane
+   * offset is the thing that was never real.
+   */
+  const transition = (
+    id: string,
+    from: Cursor,
+    toY: number,
+    /** +1 running east, −1 running west. ⚠️ A SIDING'S CLOSING CURVE RUNS THE
+     * OTHER WAY, and measuring its heading against +x called an 8° turn a 172°
+     * one — which came out as a 0.3″ radius instead of 51″. Everything here is
+     * relative to the direction of travel. */
+    dirSign: 1 | -1 = 1,
+  ): TrackPiece | null => {
+    const theta = rad(norm180(from.headingDeg - (dirSign > 0 ? 0 : 180)));
+    // The piece's own +y is the module's +y only when it runs east.
+    const dy = (toY - from.y) * dirSign;
+    if (Math.abs(theta) < 1e-9 || Math.abs(dy) < 1e-9) return null;
+    const R = dy / (1 - Math.cos(theta));
+    if (!Number.isFinite(R) || R === 0) return null;
+    const mag = Math.abs(R);
+    if (mag < CONVERSION_TIGHT_RADIUS_INCHES)
+      warnings.push(
+        `the curve bringing ${id} back parallel works out at ${mag.toFixed(1)}″ radius — tighter than anyone lays by hand, which usually means the document's lane and its turnout disagree`,
+      );
+    return {
+      id,
+      partId: flexId,
+      x: from.x,
+      y: from.y,
+      rotationDeg: from.headingDeg,
+      // Curving BACK toward the host: opposite the way we are already heading.
+      // `radiusInches` is signed and the sign IS the side.
+      radiusInches: r3(-Math.sign(theta) * mag),
+      lengthInches: r3(mag * Math.abs(theta)),
+    };
+  };
+
+  /** Place a turnout so {@link walkTrackGraph} will report it at `t.pos`. */
+  const layTurnout = (t: SchematicTurnout, hostY: number) => {
+    const part = chosen.get(t.id)!;
+    const geom = partGeometry(part, library)!;
+    const branch = trackById.get(t.divergeTrack);
+    // ⚠️ WHICH WAY DOES THE BRANCH LEAVE? The far end is whichever of the
+    // branch's ends is further from this turnout — NOT always `toPos`. On a
+    // siding's east turnout `toPos` IS its own position, so passing it left
+    // `turnoutFacing` with a zero to sign and it fell through to "east",
+    // pointing the diverging rail away from the siding it opens.
+    const ends = [branch?.fromPos, branch?.toPos].filter(
+      (n): n is number => typeof n === "number" && Number.isFinite(n),
+    );
+    const divergeFarPos = ends.length
+      ? ends.reduce((a, b) => (Math.abs(b - t.pos) > Math.abs(a - t.pos) ? b : a))
+      : undefined;
+    const facing = turnoutFacing({
+      pos: t.pos,
+      divergeFarPos,
+      flipped: t.flipped ?? false,
+    });
+    const body = part.overallLength!.inches;
+    const lead = part.lead?.inches ?? body / 2;
+    // Entered at the throat the walk reports `throat + lead`; entered at the
+    // through end it reports `through + (body − lead)`. Invert whichever applies
+    // so the turnout comes back out where the document put it.
+    const throatPos = facing > 0 ? t.pos - lead : t.pos + lead;
+    const hostLane = trackById.get(t.onTrack)?.lane ?? 0;
+    // Which way must the diverging route go? The part diverges to its own +y;
+    // turning it end-for-end sends that to module −y. ⭐ No hand is stored
+    // anywhere — this reads the side off the document's lanes.
+    const want = Math.sign((branch?.lane ?? hostLane) - hostLane) || 1;
+    const unflipped = facing > 0 ? 1 : -1;
+    const piece: TrackPiece = {
+      id: `t-${t.id}`,
+      partId: part.id,
+      x: throatPos,
+      y: hostY,
+      rotationDeg: facing > 0 ? 0 : 180,
+      ...(unflipped !== want ? { flipped: true } : {}),
+      ...(t.name ? { name: t.name } : {}),
+    };
+    // ⚠️ THE BODY IS MEASURED OFF THE PIECE, not off `partExtent` — see the
+    // anchor warning on this function. Whatever the 1-D helper believes, flex
+    // has to stop where this piece's rail actually starts.
+    const bodyEnds = [throatPos, facing > 0 ? throatPos + body : throatPos - body];
+    const span: OccupiedSpan = { fromPos: Math.min(...bodyEnds), toPos: Math.max(...bodyEnds) };
+    const divergeId = geom.joints.find((j) => j.role === "diverge")?.id ?? "diverge";
+    return { t, piece, span, divergeId };
+  };
+
+  /** Lay the plain track of one straight run at `hostY`, between two positions,
+   * around the bodies already sitting in it. */
+  const layFlex = (
+    label: string,
+    hostY: number,
+    fromPos: number,
+    toPos: number,
+    occupied: OccupiedSpan[],
+    cuts?: number[] | null,
+  ) => {
+    const out = flexPieces({ fromPos, toPos, maxPieceInches: maxPiece, occupied, cuts: cuts ?? null });
+    out.forEach((f, i) =>
+      pieces.push({
+        id: `f-${label}-${i}`,
+        partId: flexId,
+        x: f.fromPos,
+        y: hostY,
+        rotationDeg: 0,
+        lengthInches: r3(f.lengthInches),
+      }),
+    );
+    return out;
+  };
+
+  /** Every turnout sitting ON a track, laid, with its body span. */
+  const turnoutsOn = (trackId: string, hostY: number) =>
+    turnouts
+      .filter((t) => t.onTrack === trackId && chosen.has(t.id))
+      .sort((a, b) => a.pos - b.pos)
+      .map((t) => layTurnout(t, hostY));
+
+  // ── THE MAINS. Both run along the module's axis; Main 2 sits a lane over.
+  const main = trackById.get(MAIN_TRACK_ID) ?? tracks.find((t) => t.role === "main");
+  if (!main) return refuse("this module's document has no mainline to convert");
+  const mains = [main, ...tracks.filter((t) => t.role === "main" && t.id !== main.id)];
+  const laidTurnouts = new Map<string, ReturnType<typeof layTurnout>>();
+  const done = new Set<string>();
+
+  for (const m of mains) {
+    const y = laneOffsetAt(m.lane ?? 0, 0);
+    const on = turnoutsOn(m.id, y);
+    for (const l of on) {
+      pieces.push(l.piece);
+      laidTurnouts.set(l.t.id, l);
+    }
+    layFlex(m.id, y, m.fromPos ?? 0, m.toPos ?? mainLen, on.map((l) => l.span), m.flexCuts);
+    done.add(m.id);
+  }
+
+  // ── EVERY OTHER TRACK HANGS OFF A TURNOUT. Laid outward from the mains,
+  // repeating until nothing new is reachable — which is how a ladder three
+  // turnouts deep resolves without the conversion knowing it is one.
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const t of turnouts) {
+      if (!done.has(t.onTrack)) continue; // its host is not laid yet
+      const branch = trackById.get(t.divergeTrack);
+      if (!branch || done.has(branch.id)) continue;
+      const near = laidTurnouts.get(t.id);
+      if (!near) continue;
+      done.add(branch.id);
+      progressed = true;
+
+      const dj = jointAt(near.piece, near.divergeId);
+      if (!dj) {
+        notLaid.push({ id: branch.id, why: `turnout ${t.id} has no diverging end to leave from` });
+        continue;
+      }
+      const branchY = laneOffsetAt(branch.lane ?? 0, 0);
+      const curve = transition(branch.id, { x: dj.x, y: dj.y, headingDeg: dj.headingDeg }, branchY);
+      let start: Cursor = { x: dj.x, y: dj.y, headingDeg: dj.headingDeg };
+      if (curve) {
+        pieces.push(curve);
+        const e = jointAt(curve, "b");
+        if (e) start = { x: e.x, y: e.y, headingDeg: e.headingDeg };
+      }
+
+      // A SIDING is the same track reached by a SECOND turnout. Its far end is
+      // that turnout's diverging joint, not a position — so the run is closed
+      // onto it, the way a builder cuts the last piece to fit.
+      const farSw = turnouts.find(
+        (o) => o.id !== t.id && o.divergeTrack === branch.id && laidTurnouts.has(o.id),
+      );
+      const farJoint = farSw
+        ? (() => {
+            const f = laidTurnouts.get(farSw.id)!;
+            return jointAt(f.piece, f.divergeId);
+          })()
+        : null;
+      let endX =
+        farJoint != null
+          ? farJoint.x
+          : Math.max(branch.fromPos ?? t.pos, branch.toPos ?? t.pos);
+      let farCurve: TrackPiece | null = null;
+      if (farJoint) {
+        // ⚠️ The joint's heading ALREADY points the way this rail runs — west,
+        // out of the far turnout and back down the siding. Reversing it as well
+        // as passing `dirSign: -1` flipped it twice and turned an 8° transition
+        // into a 172° one.
+        farCurve = transition(
+          `${branch.id}-far`,
+          { x: farJoint.x, y: farJoint.y, headingDeg: farJoint.headingDeg },
+          branchY,
+          -1,
+        );
+        if (farCurve) {
+          pieces.push(farCurve);
+          const e = jointAt(farCurve, "b");
+          if (e) endX = e.x;
+        }
+      }
+
+      // ⚠️ THE MODULE MAY NOT HAVE ROOM FOR WHAT THE OWNER CHOSE. A turnout has
+      // a real body and a real transition; a ladder pitched tighter than they
+      // need cannot be built from those parts at all. The 1-D model never had to
+      // notice — it draws a spur at its lane the instant the turnout appears.
+      // Say so rather than lay a run of negative length.
+      if (endX - start.x <= 1e-6) {
+        notLaid.push({
+          id: branch.id,
+          why: `the turnout and the curve bringing this track parallel already reach ${start.x.toFixed(1)}″, past where it has to end at ${endX.toFixed(1)}″ — with the turnout chosen there is no room for this track where the document places it`,
+        });
+        continue;
+      }
+
+      const on = turnoutsOn(branch.id, branchY).filter((l) => {
+        if (l.span.fromPos >= start.x - 1e-6) return true;
+        notLaid.push({
+          id: l.t.divergeTrack,
+          why: `turnout ${l.t.id} sits at ${l.t.pos}″ but this track has only reached ${start.x.toFixed(1)}″ by then — the ladder is pitched tighter than the chosen turnout allows`,
+        });
+        return false;
+      });
+      for (const l of on) {
+        pieces.push(l.piece);
+        laidTurnouts.set(l.t.id, l);
+      }
+      layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts);
+    }
+  }
+
+  // ⚠️ Anything still unlaid has to be named. A track whose parent could not be
+  // laid never gets its turn in the loop above, so without this sweep a ladder
+  // that failed at its second turnout would report the second track and stay
+  // silent about the third — the owner would be told about part of the loss.
+  const orphanWhy = new Map(report.orphanTracks.map((o) => [o.id, o.why]));
+  const alreadySaid = new Set(notLaid.map((n) => n.id));
+  for (const t of tracks) {
+    if (t.role === "main" || done.has(t.id) || alreadySaid.has(t.id)) continue;
+    notLaid.push({
+      id: t.id,
+      why:
+        orphanWhy.get(t.id) ??
+        "the track it branches from could not be laid, so there is nothing to join it to",
+    });
+  }
+
+  // ── Where each main begins: the westmost joint sitting in its lane.
+  const startOf = (t: SchematicTrack) => {
+    const y = laneOffsetAt(t.lane ?? 0, 0);
+    let best: { piece: string; joint: string; x: number } | null = null;
+    for (const p of pieces)
+      for (const j of jointsOf(p)) {
+        if (Math.abs(j.y - y) > 0.05) continue;
+        if (!best || j.x < best.x) best = { piece: p.id, joint: j.joint, x: j.x };
+      }
+    return best ? { piece: best.piece, joint: best.joint } : null;
+  };
+  const startAt = startOf(main);
+  if (!startAt) return refuse("nothing was laid on the mainline, so the module has no starting point");
+  const second = mains[1] ? startOf(mains[1]) : null;
+
+  return {
+    graph: { pieces, startAt, ...(second ? { start2: second } : {}) },
+    refused: null,
+    notLaid,
+    warnings,
+  };
+}
+
 /** A frog casting's parts, in TURNOUT-LOCAL inches: `x` = distance past the
  * points, `y` = lateral offset from the through route. */
 export interface FrogCasting {

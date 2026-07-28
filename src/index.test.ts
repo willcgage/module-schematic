@@ -129,6 +129,8 @@ import {
   maxFlexPieceInches,
   DEFAULT_FLEX_PART_ID,
   moduleConversionReport,
+  docToGraph,
+  type ConversionAnswers,
   type SchematicTurnout,
 } from "./index";
 
@@ -6570,5 +6572,131 @@ describe("track the document draws but nothing connects", () => {
     }));
     expect(r.orphanTracks).toEqual([]);
     expect(r.readyWithoutAsking).toBe(true);
+  });
+});
+
+// ⭐ Rebuilding a REAL owner's module, end to end: 1-D document → pieces →
+// document. Blairstown is the case the spike proved by hand; here the pieces are
+// placed by the conversion, so the numbers cannot be tuned until they match.
+describe("rebuilding a drawn module as pieces", () => {
+  const SW = "atlas-c55-n-7";
+  const blairstown = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0 },
+      { id: "mt5", role: "siding", lane: 1, fromPos: 13, toPos: 73, trackName: "House Track" },
+      { id: "spur1", role: "siding", lane: -1, fromPos: 19, toPos: 85, trackName: "Passing Track" },
+    ],
+    turnouts: [
+      { id: "sw1", pos: 13, onTrack: "main", divergeTrack: "mt5" },
+      { id: "sw2", pos: 73, onTrack: "main", divergeTrack: "mt5" },
+      { id: "sw3", pos: 19, onTrack: "main", divergeTrack: "spur1" },
+      { id: "sw4", pos: 85, onTrack: "main", divergeTrack: "spur1" },
+    ],
+  });
+  const derived = (doc: ModuleSchematicDoc, answers: ConversionAnswers = { turnoutPartId: SW }) => {
+    const c = docToGraph(doc, answers);
+    expect(c.refused).toBeNull();
+    return { conv: c, out: graphToDoc(c.graph!.pieces, { startAt: c.graph!.startAt, start2: c.graph!.start2 ?? null, base: doc }) };
+  };
+
+  it("puts every turnout back exactly where the document had it", () => {
+    const { out } = derived(blairstown());
+    const at = Object.fromEntries((out.doc.turnouts ?? []).map((t) => [t.id, t.pos]));
+    expect(at["t-sw1"]).toBeCloseTo(13, 6);
+    expect(at["t-sw2"]).toBeCloseTo(73, 6);
+    expect(at["t-sw3"]).toBeCloseTo(19, 6);
+    expect(at["t-sw4"]).toBeCloseTo(85, 6);
+  });
+
+  it("puts both sidings back at their recorded extents", () => {
+    const { out } = derived(blairstown());
+    const mt5 = out.doc.tracks.find((t) => t.id === "mt5")!;
+    const spur1 = out.doc.tracks.find((t) => t.id === "spur1")!;
+    expect([mt5.fromPos, mt5.toPos]).toEqual([13, 73]);
+    expect([spur1.fromPos, spur1.toPos]).toEqual([19, 85]);
+    // ⭐ A siding, not a spur — which is only true because BOTH its turnouts
+    // reach it. The closing curve is what makes that so.
+    expect(mt5.role).toBe("siding");
+    expect(mt5.lane).toBe(1);
+    expect(spur1.lane).toBe(-1);
+  });
+
+  it("⭐ both turnouts of a siding diverge onto the SAME track", () => {
+    const { out } = derived(blairstown());
+    const onto = (out.doc.turnouts ?? []).filter((t) => t.divergeTrack === "mt5").map((t) => t.id);
+    expect(onto.sort()).toEqual(["t-sw1", "t-sw2"]);
+    expect(out.doc.tracks.filter((t) => t.id.startsWith("mt5"))).toHaveLength(1);
+  });
+
+  it("leaves exactly the two endplate ends open", () => {
+    const { conv } = derived(blairstown());
+    const g = buildTrackGraph(conv.graph!.pieces);
+    expect(g.open).toHaveLength(2);
+    expect(g.conflicts).toEqual([]);
+  });
+
+  // ⚠️ THE MODULE MAY NOT HAVE ROOM FOR WHAT THE OWNER CHOSE. ELM Yard's east
+  // ladder is pitched at 5″; a turnout body plus the curve bringing the next
+  // track parallel needs more. The 1-D model never had to notice — it draws a
+  // spur at its lane the instant the turnout appears.
+  it("says a ladder is too tight for the chosen turnout instead of dropping it", () => {
+    const elm: ModuleSchematicDoc = {
+      version: 1, lengthInches: 96,
+      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0 },
+        { id: "mt20", role: "spur", lane: -1, fromPos: 8, toPos: 45 },
+        { id: "mt21", role: "spur", lane: -2, fromPos: 13, toPos: 45 },
+        { id: "mt22", role: "spur", lane: -3, fromPos: 18, toPos: 45 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 8, onTrack: "main", divergeTrack: "mt20" },
+        { id: "sw2", pos: 13, onTrack: "mt20", divergeTrack: "mt21" },
+        { id: "sw3", pos: 18, onTrack: "mt21", divergeTrack: "mt22" },
+      ],
+    };
+    const c = docToGraph(elm, { turnoutPartId: SW });
+    expect(c.refused).toBeNull();
+    expect(c.notLaid.map((n) => n.id).sort()).toEqual(["mt21", "mt22"]);
+    expect(c.notLaid[0].why).toMatch(/tighter than the chosen turnout/);
+    // ⭐ And the track that DOES fit is still laid — a partial rebuild is
+    // reported, not abandoned.
+    expect(c.graph!.pieces.some((p) => p.id === "t-sw1")).toBe(true);
+  });
+
+  it("takes one answer for the whole module, and an override for the odd one out", () => {
+    const doc = blairstown();
+    const c = docToGraph(doc, { turnoutPartId: SW, overrides: { sw4: "atlas-c55-n-10" } });
+    expect(c.refused).toBeNull();
+    expect(c.graph!.pieces.find((p) => p.id === "t-sw4")!.partId).toBe("atlas-c55-n-10");
+    expect(c.graph!.pieces.find((p) => p.id === "t-sw1")!.partId).toBe(SW);
+  });
+
+  it("refuses rather than guess when nothing identifies the turnouts", () => {
+    expect(docToGraph(blairstown()).refused).toMatch(/still need identifying/);
+  });
+
+  it("a part the document already names beats the module-wide answer", () => {
+    const doc = blairstown();
+    doc.turnouts![0].partId = "atlas-c55-n-5";
+    const c = docToGraph(doc, { turnoutPartId: SW });
+    expect(c.graph!.pieces.find((p) => p.id === "t-sw1")!.partId).toBe("atlas-c55-n-5");
+  });
+
+  // ⚠️ Straightening a drawn curve would change the owner's module without
+  // saying so. Refuse until curved runs are supported.
+  it("refuses a mainline that was drawn with bends", () => {
+    const doc = blairstown();
+    doc.mainPath = [{ x: 0, y: 0 }, { x: 40, y: 4 }, { x: 96, y: 0 }];
+    expect(docToGraph(doc, { turnoutPartId: SW }).refused).toMatch(/drawn with bends/);
+  });
+
+  it("names track it could not lay rather than losing it quietly", () => {
+    const doc = blairstown();
+    doc.tracks.push({ id: "yard1", role: "siding", lane: 3, trackName: "yard 1" });
+    const c = docToGraph(doc, { turnoutPartId: SW });
+    expect(c.notLaid.map((n) => n.id)).toContain("yard1");
   });
 });
