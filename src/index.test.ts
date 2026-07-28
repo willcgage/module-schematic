@@ -6752,3 +6752,44 @@ describe("a turnout's pos is its frog", () => {
     expect(out.doc.turnouts![0].pos).toBeCloseTo(20, 6);
   });
 });
+
+// ⚠️ FOUND DRIVING THE DEPLOYED APP on FMN-0078. A crossover connector runs
+// DIAGONALLY between the two mains; it never comes parallel to a lane, so the
+// transition curve that straightens a siding onto its lane asked for a 0.3″
+// radius here and then reported the crossover as impossible to build.
+describe("a crossover connector is laid straight between the mains", () => {
+  const doubleMain = (): ModuleSchematicDoc => ({
+    version: 1, lengthInches: 96,
+    endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+    tracks: [
+      { id: "main", role: "main", lane: 0, fromPos: 0, toPos: 96 },
+      { id: "main2", role: "main", lane: 1, fromPos: 0, toPos: 96 },
+      { id: "xoA", role: "crossover", lane: 1, fromPos: 40, toPos: 42.5, trackName: "Crossover" },
+    ],
+    turnouts: [
+      { id: "sw1", pos: 40, onTrack: "main", divergeTrack: "xoA" },
+      { id: "sw2", pos: 42.5, onTrack: "main2", divergeTrack: "xoA" },
+    ],
+  });
+
+  it("lays the connector, with no transition curve and no wild radius", () => {
+    const c = docToGraph(doubleMain(), { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.refused).toBeNull();
+    expect(c.notLaid).toEqual([]);
+    expect(c.warnings).toEqual([]);
+    const conn = c.graph!.pieces.find((p) => p.id === "x-xoA")!;
+    expect(conn).toBeTruthy();
+    // Straight: a crossover connector has no radius at all.
+    expect(conn.radiusInches).toBeUndefined();
+    expect(conn.lengthInches).toBeGreaterThan(0);
+  });
+
+  it("lands exactly on both turnouts' diverging joints", () => {
+    const c = docToGraph(doubleMain(), { turnoutPartId: "atlas-c55-n-7" });
+    const g = buildTrackGraph(c.graph!.pieces);
+    const joined = new Set(g.connections.flatMap((x) => [x.a, x.b]));
+    expect(joined.has("x-xoA.a")).toBe(true);
+    expect(joined.has("x-xoA.b")).toBe(true);
+    expect(g.conflicts).toEqual([]);
+  });
+});

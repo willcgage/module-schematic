@@ -7478,6 +7478,47 @@ export function docToGraph(
         notLaid.push({ id: branch.id, why: `turnout ${t.id} has no diverging end to leave from` });
         continue;
       }
+      // A SIDING is the same track reached by a SECOND turnout — and a CROSSOVER
+      // is that too, but between the two mains.
+      const farSw0 = turnouts.find(
+        (o) => o.id !== t.id && o.divergeTrack === branch.id && laidTurnouts.has(o.id),
+      );
+      const farJoint0 = farSw0
+        ? (() => {
+            const f = laidTurnouts.get(farSw0.id)!;
+            return jointAt(f.piece, f.divergeId);
+          })()
+        : null;
+
+      // ⭐⭐ A CROSSOVER CONNECTOR NEVER COMES PARALLEL TO A LANE. It runs
+      // diagonally from one main to the other, so the transition curve that
+      // straightens a siding onto its lane is exactly the wrong shape here — it
+      // asked for a 0.3″ radius and then reported the crossover as unbuildable.
+      // Straight between the two diverging joints is what a crossover IS, and
+      // landing on both by construction is what makes it join at all.
+      if (branch.role === "crossover" && farJoint0) {
+        const dx = farJoint0.x - dj.x;
+        const dy = farJoint0.y - dj.y;
+        const len = Math.hypot(dx, dy);
+        if (len > 1e-6) {
+          pieces.push({
+            id: `x-${branch.id}`,
+            partId: flexId,
+            x: dj.x,
+            y: dj.y,
+            rotationDeg: (Math.atan2(dy, dx) * 180) / Math.PI,
+            lengthInches: r3(len),
+            ...(branch.trackName ? { name: branch.trackName } : {}),
+          });
+        } else {
+          notLaid.push({
+            id: branch.id,
+            why: "this crossover's two turnouts meet at the same point, so there is no connector between them to lay",
+          });
+        }
+        continue;
+      }
+
       const branchY = laneOffsetAt(branch.lane ?? 0, 0);
       const curve = transition(branch.id, { x: dj.x, y: dj.y, headingDeg: dj.headingDeg }, branchY);
       let start: Cursor = { x: dj.x, y: dj.y, headingDeg: dj.headingDeg };
@@ -7490,15 +7531,7 @@ export function docToGraph(
       // A SIDING is the same track reached by a SECOND turnout. Its far end is
       // that turnout's diverging joint, not a position — so the run is closed
       // onto it, the way a builder cuts the last piece to fit.
-      const farSw = turnouts.find(
-        (o) => o.id !== t.id && o.divergeTrack === branch.id && laidTurnouts.has(o.id),
-      );
-      const farJoint = farSw
-        ? (() => {
-            const f = laidTurnouts.get(farSw.id)!;
-            return jointAt(f.piece, f.divergeId);
-          })()
-        : null;
+      const farJoint = farJoint0;
       let endX =
         farJoint != null
           ? farJoint.x
