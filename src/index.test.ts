@@ -6274,3 +6274,39 @@ describe("a stored part keeps its kind", () => {
     expect(part.kind).toBe("turnout");
   });
 });
+
+// ⚠️ A sectional curve's JOINTS land correctly whether or not the rail between
+// them is drawn as an arc, so a chord here looks right until you see the track
+// cutting the corner. Found on the deployed app, not by any of the geometry
+// tests above.
+describe("a sectional curve is DRAWN as an arc", () => {
+  const part: TrackPart = {
+    id: "x-curve", manufacturer: "X", line: "Code 55", scale: "N", name: "19″ 30°",
+    kind: "curve", radius: { inches: 19, source: "manufacturer" }, arcDegrees: 30,
+  };
+  const lib = [...BUILT_IN_TRACK_PARTS, part];
+
+  it("samples the rail instead of running a chord between its ends", () => {
+    const piece: TrackPiece = { id: "c", partId: "x-curve", x: 10, y: 0, rotationDeg: 0 };
+    const [path] = pieceRoutePaths(piece, lib);
+    expect(path.points.length).toBeGreaterThan(4);
+    const b = placedJoints([piece], lib).find((j) => j.joint === "b")!;
+    const last = path.points[path.points.length - 1];
+    expect(Math.hypot(last.x - b.x, last.y - b.y)).toBeLessThan(1e-9);
+    // The middle of the rail stands off the straight line between the ends.
+    const mid = path.points[Math.floor(path.points.length / 2)];
+    const chordMid = { x: (path.points[0].x + b.x) / 2, y: (path.points[0].y + b.y) / 2 };
+    expect(Math.hypot(mid.x - chordMid.x, mid.y - chordMid.y)).toBeGreaterThan(0.2);
+  });
+
+  it("bends the other way when the piece is flipped", () => {
+    const up = pieceRoutePaths({ id: "c", partId: "x-curve", x: 0, y: 0, rotationDeg: 0 }, lib)[0];
+    const down = pieceRoutePaths(
+      { id: "c", partId: "x-curve", x: 0, y: 0, rotationDeg: 0, flipped: true }, lib)[0];
+    const lastUp = up.points[up.points.length - 1];
+    const lastDown = down.points[down.points.length - 1];
+    expect(lastUp.y).toBeGreaterThan(0);
+    expect(lastDown.y).toBeCloseTo(-lastUp.y, 9);
+    expect(lastDown.x).toBeCloseTo(lastUp.x, 9);
+  });
+});

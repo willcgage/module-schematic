@@ -5543,6 +5543,23 @@ export function pieceRoutePaths(
     return [{ route: ["a", "a"], points: [{ x: at.x, y: at.y }, place(len, 0)] }];
   }
 
+  // ⚠️ A SECTIONAL CURVE IS AN ARC AND MUST BE DRAWN AS ONE. Its joints land in
+  // the right place either way, so this looks correct until you notice the rail
+  // cutting the corner between them — the same mistake as drawing a turnout's
+  // diverging route as a chord, arriving by a different door.
+  if (part.kind === "curve") {
+    const a = joints.find((j) => j.joint === "a");
+    const b = joints.find((j) => j.joint === "b");
+    if (!a || !b) return out;
+    // `place` already mirrors a flipped piece, so the radius stays positive here
+    // — negating it too would flip it back.
+    const pts = flexRunPoints(sectionalArcInches(part), part.radius!.inches).map((q) =>
+      place(q.x, q.y),
+    );
+    pts[pts.length - 1] = { x: b.x, y: b.y };
+    return [{ route: ["a", "b"], points: pts }];
+  }
+
   for (const route of geo.routes) {
     const a = at(route[0]);
     const b = at(route[1]);
