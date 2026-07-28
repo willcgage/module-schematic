@@ -4420,8 +4420,12 @@ export function turnoutOccupiedSpan(input: {
 }): OccupiedSpan | null {
   const e = input.extent;
   if (!e) return null;
-  const a = input.pos - input.facing * e.behindPoints;
-  const b = input.pos + input.facing * e.aheadOfPoints;
+  // ⭐⭐ ANCHORED ON THE FROG, because that is what a document's `pos` is (Will,
+  // 2026-07-27). This read `behindPoints`/`aheadOfPoints`, which put the whole
+  // moulding `lead` too far along the run — 3.59″ on an Atlas #7 — so the flex
+  // was cut to stop where the turnout was not.
+  const a = input.pos - input.facing * e.behindFrog;
+  const b = input.pos + input.facing * e.pastFrog;
   return { fromPos: Math.min(a, b), toPos: Math.max(a, b) };
 }
 
@@ -4495,6 +4499,19 @@ export interface PartExtent {
   aheadOfPoints: number;
   /** Frog → the far end. How much turnout there still is past the frog. */
   pastFrog: number;
+  /**
+   * Frog → the NEAR end of the tie strip.
+   *
+   * ⭐⭐ **THIS IS THE ONE A BODY IS MEASURED BACK FROM.** A document's `pos` is
+   * the FROG (Will, 2026-07-27), so a turnout occupies
+   * `[pos − behindFrog, pos + pastFrog]`. Anchoring on the points instead put
+   * every turnout body `lead` too far along — 3.59″ on an Atlas #7.
+   *
+   * ⚠️ Falls back to `behindPoints` when the frog was never measured: without a
+   * frog reading there is nowhere to anchor, and the points is the only landmark
+   * left. `pastFrog` degrades the same way, so the pair stays consistent.
+   */
+  behindFrog: number;
 }
 
 /**
@@ -4519,11 +4536,12 @@ export function partExtent(part: TrackPart | null | undefined): PartExtent | nul
   if (pts.source !== "measured" || overall.source !== "measured") return null;
   const frog = part?.frogOffset;
   const aheadOfPoints = overall.inches - pts.inches;
+  const frogMeasured = frog && frog.source === "measured";
   return {
     behindPoints: pts.inches,
     aheadOfPoints,
-    pastFrog:
-      frog && frog.source === "measured" ? overall.inches - frog.inches : aheadOfPoints,
+    pastFrog: frogMeasured ? overall.inches - frog.inches : aheadOfPoints,
+    behindFrog: frogMeasured ? frog.inches : pts.inches,
   };
 }
 
@@ -6365,17 +6383,22 @@ export function walkTrackGraph(
           byKey.get(`${here.piece}.through`) ?? byKey.get(`${here.piece}.legA`);
         const body = gap(throat, through);
         const lead = part.lead?.inches ?? body / 2;
+        // ⚠️⚠️ THE FROG SITS AT `frogOffset` FROM THE TIE END, NOT AT `lead`.
+        // `lead` is measured POINTS → frog (see {@link TrackPart.lead}, and the
+        // measured table on {@link ATLAS_CODE55_N}: the #7's ⅝″ points and
+        // 4⁷⁄₃₂″ frog give exactly its 3.59375″ lead). Adding it to the THROAT
+        // landed 0.625″ short of the frog on a #7 — on no landmark at all.
+        const frogAxial = part.frogOffset?.inches ?? (part.pointsOffset?.inches ?? 0) + lead;
         // ⚠️ ENTERED FROM EITHER END. A turnout facing the other way is entered
-        // at its `through` joint, so the frog is `body − lead` along, not
-        // `lead`. Assuming the throat put an east-end frog 1.8" out in the spike.
+        // at its `through` joint, so the frog is `body − frogAxial` along.
         // The frog, in the piece's own frame — where the diverging rail has
         // climbed one gauge and the two routes truly cross.
         const dvj = byKey.get(`${here.piece}.diverge`) ?? byKey.get(`${here.piece}.legB`);
         const frogPt =
           throat && body > 0 && dvj
             ? {
-                x: throat.x + ((dvj.x - throat.x) * lead) / body,
-                y: throat.y + ((dvj.y - throat.y) * lead) / body,
+                x: throat.x + ((dvj.x - throat.x) * frogAxial) / body,
+                y: throat.y + ((dvj.y - throat.y) * frogAxial) / body,
               }
             : null;
         // ⚠️ HOW FAR THE FROG IS DEPENDS ON WHICH END YOU CAME IN BY, and there
@@ -6386,12 +6409,12 @@ export function walkTrackGraph(
         // out, which is small only because the angle is.
         const toFrog =
           here.joint === "throat"
-            ? lead
+            ? frogAxial
             : here.joint === "diverge" || here.joint === "legB"
               ? frogPt && dvj
                 ? Math.hypot(dvj.x - frogPt.x, dvj.y - frogPt.y)
-                : Math.max(0, body - lead)
-              : Math.max(0, body - lead);
+                : Math.max(0, body - frogAxial)
+              : Math.max(0, body - frogAxial);
         const frogPos = pos + toFrog;
         if (here.joint === "diverge" || here.joint === "legB") {
           // Arrived by a diverging end: this route has run into the far turnout
@@ -6420,8 +6443,8 @@ export function walkTrackGraph(
           const fp =
             throat && body > 0
               ? {
-                  x: throat.x + ((d.x - throat.x) * lead) / body,
-                  y: throat.y + ((d.y - throat.y) * lead) / body,
+                  x: throat.x + ((d.x - throat.x) * frogAxial) / body,
+                  y: throat.y + ((d.y - throat.y) * frogAxial) / body,
                 }
               : null;
           pending.push({
@@ -7218,7 +7241,8 @@ const CONVERSION_TIGHT_RADIUS_INCHES = 12;
  * {@link JOINT_SNAP_INCHES} — a hundredth of an inch is far too tight to hit by
  * coincidence.
  *
- * ⚠️⚠️ **A TURNOUT'S THROAT GOES AT `pos − lead`, NOT AT `pos − pointsOffset`.**
+
+ * ⭐ A TURNOUT'S THROAT GOES AT `pos − frogOffset`: a document's `pos` is the
  * That is the inverse of what {@link walkTrackGraph} reports, which is the only
  * thing that makes convert-then-derive an identity. It is deliberately NOT
  * {@link turnoutOccupiedSpan}'s anchor, and the two disagree by
@@ -7354,10 +7378,13 @@ export function docToGraph(
     });
     const body = part.overallLength!.inches;
     const lead = part.lead?.inches ?? body / 2;
-    // Entered at the throat the walk reports `throat + lead`; entered at the
-    // through end it reports `through + (body − lead)`. Invert whichever applies
-    // so the turnout comes back out where the document put it.
-    const throatPos = facing > 0 ? t.pos - lead : t.pos + lead;
+    // ⭐ A DOCUMENT'S `pos` IS THE FROG (Will, 2026-07-27), and the frog sits
+    // `frogOffset` from the tie end. Entered at the throat the walk reports
+    // `throat + frogOffset`; entered at the through end, `through + (body −
+    // frogOffset)`. Invert whichever applies so the turnout comes back out where
+    // the document put it.
+    const frogAxial = part.frogOffset?.inches ?? (part.pointsOffset?.inches ?? 0) + lead;
+    const throatPos = facing > 0 ? t.pos - frogAxial : t.pos + frogAxial;
     const hostLane = trackById.get(t.onTrack)?.lane ?? 0;
     // Which way must the diverging route go? The part diverges to its own +y;
     // turning it end-for-end sends that to module −y. ⭐ No hand is stored

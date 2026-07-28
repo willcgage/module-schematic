@@ -130,6 +130,7 @@ import {
   DEFAULT_FLEX_PART_ID,
   moduleConversionReport,
   docToGraph,
+  turnoutOccupiedSpan,
   type ConversionAnswers,
   type SchematicTurnout,
 } from "./index";
@@ -1777,6 +1778,7 @@ describe("endplate poses (#175)", () => {
       behindPoints: 0.75,
       aheadOfPoints: 4.25,
       pastFrog: 1.84375,
+      behindFrog: 3.15625,
     });
   });
 
@@ -4230,11 +4232,13 @@ describe("flex track pieces (#193)", () => {
       behindPoints: 1.625,
       aheadOfPoints: 4.875,
       pastFrog: 2.375,
+      behindFrog: 4.125,
     });
     expect(partExtent(w35)).toEqual({
       behindPoints: 0.75,
       aheadOfPoints: 4.25,
       pastFrog: 1.84375,
+      behindFrog: 3.15625,
     });
   });
 
@@ -5028,7 +5032,7 @@ describe("track graph", () => {
     const j = g7().joints;
     return j.find((x) => x.id === "through")!.x - j.find((x) => x.id === "throat")!.x;
   };
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
 
   const flex = (id: string, x: number, y: number, len: number, rot = 0): TrackPiece => ({
     id, partId: FLEX, x, y, rotationDeg: rot, lengthInches: len,
@@ -5079,11 +5083,11 @@ describe("track graph", () => {
   const siding = (west: number, east: number) => {
     const B = bodyOf();
     const pieces: TrackPiece[] = [
-      flex("f0", 0, 0, west - LEAD),
-      sw("swW", west - LEAD, 0),
-      flex("f1", west - LEAD + B, 0, (east + LEAD - B) - (west - LEAD + B)),
-      sw("swE", east + LEAD, 0, 180, true),
-      flex("f2", east + LEAD, 0, 96 - (east + LEAD)),
+      flex("f0", 0, 0, west - FROG),
+      sw("swW", west - FROG, 0),
+      flex("f1", west - FROG + B, 0, (east + FROG - B) - (west - FROG + B)),
+      sw("swE", east + FROG, 0, 180, true),
+      flex("f2", east + FROG, 0, 96 - (east + FROG)),
     ];
     const jw = placedJoints(pieces).find((j) => j.key === "swW.diverge")!;
     const je = placedJoints(pieces).find((j) => j.key === "swE.diverge")!;
@@ -5152,22 +5156,22 @@ describe("track graph", () => {
   it("resolves a nested yard ladder, three deep", () => {
     const B = bodyOf();
     const PITCH = 8; // comfortably above what an Atlas #7 allows
-    const pieces: TrackPiece[] = [flex("m0", 0, 0, 8 - LEAD), sw("s1", 8 - LEAD, 0, 0, true)];
+    const pieces: TrackPiece[] = [flex("m0", 0, 0, 8 - FROG), sw("s1", 8 - FROG, 0, 0, true)];
     let prev = "s1";
     for (let r = 2; r <= 3; r++) {
       const d = placedJoints(pieces).find((j) => j.key === `${prev}.diverge`)!;
       const th = placedJoints(pieces).find((j) => j.key === `${prev}.throat`)!;
-      const fx = th.x + ((d.x - th.x) * LEAD) / B;
-      const fy = th.y + ((d.y - th.y) * LEAD) / B;
+      const fx = th.x + ((d.x - th.x) * FROG) / B;
+      const fy = th.y + ((d.y - th.y) * FROG) / B;
       const skew = Math.hypot(d.x - fx, d.y - fy);
       // ⭐ A LADDER HAS A MINIMUM PITCH, and the graph knows it: the frogs
       // cannot be closer than the diverging rail out of one plus the lead into
       // the next. For a measured Atlas #7 that is ~6.01", so ELM Yard's 5" — a
       // real document's numbers — is NOT buildable from #7s. The 1-D model
       // cannot notice that; this one can only express what fits.
-      const minPitch = skew + LEAD;
+      const minPitch = skew + FROG;
       expect(minPitch, "an Atlas #7 ladder cannot be tighter than this").toBeGreaterThan(5);
-      const run = PITCH - skew - LEAD;
+      const run = PITCH - skew - FROG;
       pieces.push({ id: `x${r}`, partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: run });
       pieces.push(sw(`s${r}`, d.x + run, d.y, 0, true));
       prev = `s${r}`;
@@ -5238,7 +5242,7 @@ describe("track graph", () => {
 describe("graph → document", () => {
   const SW = "atlas-c55-n-7";
   const FLEX = "atlas-c55-n-flex";
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
   const BODY = (() => {
     const j = partGeometry(trackPart(SW)!)!.joints;
     return j.find((x) => x.id === "through")!.x - j.find((x) => x.id === "throat")!.x;
@@ -5254,11 +5258,11 @@ describe("graph → document", () => {
   /** A passing siding on a 96″ main — the commonest module there is. */
   const siding = (west: number, east: number, below = false) => {
     const pieces: TrackPiece[] = [
-      flex("f0", 0, 0, west - LEAD),
-      sw("swW", west - LEAD, 0, 0, below),
-      flex("f1", west - LEAD + BODY, 0, (east + LEAD - BODY) - (west - LEAD + BODY)),
-      sw("swE", east + LEAD, 0, 180, !below),
-      flex("f2", east + LEAD, 0, 96 - (east + LEAD)),
+      flex("f0", 0, 0, west - FROG),
+      sw("swW", west - FROG, 0, 0, below),
+      flex("f1", west - FROG + BODY, 0, (east + FROG - BODY) - (west - FROG + BODY)),
+      sw("swE", east + FROG, 0, 180, !below),
+      flex("f2", east + FROG, 0, 96 - (east + FROG)),
     ];
     const jw = placedJoints(pieces).find((j) => j.key === "swW.diverge")!;
     const je = placedJoints(pieces).find((j) => j.key === "swE.diverge")!;
@@ -5329,15 +5333,15 @@ describe("graph → document", () => {
   // so — which is exactly what the dispatcher view needs to stack them outward.
   it("names each ladder rung's real host track, and stacks the lanes outward", () => {
     const PITCH = 8;
-    const pieces: TrackPiece[] = [flex("f0", 0, 0, 8 - LEAD), sw("s1", 8 - LEAD, 0, 0, true)];
+    const pieces: TrackPiece[] = [flex("f0", 0, 0, 8 - FROG), sw("s1", 8 - FROG, 0, 0, true)];
     let prev = "s1";
     for (let r = 2; r <= 3; r++) {
       const js = placedJoints(pieces);
       const d = js.find((j) => j.key === `${prev}.diverge`)!;
       const th = js.find((j) => j.key === `${prev}.throat`)!;
-      const fx = th.x + ((d.x - th.x) * LEAD) / BODY;
-      const fy = th.y + ((d.y - th.y) * LEAD) / BODY;
-      const run = PITCH - Math.hypot(d.x - fx, d.y - fy) - LEAD;
+      const fx = th.x + ((d.x - th.x) * FROG) / BODY;
+      const fy = th.y + ((d.y - th.y) * FROG) / BODY;
+      const run = PITCH - Math.hypot(d.x - fx, d.y - fy) - FROG;
       pieces.push({ id: `x${r}`, partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: run });
       pieces.push(sw(`s${r}`, d.x + run, d.y, 0, true));
       prev = `s${r}`;
@@ -5357,7 +5361,7 @@ describe("graph → document", () => {
   // A stub that reaches nothing is an unfinished layout, and saying so beats
   // emitting a turnout pointing at a track that isn't in the document.
   it("leaves out a turnout whose diverging route goes nowhere, and says why", () => {
-    const pieces = [flex("f0", 0, 0, 20 - LEAD), sw("s1", 20 - LEAD, 0), flex("f1", 20 - LEAD + BODY, 0, 40)];
+    const pieces = [flex("f0", 0, 0, 20 - FROG), sw("s1", 20 - FROG, 0), flex("f1", 20 - FROG + BODY, 0, 40)];
     const { doc, warnings } = emit(pieces);
     expect(doc.turnouts).toEqual([]);
     expect(warnings.join(" ")).toMatch(/s1 is placed but its diverging route goes nowhere/);
@@ -5393,13 +5397,13 @@ describe("graph → document", () => {
 describe("features anchored to a piece", () => {
   const SW = "atlas-c55-n-7";
   const FLEX = "atlas-c55-n-flex";
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
 
   /** A spur off the main at `at`, with a 30″ stub. */
   const spurAt = (at: number): TrackPiece[] => {
     const pieces: TrackPiece[] = [
-      { id: "f0", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: at - LEAD },
-      { id: "s1", partId: SW, x: at - LEAD, y: 0, rotationDeg: 0 },
+      { id: "f0", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: at - FROG },
+      { id: "s1", partId: SW, x: at - FROG, y: 0, rotationDeg: 0 },
     ];
     const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
     pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 30 });
@@ -5504,12 +5508,12 @@ describe("an anchor round-trips through the editor state", () => {
 describe("deriveGraphDoc", () => {
   const SW = "atlas-c55-n-7";
   const FLEX = "atlas-c55-n-flex";
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
 
   const withSpur = (at: number): NonNullable<ModuleSchematicDoc["graph"]> => {
     const pieces: TrackPiece[] = [
-      { id: "f0", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: at - LEAD },
-      { id: "s1", partId: SW, x: at - LEAD, y: 0, rotationDeg: 0 },
+      { id: "f0", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: at - FROG },
+      { id: "s1", partId: SW, x: at - FROG, y: 0, rotationDeg: 0 },
     ];
     const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
     pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 30 });
@@ -5740,8 +5744,10 @@ describe("a bent run of flex", () => {
     const end = placedJoints(pieces).find((j) => j.joint === "b")!;
     pieces.push({ id: "s1", partId: SW, x: end.x, y: end.y, rotationDeg: end.headingDeg });
     const w = walkTrackGraph(buildTrackGraph(pieces), pieces, { piece: "c1", joint: "a" });
-    const lead = trackPart(SW)!.lead!.inches;
-    expect(w.turnouts[0].pos).toBeCloseTo(QUARTER + lead, 6);
+    // ⭐ Reported at its FROG —  from the tie end, not ,
+    // which is measured points→frog and lands on no landmark from the throat.
+    const frog = trackPart(SW)!.frogOffset!.inches;
+    expect(w.turnouts[0].pos).toBeCloseTo(QUARTER + frog, 6);
   });
 
   // The snap reads the joint's heading, so a piece brought onto the end of a
@@ -5766,7 +5772,7 @@ describe("a bent run of flex", () => {
 describe("a double-track module", () => {
   const FLEX = "atlas-c55-n-flex";
   const SW = "atlas-c55-n-7";
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
   const SPACING = FREEMO_TRACK_SPACING_INCHES;
 
   /** Two parallel runs a track-spacing apart, Main 2 above. */
@@ -5818,8 +5824,8 @@ describe("a double-track module", () => {
   it("stacks a siding on Main 2's side OUTSIDE Main 2", () => {
     const pieces = doubleTrack();
     // A turnout on Main 1 with a spur running up past Main 2.
-    pieces[0] = { ...pieces[0], lengthInches: 20 - LEAD };
-    pieces.push({ id: "s1", partId: SW, x: 20 - LEAD, y: 0, rotationDeg: 0 });
+    pieces[0] = { ...pieces[0], lengthInches: 20 - FROG };
+    pieces.push({ id: "s1", partId: SW, x: 20 - FROG, y: 0, rotationDeg: 0 });
     const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
     pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 30 });
     const { doc } = emit(pieces);
@@ -5838,8 +5844,8 @@ describe("a double-track module", () => {
   // wrong side of the module.
   it("names Main 2 as the host of a turnout laid on it", () => {
     const pieces = doubleTrack();
-    pieces[1] = { ...pieces[1], lengthInches: 30 - LEAD };
-    pieces.push({ id: "s2", partId: SW, x: 30 - LEAD, y: SPACING, rotationDeg: 0 });
+    pieces[1] = { ...pieces[1], lengthInches: 30 - FROG };
+    pieces.push({ id: "s2", partId: SW, x: 30 - FROG, y: SPACING, rotationDeg: 0 });
     const d = placedJoints(pieces).find((j) => j.key === "s2.diverge")!;
     pieces.push({ id: "yd", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 24 });
     const { doc } = emit(pieces);
@@ -5856,18 +5862,18 @@ describe("a double-track module", () => {
 describe("a crossover between the two mains", () => {
   const FLEX = "atlas-c55-n-flex";
   const SW = "atlas-c55-n-7";
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
   const SPACING = FREEMO_TRACK_SPACING_INCHES;
 
   /** Two mains with a turnout on each, joined by a connector. */
   const crossover = (): TrackPiece[] => {
     const pieces: TrackPiece[] = [
-      { id: "m1a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 30 - LEAD },
-      { id: "sw1", partId: SW, x: 30 - LEAD, y: 0, rotationDeg: 0 },
-      { id: "m2a", partId: FLEX, x: 0, y: SPACING, rotationDeg: 0, lengthInches: 30 - LEAD },
+      { id: "m1a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 30 - FROG },
+      { id: "sw1", partId: SW, x: 30 - FROG, y: 0, rotationDeg: 0 },
+      { id: "m2a", partId: FLEX, x: 0, y: SPACING, rotationDeg: 0, lengthInches: 30 - FROG },
       // The Main 2 turnout faces back the other way, so its diverging leg
       // reaches down toward Main 1's.
-      { id: "sw2", partId: SW, x: 30 - LEAD, y: SPACING, rotationDeg: 0, flipped: true },
+      { id: "sw2", partId: SW, x: 30 - FROG, y: SPACING, rotationDeg: 0, flipped: true },
     ];
     const a = placedJoints(pieces).find((j) => j.key === "sw1.diverge")!;
     const b = placedJoints(pieces).find((j) => j.key === "sw2.diverge")!;
@@ -5931,16 +5937,16 @@ describe("a crossover between the two mains", () => {
 
   it("still calls a siding a siding — both its turnouts are on one main", () => {
     const pieces: TrackPiece[] = [
-      { id: "m1a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 13 - LEAD },
-      { id: "sw1", partId: SW, x: 13 - LEAD, y: 0, rotationDeg: 0 },
+      { id: "m1a", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 13 - FROG },
+      { id: "sw1", partId: SW, x: 13 - FROG, y: 0, rotationDeg: 0 },
       { id: "mid", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 1 },
     ];
     const B = (() => {
       const j = partGeometry(trackPart(SW)!)!.joints;
       return j.find((x) => x.id === "through")!.x - j.find((x) => x.id === "throat")!.x;
     })();
-    pieces[2] = { id: "mid", partId: FLEX, x: 13 - LEAD + B, y: 0, rotationDeg: 0, lengthInches: (73 + LEAD - B) - (13 - LEAD + B) };
-    pieces.push({ id: "sw2", partId: SW, x: 73 + LEAD, y: 0, rotationDeg: 180, flipped: true });
+    pieces[2] = { id: "mid", partId: FLEX, x: 13 - FROG + B, y: 0, rotationDeg: 0, lengthInches: (73 + FROG - B) - (13 - FROG + B) };
+    pieces.push({ id: "sw2", partId: SW, x: 73 + FROG, y: 0, rotationDeg: 180, flipped: true });
     const jw = placedJoints(pieces).find((j) => j.key === "sw1.diverge")!;
     const je = placedJoints(pieces).find((j) => j.key === "sw2.diverge")!;
     pieces.push({ id: "sid", partId: FLEX, x: jw.x, y: jw.y, rotationDeg: 0, lengthInches: Math.hypot(je.x - jw.x, je.y - jw.y) });
@@ -5953,14 +5959,14 @@ describe("a crossover between the two mains", () => {
 describe("fitFlexBetween", () => {
   const FLEX = "atlas-c55-n-flex";
   const SW = "atlas-c55-n-7";
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
   const SPACING = FREEMO_TRACK_SPACING_INCHES;
 
   const twoTurnouts = (): TrackPiece[] => [
-    { id: "m1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 30 - LEAD },
-    { id: "sw1", partId: SW, x: 30 - LEAD, y: 0, rotationDeg: 0 },
-    { id: "m2", partId: FLEX, x: 0, y: SPACING, rotationDeg: 0, lengthInches: 30 - LEAD },
-    { id: "sw2", partId: SW, x: 30 - LEAD, y: SPACING, rotationDeg: 0, flipped: true },
+    { id: "m1", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 30 - FROG },
+    { id: "sw1", partId: SW, x: 30 - FROG, y: 0, rotationDeg: 0 },
+    { id: "m2", partId: FLEX, x: 0, y: SPACING, rotationDeg: 0, lengthInches: 30 - FROG },
+    { id: "sw2", partId: SW, x: 30 - FROG, y: SPACING, rotationDeg: 0, flipped: true },
   ];
 
   // ⭐ THE THING THAT MAKES A CROSSOVER BUILDABLE BY HAND.
@@ -6005,7 +6011,7 @@ describe("fitFlexBetween", () => {
     // occupied junction behind it.
     if (fitted) {
       const end = placedJoints([fitted]).find((j) => j.joint === "b")!;
-      expect(Math.hypot(end.x - (30 - LEAD), end.y - 0)).toBeGreaterThan(JOINT_SNAP_INCHES);
+      expect(Math.hypot(end.x - (30 - FROG), end.y - 0)).toBeGreaterThan(JOINT_SNAP_INCHES);
     }
   });
 
@@ -6043,11 +6049,11 @@ describe("pieceHand", () => {
   // flipping a turnout moves its route, and the lane follows the geometry.
   it("does not put a hand into the document", () => {
     const FLEX = "atlas-c55-n-flex";
-    const LEAD = SW.lead!.inches;
+    const FROG = SW.frogOffset!.inches;
     const build = (flipped: boolean) => {
       const pieces: TrackPiece[] = [
-        { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 20 - LEAD },
-        { id: "s", partId: "atlas-c55-n-7", x: 20 - LEAD, y: 0, rotationDeg: 0, flipped },
+        { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 20 - FROG },
+        { id: "s", partId: "atlas-c55-n-7", x: 20 - FROG, y: 0, rotationDeg: 0, flipped },
       ];
       const d = placedJoints(pieces).find((j) => j.key === "s.diverge")!;
       pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 20 });
@@ -6071,13 +6077,13 @@ describe("a bumper", () => {
   const FLEX = "atlas-c55-n-flex";
   const SW = "atlas-c55-n-7";
   const BUMPER = "generic-bumper";
-  const LEAD = trackPart(SW)!.lead!.inches;
+  const FROG = trackPart(SW)!.frogOffset!.inches;
 
   /** A main with a spur, and optionally a bumper on the spur's far end. */
   const spurLayout = (bumper: boolean) => {
     const pieces: TrackPiece[] = [
-      { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 20 - LEAD },
-      { id: "s1", partId: SW, x: 20 - LEAD, y: 0, rotationDeg: 0 },
+      { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 20 - FROG },
+      { id: "s1", partId: SW, x: 20 - FROG, y: 0, rotationDeg: 0 },
     ];
     const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
     pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 24 });
@@ -6125,9 +6131,9 @@ describe("a bumper", () => {
   // LARGER number, and its bumper is at `to`. Easy to misread as an x position.
   it("marks `to` even on a spur that physically runs backwards", () => {
     const pieces: TrackPiece[] = [
-      { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 40 - LEAD },
+      { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 40 - FROG },
       // Facing west, so its diverging route heads back toward endplate A.
-      { id: "s1", partId: SW, x: 40 - LEAD, y: 0, rotationDeg: 180, flipped: true },
+      { id: "s1", partId: SW, x: 40 - FROG, y: 0, rotationDeg: 180, flipped: true },
     ];
     const d = placedJoints(pieces).find((j) => j.key === "s1.diverge")!;
     pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 180, lengthInches: 15 });
@@ -6698,5 +6704,51 @@ describe("rebuilding a drawn module as pieces", () => {
     doc.tracks.push({ id: "yard1", role: "siding", lane: 3, trackName: "yard 1" });
     const c = docToGraph(doc, { turnoutPartId: SW });
     expect(c.notLaid.map((n) => n.id)).toContain("yard1");
+  });
+});
+
+// ⭐⭐ A DOCUMENT'S `pos` IS THE FROG (Will, 2026-07-27). Pinned here because two
+// shipped functions had drifted off it in different directions and neither was
+// obviously wrong from the inside: the walk reported `throat + lead` (lead is
+// measured POINTS→frog, so from the throat it lands on no landmark at all), and
+// `turnoutOccupiedSpan` anchored the moulding on the POINTS, cutting the flex
+// `lead` — 3.59″ on an Atlas #7 — away from where the turnout really is.
+describe("a turnout's pos is its frog", () => {
+  const SEVEN = trackPart("atlas-c55-n-7")!;
+
+  it("the moulding sits frogOffset behind pos and pastFrog ahead of it", () => {
+    const e = partExtent(SEVEN)!;
+    expect(e.behindFrog).toBeCloseTo(4.21875, 6); // the measured frog offset
+    expect(e.pastFrog).toBeCloseTo(1.78125, 6);
+    expect(e.behindFrog + e.pastFrog).toBeCloseTo(SEVEN.overallLength!.inches, 6);
+    const span = turnoutOccupiedSpan({ pos: 13, extent: e, facing: 1 })!;
+    expect(span.fromPos).toBeCloseTo(13 - 4.21875, 6);
+    expect(span.toPos).toBeCloseTo(13 + 1.78125, 6);
+  });
+
+  it("turned end-for-end the body reflects about the frog, not about the points", () => {
+    const e = partExtent(SEVEN)!;
+    const span = turnoutOccupiedSpan({ pos: 13, extent: e, facing: -1 })!;
+    expect(span.fromPos).toBeCloseTo(13 - 1.78125, 6);
+    expect(span.toPos).toBeCloseTo(13 + 4.21875, 6);
+  });
+
+  it("the walk reports the frog, and a rebuild puts it back at the same number", () => {
+    const doc: ModuleSchematicDoc = {
+      version: 1, lengthInches: 60,
+      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0 },
+        { id: "s", role: "spur", lane: 1, fromPos: 20, toPos: 40 },
+      ],
+      turnouts: [{ id: "sw1", pos: 20, onTrack: "main", divergeTrack: "s" }],
+    };
+    const c = docToGraph(doc, { turnoutPartId: "atlas-c55-n-7" });
+    expect(c.refused).toBeNull();
+    // The piece's tie end is frogOffset west of pos — nothing else would put the
+    // frog on 20.
+    expect(c.graph!.pieces.find((p) => p.id === "t-sw1")!.x).toBeCloseTo(20 - 4.21875, 6);
+    const out = graphToDoc(c.graph!.pieces, { startAt: c.graph!.startAt, base: doc });
+    expect(out.doc.turnouts![0].pos).toBeCloseTo(20, 6);
   });
 });
