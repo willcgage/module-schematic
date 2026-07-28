@@ -5441,6 +5441,37 @@ export function pieceRoutePaths(
   return out;
 }
 
+/**
+ * The HAND of a placed piece — the product an owner would actually buy.
+ *
+ * ⭐ THE MODEL HAS NO HAND, AND THIS IS NOT A CONTRADICTION. Nothing derived
+ * from the graph asks which way a turnout is handed: the side a route leaves on
+ * is simply where the piece is (ADR 0001). But a turnout on a shelf IS a
+ * left-hand or a right-hand product, with its own part number, and an owner
+ * picking one out of a palette is choosing between two things they could own.
+ * So the hand belongs at the point of PURCHASE and PLACEMENT, and nowhere after.
+ *
+ * ⚠️ UNFLIPPED IS THE LEFT-HAND PART. A part's own frame diverges toward +y, and
+ * +y is to the left of the through route looking from the throat — which agrees
+ * with the library: the Atlas #7's `partNumbers.left` (2052) is the one whose
+ * published geometry these dimensions were read from.
+ *
+ * Null for a part with no hand to have — a wye splits symmetrically, which is
+ * exactly why it is sold as one product.
+ */
+export function pieceHand(part: TrackPart, flipped?: boolean | null): "left" | "right" | null {
+  const n = part.partNumbers;
+  if (!n?.left || !n?.right) return null;
+  return flipped ? "right" : "left";
+}
+
+/** The part number a placed piece corresponds to — what to order. */
+export function piecePartNumber(part: TrackPart, flipped?: boolean | null): string | undefined {
+  const hand = pieceHand(part, flipped);
+  if (!hand) return part.partNumbers?.single;
+  return part.partNumbers?.[hand];
+}
+
 /** Every part that can be PLACED on a board today, and every one that can only
  * be named — with the reason. The gap list is the parts backlog. */
 export function partsPlaceable(library = BUILT_IN_TRACK_PARTS): {

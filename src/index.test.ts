@@ -96,6 +96,8 @@ import {
   partGeometry,
   buildTrackGraph,
   graphToDoc,
+  pieceHand,
+  piecePartNumber,
   fitFlexBetween,
   JOINT_SNAP_INCHES,
   pieceRoutePaths,
@@ -5999,5 +6001,53 @@ describe("fitFlexBetween", () => {
   it("does nothing for a part that is not flex", () => {
     const others = twoTurnouts();
     expect(fitFlexBetween(others[1], others)).toBeNull();
+  });
+});
+
+// ─── Hand, at the point of purchase ──────────────────────────────────────────
+describe("pieceHand", () => {
+  const SW = trackPart("atlas-c55-n-7")!;
+  const WYE = trackPart("atlas-c55-n-wye-25") ?? trackPart("atlas-c55-n-wye-35")!;
+
+  // ⚠️ UNFLIPPED IS THE LEFT-HAND PART: a part's frame diverges toward +y, which
+  // is the left of the through route looking from the throat — and that is the
+  // product whose published geometry these dimensions came from.
+  it("calls an unflipped turnout left-hand, and names the part number to order", () => {
+    expect(pieceHand(SW, false)).toBe("left");
+    expect(piecePartNumber(SW, false)).toBe("2052");
+    expect(pieceHand(SW, true)).toBe("right");
+    expect(piecePartNumber(SW, true)).toBe("2053");
+  });
+
+  // ⭐ A wye splits symmetrically, which is exactly why it is sold as ONE
+  // product — so there is no hand to offer, and offering one would invent a
+  // choice an owner does not have.
+  it("gives a wye no hand at all", () => {
+    expect(pieceHand(WYE, false)).toBeNull();
+    expect(pieceHand(WYE, true)).toBeNull();
+    expect(piecePartNumber(WYE, false)).toBe(WYE.partNumbers?.single);
+  });
+
+  // The hand is a label on a product, NOT something the derived document reads:
+  // flipping a turnout moves its route, and the lane follows the geometry.
+  it("does not put a hand into the document", () => {
+    const FLEX = "atlas-c55-n-flex";
+    const LEAD = SW.lead!.inches;
+    const build = (flipped: boolean) => {
+      const pieces: TrackPiece[] = [
+        { id: "m", partId: FLEX, x: 0, y: 0, rotationDeg: 0, lengthInches: 20 - LEAD },
+        { id: "s", partId: "atlas-c55-n-7", x: 20 - LEAD, y: 0, rotationDeg: 0, flipped },
+      ];
+      const d = placedJoints(pieces).find((j) => j.key === "s.diverge")!;
+      pieces.push({ id: "sp", partId: FLEX, x: d.x, y: d.y, rotationDeg: 0, lengthInches: 20 });
+      return graphToDoc(pieces, { startAt: { piece: "m", joint: "a" } }).doc;
+    };
+    const left = build(false);
+    const right = build(true);
+    expect(left.turnouts![0].kind).toBeUndefined();
+    expect(right.turnouts![0].kind).toBeUndefined();
+    // Only the SIDE moved, and it moved because the track did.
+    expect(Math.sign(left.tracks.find((t) => t.id === "sp")!.lane)).toBe(1);
+    expect(Math.sign(right.tracks.find((t) => t.id === "sp")!.lane)).toBe(-1);
   });
 });
