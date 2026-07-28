@@ -130,6 +130,7 @@ import {
   DEFAULT_FLEX_PART_ID,
   moduleConversionReport,
   docToGraph,
+  crossoverAssembly,
   turnoutOccupiedSpan,
   type ConversionAnswers,
   type SchematicTurnout,
@@ -4848,10 +4849,15 @@ describe("part geometry", () => {
     expect(placeable.length + blocked.length).toBe(BUILT_IN_TRACK_PARTS.length);
     // Everything Atlas measured, plus both flex products — and the bumper,
     // which is placeable with NO dimensions because what it means does not
-    // depend on its size.
+    // depend on its size — and both Fast Tracks DOUBLE CROSSOVERS, whose
+    // geometry turned out to be published all along (see crossoverAssembly):
+    // the half-length, the fixture's track spacing and its frog angle fix the
+    // whole assembly between them. What was missing was reading the half as a
+    // half, not the geometry.
     expect(placeable.map((p) => p.id).sort()).toEqual([
       "atlas-c55-n-10", "atlas-c55-n-5", "atlas-c55-n-7",
       "atlas-c55-n-flex", "atlas-c55-n-wye", "atlas-c55-n-wye-35",
+      "fast-tracks-n-me55-c-6", "fast-tracks-n-me55-c-8",
       "generic-bumper", "me-c55-n-flex",
     ]);
     // Every Fast Tracks turnout and wye is blocked for ONE reason, and it is a
@@ -6822,8 +6828,11 @@ describe("two turnouts cannot share an inch of track", () => {
     const c = docToGraph(scissors(), { turnoutPartId: "atlas-c55-n-7" });
     expect(c.refused).toBeNull();
     expect(c.notLaid.length).toBeGreaterThan(0);
-    expect(c.notLaid[0].why).toMatch(/mouldings would overlap/);
-    expect(c.notLaid[0].why).toMatch(/2\.5/);
+    // ⭐ It is a CROSSOVER, so the message must not blame the owner's track:
+    // a double crossover is one assembly whose point-sets legitimately sit
+    // closer than two separate turnouts could.
+    expect(c.notLaid[0].why).toMatch(/one assembly, not/);
+    expect(c.notLaid[0].why).not.toMatch(/mouldings would overlap/);
     // Neither of the clashing turnouts is laid — half a scissors is not a thing.
     const ids = c.graph!.pieces.map((p) => p.id);
     expect(ids).not.toContain("t-sw1");
@@ -6849,5 +6858,86 @@ describe("two turnouts cannot share an inch of track", () => {
     const c = docToGraph(doc, { turnoutPartId: "atlas-c55-n-7" });
     expect(c.notLaid).toEqual([]);
     expect(c.graph!.pieces.map((p) => p.id)).toContain("t-sw1");
+  });
+});
+
+// ⭐⭐ A DOUBLE CROSSOVER IS ONE ASSEMBLY, NOT FOUR TURNOUTS (Will, 2026-07-28).
+// Modelling it as four independent turnouts is what collapsed the FMN-0078
+// rebuild: two Atlas #7s 2.5″ apart overlap by 3.5″, so the pieces intersected
+// and the walk emitted a module nobody has.
+describe("a double crossover is one assembly", () => {
+  const six = () => trackPart("fast-tracks-n-me55-c-6")!;
+
+  it("is placeable — its geometry was published all along", () => {
+    expect(partGeometryGap(six())).toBeNull();
+    const g = partGeometry(six())!;
+    expect(g.joints.map((j) => j.id).sort()).toEqual(["a1", "a2", "b1", "b2"]);
+    // Four routes: straight on either track, and a crossing each way. That is
+    // what makes it one moulding rather than four turnouts near each other.
+    expect(g.routes).toHaveLength(4);
+    expect(g.routes).toContainEqual(["a1", "b2"]);
+    expect(g.routes).toContainEqual(["a2", "b1"]);
+  });
+
+  it("reads the published length as ONE HALF and doubles it", () => {
+    const a = crossoverAssembly(six())!;
+    expect(six().overallLength!.inches).toBeCloseTo(10.07, 6);
+    expect(six().piecesPerAssembly).toBe(2);
+    expect(a.lengthInches).toBeCloseTo(20.14, 6);
+  });
+
+  // ⭐ THE FALSIFIER. The scissors X is where the two crossing routes meet, so
+  // it must be twice the frog angle. Fast Tracks publish that angle SEPARATELY,
+  // so it is an independent reading — if the derivation were wrong these would
+  // not agree.
+  it("agrees with the separately published scissors angle", () => {
+    for (const id of ["fast-tracks-n-me55-c-6", "fast-tracks-n-me55-c-8"]) {
+      const p = trackPart(id)!;
+      // Within the published rounding: Fast Tracks quote 19° and 14.3° to the
+      // tenth, against exact doubles of 18.92° and 14.26°. A tenth of a degree
+      // over a 20″ assembly is 0.035″ — below anything drawable.
+      expect(Math.abs(2 * p.actualAngle!.deg - p.secondaryFrogAngle!.deg)).toBeLessThanOrEqual(0.1);
+    }
+  });
+
+  it("puts the two point-sets on one track a crossing-run apart", () => {
+    const a = crossoverAssembly(six())!;
+    // W = spacing / tan θ. For a #6 at 1.09″ that is 6.54″ — NOT the 2.5″ my
+    // own FMN-0078 fixture claimed, which is why it could never be built.
+    expect(a.crossingRunInches).toBeCloseTo(6.542, 3);
+    expect(a.pointsAtInches[1] - a.pointsAtInches[0]).toBeCloseTo(a.crossingRunInches, 6);
+    // Centred, so the scissors lands in the middle of the assembly.
+    expect(a.scissorsAtInches).toBeCloseTo(a.lengthInches / 2, 6);
+  });
+
+  // ⚠️ Drawn as a chord, the rail would leave the railhead for most of the
+  // assembly and the X would land nowhere near the middle — the sectional-curve
+  // mistake arriving by another door.
+  it("draws a crossing route as straight-cross-straight, not a diagonal", () => {
+    const piece: TrackPiece = {
+      id: "x", partId: "fast-tracks-n-me55-c-6", x: 0, y: 0, rotationDeg: 0,
+    };
+    const paths = pieceRoutePaths(piece);
+    const straight = paths.find((p) => p.route[0] === "a1" && p.route[1] === "b1")!;
+    expect(straight.points).toHaveLength(2);
+    const crossing = paths.find((p) => p.route[0] === "a1" && p.route[1] === "b2")!;
+    expect(crossing.points).toHaveLength(4);
+    // It stays on its own track until the point-set, then crosses.
+    expect(crossing.points[0].y).toBeCloseTo(0, 6);
+    expect(crossing.points[1].y).toBeCloseTo(0, 6);
+    expect(crossing.points[1].x).toBeCloseTo(6.799, 3);
+    expect(crossing.points[2].y).toBeCloseTo(1.09, 6);
+    expect(crossing.points[3].x).toBeCloseTo(20.14, 6);
+  });
+
+  it("a placed assembly's four joints land where the graph can join them", () => {
+    const piece: TrackPiece = {
+      id: "x", partId: "fast-tracks-n-me55-c-6", x: 10, y: 0, rotationDeg: 0,
+    };
+    const js = placedJoints([piece]);
+    expect(js).toHaveLength(4);
+    expect(js.find((j) => j.joint === "a1")!.x).toBeCloseTo(10, 6);
+    expect(js.find((j) => j.joint === "b1")!.x).toBeCloseTo(30.14, 6);
+    expect(js.find((j) => j.joint === "a2")!.y).toBeCloseTo(1.09, 6);
   });
 });

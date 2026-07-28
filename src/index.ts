@@ -4149,9 +4149,14 @@ export const FAST_TRACKS_N_ME55_CROSSOVERS: TrackPart[] = (
       inches: spacing,
       source: manufacturer,
       note:
-        `${spec}. ⚠️ Free-moN §2.0 requires ${FREEMO_TRACK_SPACING_INCHES}″ — this fixture ` +
-        `is built to ${spacing}″, ${(FREEMO_TRACK_SPACING_INCHES - spacing).toFixed(3)}″ tighter, ` +
-        "and cannot be built to another spacing.",
+        `${spec}. ${spacing}″, and the fixture cannot be built to another spacing. ` +
+        `⚠️ THIS IS NOT A DEPARTURE FROM THE STANDARD. Free-moN §2.0 fixes ` +
+        `${FREEMO_TRACK_SPACING_INCHES}″ at the ENDPLATE — "double track endplates must ` +
+        `have a track spacing of 1.125 inches", with track perpendicular, straight and ` +
+        `level for 4″ from the outside face. What the two mains do in between is the ` +
+        `module builder's business, and every real double crossover pinches them ` +
+        `closer. Earlier wording here called the fixture "tighter than the standard", ` +
+        `which reads as non-conformance and is wrong.`,
     },
   } satisfies TrackPart;
 });
@@ -5313,7 +5318,16 @@ export function turnoutClosure(
 // between. That is what this section derives, from measurements we already have.
 
 /** Which end of a part this is. A graph connects joints; a walk uses `routes`. */
-export type PartJointRole = "throat" | "through" | "diverge" | "divergeB";
+export type PartJointRole =
+  | "throat"
+  | "through"
+  | "diverge"
+  | "divergeB"
+  /** An end of one of the two parallel tracks THROUGH a crossover assembly.
+   * A double crossover has four, and none of them is a throat: every end is
+   * both a straight route and a crossing route, which is exactly why it is one
+   * moulding and not four turnouts. */
+  | "crossoverEnd";
 
 /** One end of a part, in part-local inches: `x` along the through route from
  * the tie end, `y` lateral toward the diverging side, `angleDeg` the OUTWARD
@@ -5339,6 +5353,76 @@ export interface PartGeometry {
 }
 
 /**
+ * A double crossover's geometry, every number of it PUBLISHED rather than
+ * guessed — or null when the part does not carry them.
+ *
+ * ⭐⭐ **A DOUBLE CROSSOVER IS ONE ASSEMBLY, NOT FOUR TURNOUTS** (Will,
+ * 2026-07-28). Modelling it as four independent turnout mouldings is what made a
+ * rebuild of FMN-0078 collapse: two Atlas #7s 2.5″ apart overlap by 3.5″, so the
+ * pieces intersected and the walk emitted a module nobody has. The real thing is
+ * a single moulding whose four point-sets sit closer together than four separate
+ * turnouts ever could — which is precisely why it is sold as one fixture.
+ *
+ * ⚠️ **ITS SPACING IS NOT A DEPARTURE FROM THE STANDARD.** Free-moN §2.0 fixes
+ * {@link FREEMO_TRACK_SPACING_INCHES} **at the endplate** — "double track
+ * endplates must have a track spacing of 1.125 inches", perpendicular, straight
+ * and level for 4″ from the outside face. What the mains do in between is the
+ * builder's business, and every real double crossover pinches them closer.
+ *
+ * The derivation:
+ * - **Length** is `overallLength × piecesPerAssembly`. Fast Tracks' figure is
+ *   ONE HALF — the fixture builds a symmetrical half you make twice and butt
+ *   together after turning the second 180°.
+ * - **The crossing run** `W = spacing / tan θ` is how far along the track a route
+ *   takes to cross to the other one. The two point-sets on the SAME track are
+ *   therefore `W` apart — 6.54″ for a #6 at 1.09″, not the 2.5″ my own FMN-0078
+ *   fixture claimed.
+ * - Both crossing routes are centred on the assembly, so they meet in the middle
+ *   at `2θ` — which is exactly the {@link TrackPart.secondaryFrogAngle} Fast
+ *   Tracks publish, an independent check that this reading is right.
+ */
+export function crossoverAssembly(part: TrackPart): {
+  /** End to end along the track, both halves. */
+  lengthInches: number;
+  spacingInches: number;
+  /** Along-track distance a crossing route takes to reach the other track. */
+  crossingRunInches: number;
+  /** Where the four point-sets sit along the assembly. */
+  pointsAtInches: [number, number];
+  /** The X where the two crossing routes meet — a real diamond in the middle. */
+  scissorsAtInches: number;
+} | null {
+  const overall = part.overallLength?.inches;
+  const spacing = part.trackSpacing?.inches;
+  const n = part.frogNumber;
+  if (!overall || !spacing || !n) return null;
+  const lengthInches = overall * (part.piecesPerAssembly ?? 1);
+  // tan θ = 1/N for a frog of number N. Use the part's own measured angle where
+  // it has one — Atlas build to sectional angles rather than true frog ratios.
+  const tan = part.actualAngle ? Math.tan((part.actualAngle.deg * Math.PI) / 180) : 1 / n;
+  if (!(tan > 0)) return null;
+  const crossingRunInches = spacing / tan;
+  const mid = lengthInches / 2;
+  const half = crossingRunInches / 2;
+  return {
+    lengthInches,
+    spacingInches: spacing,
+    crossingRunInches,
+    pointsAtInches: [mid - half, mid + half],
+    scissorsAtInches: mid,
+  };
+}
+
+/** The weakest provenance among some dimensions — a placed part is only as
+ * trustworthy as the softest number under it. */
+function weakestOf(...ds: (PartDimension | undefined)[]): DimensionSource {
+  const rank: DimensionSource[] = ["measured", "manufacturer", "derived", "unverified"];
+  let worst = 0;
+  for (const d of ds) if (d) worst = Math.max(worst, rank.indexOf(d.source));
+  return rank[worst];
+}
+
+/**
  * Why a part has no derivable geometry — null when it has.
  *
  * Worth its own function because "we cannot place this yet" is a fact an owner
@@ -5360,12 +5444,17 @@ export function partGeometryGap(part: TrackPart): string | null {
     if (part.arcDegrees == null) return "no arc — the radius alone does not say how far it turns";
     return null;
   }
-  if (part.kind === "crossover")
-    return (
-      "a crossover fixture builds one HALF of the assembly (piecesPerAssembly), " +
-      "so its published lengths describe a piece, not the finished part — the " +
-      "geometry of the whole crossover is not yet derivable from them"
-    );
+  if (part.kind === "crossover") {
+    // ⭐ IT IS DERIVABLE AFTER ALL. The published half-length, the fixture's
+    // track spacing and its frog angle fix the whole assembly between them —
+    // see {@link crossoverAssembly}. What was missing was reading the half as a
+    // half, not the geometry.
+    if (!part.overallLength) return "no overall length — nothing says how long the assembly is";
+    if (!part.trackSpacing)
+      return "no track spacing — a crossover is defined by how far apart the two tracks it joins are";
+    if (part.frogNumber == null) return "no frog number — the crossing angle is unknown";
+    return null;
+  }
   if (part.kind === "crossing") return "crossing geometry is not modelled yet";
   if (part.kind === "curved-turnout")
     return "a curved turnout needs both radii AND its points/frog landmarks; only the radii are published";
@@ -5446,6 +5535,31 @@ export function partGeometry(
       ],
       routes: [["a", "b"]],
       source: "derived",
+      divergingEndMeasured: false,
+    };
+  }
+
+  if (part.kind === "crossover") {
+    const g = crossoverAssembly(part);
+    if (!g) return null;
+    return {
+      joints: [
+        { id: "a1", role: "crossoverEnd", x: 0, y: 0, angleDeg: 180 },
+        { id: "b1", role: "crossoverEnd", x: g.lengthInches, y: 0, angleDeg: 0 },
+        { id: "a2", role: "crossoverEnd", x: 0, y: g.spacingInches, angleDeg: 180 },
+        { id: "b2", role: "crossoverEnd", x: g.lengthInches, y: g.spacingInches, angleDeg: 0 },
+      ],
+      // ⭐ FOUR ROUTES, and that is the whole point. From either end of either
+      // track a train can run straight on or cross to the other — which is what
+      // makes this ONE assembly rather than four turnouts that happen to be near
+      // each other.
+      routes: [
+        ["a1", "b1"],
+        ["a2", "b2"],
+        ["a1", "b2"],
+        ["a2", "b1"],
+      ],
+      source: weakestOf(part.overallLength, part.trackSpacing),
       divergingEndMeasured: false,
     };
   }
@@ -5589,6 +5703,39 @@ export function pieceRoutePaths(
     );
     pts[pts.length - 1] = { x: b.x, y: b.y };
     return [{ route: ["a", "b"], points: pts }];
+  }
+
+  // ⚠️ A CROSSING ROUTE IS NOT A DIAGONAL FROM END TO END. It runs straight
+  // along its own track to the point-set, crosses at the frog angle, and runs
+  // straight again — so drawn as a chord the rail would leave the railhead for
+  // most of the assembly and the scissors X would land nowhere near the middle.
+  // Same mistake as drawing a sectional curve as its chord, arriving by another
+  // door (that one shipped, because the JOINTS are right either way).
+  if (part.kind === "crossover") {
+    const g = crossoverAssembly(part);
+    if (g) {
+      const [p1, p2] = g.pointsAtInches;
+      const S = g.spacingInches;
+      const L = g.lengthInches;
+      const yOf = (id: string) => (id.endsWith("2") ? S : 0);
+      return geo.routes.map((route) => {
+        const [from, to] = route;
+        const y0 = yOf(from);
+        const y1 = yOf(to);
+        // Which end each joint is at: "a" west (x=0), "b" east (x=L).
+        const x0 = from.startsWith("a") ? 0 : L;
+        const x1 = to.startsWith("a") ? 0 : L;
+        if (y0 === y1)
+          return { route, points: [place(x0, y0), place(x1, y1)] }; // straight through
+        // Crossing: straight to the near point-set, over, then straight on.
+        const west = Math.min(x0, x1) === 0;
+        const [xa, xb] = west ? [p1, p2] : [p2, p1];
+        return {
+          route,
+          points: [place(x0, y0), place(xa, y0), place(xb, y1), place(x1, y1)],
+        };
+      });
+    }
   }
 
   for (const route of geo.routes) {
@@ -7463,9 +7610,18 @@ export function docToGraph(
         clashed.add(cur.t.id);
         const gap = Math.abs(cur.t.pos - prev.t.pos);
         const body = prev.span.toPos - prev.span.fromPos;
+        // ⭐⭐ IS THIS A CROSSOVER ASSEMBLY? Then the overlap is OUR modelling
+        // error, not the owner's track. A double crossover is ONE moulding whose
+        // four point-sets sit closer together than four separate turnouts ever
+        // could — that is the entire reason it is sold as a single fixture.
+        // Telling an owner their turnouts collide would blame them for a real
+        // and perfectly ordinary piece of trackwork.
+        const asm = trackById.get(cur.t.divergeTrack)?.role === "crossover";
         notLaid.push({
           id: cur.t.divergeTrack,
-          why: `${prev.t.name || prev.t.id} and ${cur.t.name || cur.t.id} are ${gap.toFixed(1)}″ apart on the same track, but the turnout chosen is ${body.toFixed(1)}″ long — their mouldings would overlap, which is why this is sold as one assembly rather than two turnouts`,
+          why: asm
+            ? `this is a crossover — one assembly, not ${gap.toFixed(1)}″ between two separate turnouts. Laying it needs the crossover product itself; pick one on the track and it can be placed as the single piece it is`
+            : `${prev.t.name || prev.t.id} and ${cur.t.name || cur.t.id} are ${gap.toFixed(1)}″ apart on the same track, but the turnout chosen is ${body.toFixed(1)}″ long — their mouldings would overlap, so they cannot both be where the document puts them`,
         });
       }
     }
