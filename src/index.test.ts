@@ -23,6 +23,7 @@ import {
   sectionComponents,
   sectionedEndPose,
   moduleFeatures,
+  implicitCrossings,
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
   moduleLengthFromSections,
@@ -7405,5 +7406,145 @@ describe("a main that begins at a turnout", () => {
     });
     expect(r.blockers).toEqual([]);
     expect(r.offerable).toBe(true);
+  });
+});
+
+describe("implicitCrossings", () => {
+  /** FMN-0078's shape: a 96″ double main, and a spur dropped off Main 1 that the
+   * editor stacked at lane 3 — beyond Main 2 (Will, 2026-07-30). */
+  const doubleMain = (extra: Partial<ModuleSchematicDoc> = {}): ModuleSchematicDoc => ({
+    version: 1,
+    module: "FMN-0078",
+    lengthInches: 96,
+    endplates: [
+      { id: "A", label: "West", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+      { id: "B", label: "East", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+    ],
+    tracks: [
+      { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+      { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+    ],
+    turnouts: [],
+    ...extra,
+  });
+
+  /** A left-hand turnout on Main 1 throws its route to Main 2's side, so the
+   * route has to cross Main 2 — and nothing in the document says so. */
+  const crossesMain2 = doubleMain({
+    tracks: [
+      { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+      { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+      { id: "spur1", role: "spur", lane: 3, fromPos: 60, toPos: 71.5 },
+    ],
+    turnouts: [{ id: "sw5", pos: 60, onTrack: "main", divergeTrack: "spur1", kind: "left" }],
+  });
+
+  it("reports a spur drawn across Main 2", () => {
+    expect(implicitCrossings(crossesMain2)).toEqual([
+      {
+        turnoutId: "sw5",
+        trackId: "spur1",
+        crossesTrackId: "main2",
+        lane: 1,
+        fromLane: 0,
+        toLane: 3,
+        atInches: 60,
+      },
+    ]);
+  });
+
+  it("reports the THROAT, not a position for the diamond", () => {
+    // The turnout is at 60; the diamond is some lead beyond it, a distance this
+    // document does not carry. Naming one would be inventing a measurement.
+    expect(implicitCrossings(crossesMain2)[0].atInches).toBe(60);
+  });
+
+  it("says nothing when the same turnout is right-handed", () => {
+    // The hand — not the stored lane — decides the drawn side, so a right-hand
+    // turnout puts the identical lane-3 spur BELOW the mains, crossing nothing.
+    const rh = doubleMain({
+      tracks: crossesMain2.tracks,
+      turnouts: [{ id: "sw5", pos: 60, onTrack: "main", divergeTrack: "spur1", kind: "right" }],
+    });
+    expect(moduleFeatures(rh).extraTracks[0].lane).toBe(-3);
+    expect(implicitCrossings(rh)).toEqual([]);
+  });
+
+  it("is silenced by a crossing the owner has already declared", () => {
+    const declared = {
+      ...crossesMain2,
+      crossings: [{ id: "x1", pos: 63, tracks: ["spur1", "main2"] as [string, string] }],
+    };
+    expect(implicitCrossings(declared)).toEqual([]);
+  });
+
+  it("never reports a crossover — its two mains are adjacent", () => {
+    const xo = doubleMain({
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+        { id: "xoA", role: "crossover", lane: 1, fromPos: 40.104, toPos: 42.396 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 40.104, onTrack: "main", divergeTrack: "xoA", kind: "left" },
+        { id: "sw2", pos: 42.396, onTrack: "main2", divergeTrack: "xoA", kind: "right" },
+      ],
+    });
+    expect(implicitCrossings(xo)).toEqual([]);
+  });
+
+  it("never reports a double crossover's scissors — that is one assembly", () => {
+    // Its two connectors cross each other INSIDE the part; there is no diamond
+    // for an owner to author (ADR: a double crossover is one assembly).
+    const scissors = doubleMain({
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+        { id: "xoA", role: "crossover", lane: 1, fromPos: 40.104, toPos: 42.396 },
+        { id: "xoB", role: "crossover", lane: 1, fromPos: 40.104, toPos: 42.396 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 40.104, onTrack: "main", divergeTrack: "xoA", kind: "left" },
+        { id: "sw2", pos: 42.396, onTrack: "main2", divergeTrack: "xoA", kind: "right" },
+        { id: "sw3", pos: 40.104, onTrack: "main2", divergeTrack: "xoB", kind: "right" },
+        { id: "sw4", pos: 42.396, onTrack: "main", divergeTrack: "xoB", kind: "left" },
+      ],
+    });
+    expect(implicitCrossings(scissors)).toEqual([]);
+  });
+
+  it("never reports a yard ladder — each rung hangs off the track one lane in", () => {
+    // ELM Yard's real shape: nothing sits between a rung and its parent.
+    const ladder = doubleMain({
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "main2", role: "main", lane: 1, from: "A", to: "B" },
+        { id: "yd1", role: "spur", lane: 2, fromPos: 30, toPos: 80 },
+        { id: "yd2", role: "spur", lane: 3, fromPos: 36, toPos: 80 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 30, onTrack: "main2", divergeTrack: "yd1", kind: "right" },
+        { id: "sw2", pos: 36, onTrack: "yd1", divergeTrack: "yd2", kind: "left" },
+      ],
+    });
+    expect(implicitCrossings(ladder)).toEqual([]);
+  });
+
+  it("does not report a track that isn't there — a siding ending short of the throat", () => {
+    const shortSiding: ModuleSchematicDoc = {
+      version: 1,
+      lengthInches: 96,
+      endplates: [
+        { id: "A", tracks: [{ trackId: "main", lane: 0, config: "single" }] },
+        { id: "B", tracks: [{ trackId: "main", lane: 0, config: "single" }] },
+      ],
+      tracks: [
+        { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+        { id: "sid1", role: "siding", lane: 2, fromPos: 0, toPos: 30 },
+        { id: "spur1", role: "spur", lane: 3, fromPos: 60, toPos: 71.5 },
+      ],
+      turnouts: [{ id: "sw1", pos: 60, onTrack: "main", divergeTrack: "spur1", kind: "left" }],
+    };
+    expect(implicitCrossings(shortSiding)).toEqual([]);
   });
 });

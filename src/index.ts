@@ -8636,15 +8636,26 @@ export function divergeSideForHand(
  * module's own extent — so signals near an end read at their real spot, not
  * bunched at an inset (#122).
  */
+/**
+ * The module's length in inches for positional work — the authored figure, or
+ * the furthest feature when a doc hasn't got one.
+ *
+ * ⚠️ ONE DEFINITION ON PURPOSE. Everything that turns an inch position into a
+ * fraction of the module divides by this; a second copy that disagreed would
+ * put two renderings of the same document at different places.
+ */
+function docLengthInches(doc: ModuleSchematicDoc): number {
+  return doc.lengthInches && doc.lengthInches > 0
+    ? doc.lengthInches
+    : Math.max(
+        1,
+        ...doc.tracks.map((t) => Math.max(t.fromPos ?? 0, t.toPos ?? 0)),
+        ...(doc.turnouts ?? []).map((t) => t.pos),
+      );
+}
+
 export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
-  const len =
-    doc.lengthInches && doc.lengthInches > 0
-      ? doc.lengthInches
-      : Math.max(
-          1,
-          ...doc.tracks.map((t) => Math.max(t.fromPos ?? 0, t.toPos ?? 0)),
-          ...(doc.turnouts ?? []).map((t) => t.pos),
-        );
+  const len = docLengthInches(doc);
   const clampFrac = (p: number) => Math.min(1, Math.max(0, p / len));
 
   const trackLane = new Map<string, number>();
@@ -9056,6 +9067,139 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     laneMin: Math.min(...allLanes),
     laneMax: Math.max(...allLanes),
   };
+}
+
+/**
+ * A place where the drawing runs one route straight through another track, and
+ * the document never says a crossing is there.
+ *
+ * A diverging route has to get from its turnout's lane to its own lane, so any
+ * track drawn in a lane BETWEEN those two is physically crossed — that is a
+ * diamond, real trackwork somebody has to build and a dispatcher has to protect.
+ * Today nothing puts it in the document: `crossings` is authored by hand, and
+ * `nextLane` stacks a spur outward from Main 1 without looking at which side
+ * Main 2 is on, so dropping a turnout on Main 1 quietly draws a route across
+ * Main 2 (#FMN-0078, Will 2026-07-30).
+ */
+export interface ImplicitCrossing {
+  /** The turnout whose diverging route does the crossing. */
+  turnoutId: string;
+  /** The diverging route. */
+  trackId: string;
+  /** The track it is drawn through. */
+  crossesTrackId: string;
+  /** The crossed track's DRAWN lane, and the two lanes the route spans. */
+  lane: number;
+  fromLane: number;
+  toLane: number;
+  /** Inches from endplate A of the TURNOUT.
+   *
+   * ⚠️ **NOT the diamond's position.** The crossing lies somewhere between the
+   * turnout and where the route reaches its own lane, and how far that is
+   * depends on the turnout's lead — a measurement the 1-D document does not
+   * carry. Reporting the throat is the most this model honestly knows; naming a
+   * spot for the diamond would be inventing one. */
+  atInches: number;
+}
+
+/**
+ * Every crossing the drawing implies that the document doesn't declare.
+ *
+ * ⭐ **THE LANES COME FROM {@link moduleFeatures}, NOT FROM THE STORED `lane`.**
+ * A track's drawn side is resolved from its turnout's HAND (see `resolveLane`),
+ * so the same stored lane 3 draws above the mains off a left-hand turnout and
+ * below them off a right-hand one — only one of which crosses Main 2. Reading
+ * the resolved lanes back off the feature resolver is what makes this agree with
+ * the picture by construction, rather than by two functions computing the side
+ * the same way and staying in step.
+ *
+ * Deliberately silent about:
+ * - **crossovers** — a connector runs between two adjacent mains, so no track
+ *   lies between them;
+ * - **a double crossover's scissors** — its two connectors cross each other
+ *   inside ONE assembly, which is a part, not a diamond to author (ADR: a double
+ *   crossover is one assembly);
+ * - **ladder rungs** — a yard track hangs off the track one lane in, so nothing
+ *   sits between the two (ELM Yard's mt23/mt24/mt25).
+ *
+ * A crossing already named in `doc.crossings` is declared and never reported;
+ * only the pair of tracks is matched, not the position, because the document
+ * doesn't fix where the diamond sits (see {@link ImplicitCrossing.atInches}).
+ *
+ * ⚠️ **A BRANCH ROUTE CAN CROSS BUT CANNOT BE CROSSED.** A route to a third
+ * endplate leaves at 90°, so it has no lane-parallel body for another route to
+ * pass through and it isn't among the tracks tested. It is still tested as the
+ * crosser — FMN-0068's branch off Main 1 correctly reports crossing Main 2.
+ *
+ * ✅ **Checked against all 32 production documents (2026-07-30): one report,
+ * and it is right.** The throat-coverage rule is what earns that — without it
+ * FMN-0012, FMN-0037 and FMN-0040 all report crossings of track that has not
+ * begun yet at the point the route leaves (a ladder starts each successive
+ * track further along, which is exactly how these were built).
+ */
+export function implicitCrossings(doc: ModuleSchematicDoc): ImplicitCrossing[] {
+  const f = moduleFeatures(doc);
+  const len = docLengthInches(doc);
+  const frac = (inches: number) => Math.min(1, Math.max(0, inches / len));
+
+  // Everything drawn as a lane-parallel track, at the lane it is DRAWN in.
+  // The mains come from the resolver too: Main 2 sits below when the mains are
+  // swapped, and a transition module's Main 2 covers only part of the board.
+  const spans: { id: string; lane: number; fromFrac: number; toFrac: number }[] = [];
+  for (const t of doc.tracks) {
+    if (t.role !== "main") continue;
+    if (t.id === MAIN2_TRACK_ID) {
+      if (f.main2Lane == null) continue;
+      spans.push({
+        id: t.id,
+        lane: f.main2Lane,
+        fromFrac: f.main2Extent?.fromFrac ?? 0,
+        toFrac: f.main2Extent?.toFrac ?? 1,
+      });
+    } else {
+      spans.push({ id: t.id, lane: 0, fromFrac: 0, toFrac: 1 });
+    }
+  }
+  for (const t of f.extraTracks)
+    spans.push({ id: t.id, lane: t.lane, fromFrac: t.fromFrac, toFrac: t.toFrac });
+
+  const declared = (a: string, b: string) =>
+    (doc.crossings ?? []).some(
+      (x) =>
+        (x.tracks?.[0] === a && x.tracks?.[1] === b) ||
+        (x.tracks?.[0] === b && x.tracks?.[1] === a),
+    );
+
+  const drawnById = new Map(f.turnouts.map((t) => [t.id, t]));
+  const out: ImplicitCrossing[] = [];
+  for (const sw of doc.turnouts ?? []) {
+    const drawn = drawnById.get(sw.id);
+    if (!drawn) continue;
+    const lo = Math.min(drawn.onLane, drawn.divergeLane);
+    const hi = Math.max(drawn.onLane, drawn.divergeLane);
+    // Adjacent lanes (or none at all) leave no room for a track in between —
+    // which is exactly why a crossover never reports.
+    if (hi - lo < 2) continue;
+    const at = frac(sw.pos);
+    for (const s of spans) {
+      if (s.id === sw.onTrack || s.id === sw.divergeTrack) continue;
+      if (s.lane <= lo || s.lane >= hi) continue;
+      // The route changes lanes at its throat, so a track that isn't there is
+      // never crossed — a siding that ends short of the turnout is untouched.
+      if (at < Math.min(s.fromFrac, s.toFrac) || at > Math.max(s.fromFrac, s.toFrac)) continue;
+      if (declared(sw.divergeTrack, s.id)) continue;
+      out.push({
+        turnoutId: sw.id,
+        trackId: sw.divergeTrack,
+        crossesTrackId: s.id,
+        lane: s.lane,
+        fromLane: drawn.onLane,
+        toLane: drawn.divergeLane,
+        atInches: sw.pos,
+      });
+    }
+  }
+  return out;
 }
 
 // ---- Endplate geometry & poses (#175) --------------------------------------
