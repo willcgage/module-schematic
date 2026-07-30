@@ -132,6 +132,14 @@ import {
   moduleConversionReport,
   docToGraph,
   genericTurnoutPart,
+  genericCrossingPart,
+  crossingAngleDeg,
+  crossingClearanceHalfInches,
+  CLEARANCE_SPACING_INCHES,
+  partGeometry,
+  partGeometryGap,
+  partExtent,
+  placedJoints,
   crossoverAssembly,
   turnoutOccupiedSpan,
   type ConversionAnswers,
@@ -4873,6 +4881,9 @@ describe("part geometry", () => {
       "atlas-c55-n-flex", "atlas-c55-n-wye", "atlas-c55-n-wye-35",
       "fast-tracks-n-me55-c-6", "fast-tracks-n-me55-c-8",
       "generic-bumper",
+      // ⏳ NO CROSSING APPEARS HERE, and that is deliberate: the geometry is
+      // modelled, but the library ships no diamond until one is measured. A
+      // placeholder's arm length would be a number with nothing behind it.
       // The placeholders for a turnout nobody has identified. Placeable is the
       // truth about them — they can be drawn — and the palette groups them under
       // "Generic" with "(make unknown)" in the name. What they must never be is
@@ -7546,5 +7557,111 @@ describe("implicitCrossings", () => {
       turnouts: [{ id: "sw1", pos: 60, onTrack: "main", divergeTrack: "spur1", kind: "left" }],
     };
     expect(implicitCrossings(shortSiding)).toEqual([]);
+  });
+});
+
+
+describe("crossing geometry (the diamond)", () => {
+  /** A crossing as a real product states it: an angle and an end-to-end length.
+   * ⚠️ Numbers chosen for the test, not measured off anything — the library
+   * ships NO crossing until someone measures one, which is the point. */
+  const measured: TrackPart = {
+    id: "test-crossing-19", manufacturer: "Test", line: "Code 55", scale: "N",
+    name: "19° Crossing", kind: "crossing",
+    actualAngle: { deg: 19, source: "manufacturer" },
+    overallLength: { inches: 2.5, source: "measured" },
+  };
+  const byFrog: TrackPart = {
+    id: "test-crossing-6", manufacturer: "Test", line: "Code 55", scale: "N",
+    name: "#6 Crossing", kind: "crossing",
+    frogNumber: 6,
+    overallLength: { inches: 6, source: "measured" },
+  };
+
+  it("takes its angle from the frog number as atan(1/N), exactly", () => {
+    // The SAME frogSlope = 1/N the rest of the library uses — not a second
+    // definition of what a #6 means.
+    expect(crossingAngleDeg(byFrog)).toBeCloseTo((Math.atan(1 / 6) * 180) / Math.PI, 10);
+    expect(crossingAngleDeg(byFrog)).toBeCloseTo(9.4623, 3);
+  });
+
+  it("prefers a published angle over the frog number", () => {
+    // Atlas and Peco sell a crossing BY its angle; a part that states one is not
+    // second-guessed from a ratio it may not have been built to.
+    expect(crossingAngleDeg({ ...measured, frogNumber: 6 })).toBe(19);
+  });
+
+  it("says what is missing rather than guessing it", () => {
+    const bare: TrackPart = {
+      id: "x", manufacturer: "m", line: "l", scale: "N", name: "n", kind: "crossing",
+    };
+    expect(crossingAngleDeg(bare)).toBeNull();
+    expect(partGeometryGap(bare)).toMatch(/no crossing angle/);
+    expect(partGeometryGap({ ...bare, frogNumber: 6 })).toMatch(/no overall length/);
+    expect(partGeometry(bare)).toBeNull();
+  });
+
+  it("⭐ has FOUR ends and TWO routes that never meet — the definition of a diamond", () => {
+    const g = partGeometry(measured)!;
+    expect(g.joints).toHaveLength(4);
+    expect(g.routes).toEqual([["a1", "a2"], ["b1", "b2"]]);
+    // The falsifier: no route joins the two tracks. A crossover's four ends ARE
+    // joined that way, and that difference is the whole distinction.
+    const joinsTracks = g.routes.some(([p, q]) => p.startsWith("a") !== q.startsWith("a"));
+    expect(joinsTracks).toBe(false);
+    expect(g.joints.every((j) => j.role === "crossingEnd")).toBe(true);
+  });
+
+  it("crosses at the middle, with both routes the same length", () => {
+    const g = partGeometry(measured)!;
+    const L = measured.overallLength!.inches;
+    const by = (id: string) => g.joints.find((j) => j.id === id)!;
+    // Route A along +x from the tie end, as every part in this library is framed.
+    expect(by("a1")).toMatchObject({ x: 0, y: 0 });
+    expect(by("a2")).toMatchObject({ x: L, y: 0 });
+    // Route B is the same length, measured along its own rail...
+    expect(Math.hypot(by("b2").x - by("b1").x, by("b2").y - by("b1").y)).toBeCloseTo(L, 10);
+    // ...and its midpoint is route A's midpoint: they cross where they cross.
+    expect((by("b1").x + by("b2").x) / 2).toBeCloseTo(L / 2, 10);
+    expect((by("b1").y + by("b2").y) / 2).toBeCloseTo(0, 10);
+  });
+
+  it("leaves each end pointing along its own rail", () => {
+    const g = partGeometry(measured)!;
+    const by = (id: string) => g.joints.find((j) => j.id === id)!;
+    expect(by("a1").angleDeg).toBe(180);
+    expect(by("a2").angleDeg).toBe(0);
+    expect(by("b1").angleDeg).toBeCloseTo(199, 10);
+    expect(by("b2").angleDeg).toBeCloseTo(19, 10);
+  });
+
+  it("reports a frog-number angle as DERIVED however well measured the length is", () => {
+    // So a caller can tell "we know this crossing" from "we worked its angle
+    // out from a ratio".
+    expect(partGeometry(byFrog)!.source).toBe("derived");
+    expect(partGeometry(measured)!.source).toBe("manufacturer");
+  });
+
+  it("places into the graph like any other piece", () => {
+    const library = [...BUILT_IN_TRACK_PARTS, measured];
+    const joints = placedJoints(
+      [{ id: "x1", partId: measured.id, x: 10, y: 4, rotationDeg: 90 }],
+      library,
+    );
+    expect(joints).toHaveLength(4);
+    const a1 = joints.find((j) => j.joint === "a1")!;
+    const a2 = joints.find((j) => j.joint === "a2")!;
+    expect(a1.x).toBeCloseTo(10, 10);
+    expect(a1.y).toBeCloseTo(4, 10);
+    // Turned 90°, route A runs up the board rather than along it.
+    expect(a2.x).toBeCloseTo(10, 10);
+    expect(a2.y).toBeCloseTo(4 + measured.overallLength!.inches, 10);
+  });
+
+  it("⛔ ships no generic diamond — a placeholder's arm would be a made-up number", () => {
+    // A placeholder turnout interpolates from turnouts we HAVE measured; there
+    // is no measured crossing to interpolate from. See the note by
+    // GENERIC_TURNOUTS: angle is geometry, everything else is tooling.
+    expect(BUILT_IN_TRACK_PARTS.filter((p) => p.kind === "crossing")).toEqual([]);
   });
 });

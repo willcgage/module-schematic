@@ -4278,6 +4278,22 @@ export const GENERIC_TURNOUTS: TrackPart[] = GENERIC_TURNOUT_FROG_NUMBERS.map((n
   genericTurnoutPart(n),
 );
 
+/**
+ * ⏳ **THERE IS DELIBERATELY NO GENERIC DIAMOND.** A placeholder turnout works
+ * because its guessed numbers are interpolated from turnouts we HAVE measured;
+ * there is no measured crossing to interpolate from, so a placeholder's arm
+ * length would be a number with nothing behind it. Every candidate rule was
+ * tried and each models a TOOLING decision, which this library forbids in as
+ * many words (see {@link ATLAS_CODE55_N}: *"Angle is geometry; everything else
+ * is a tooling decision. Measure the part. Do not model it."*) — running the arm
+ * out to the clearance point gives a #6 a 13.7″ body when the real part is about
+ * 2.5″, and real shallow crossings end while their ties still interlace, so no
+ * clearance rule reproduces one.
+ *
+ * Will chose to measure a real one instead (2026-07-30). A crossing becomes
+ * placeable the moment a part carries an angle and an end-to-end length.
+ */
+
 /** Parts that stand in for one nobody has identified — offered only where an
  * owner is being asked what something is, and never mixed in with real products
  * as though they were equivalent. */
@@ -5449,7 +5465,12 @@ export type PartJointRole =
    * A double crossover has four, and none of them is a throat: every end is
    * both a straight route and a crossing route, which is exactly why it is one
    * moulding and not four turnouts. */
-  | "crossoverEnd";
+  | "crossoverEnd"
+  /** An end of one of the two routes through a CROSSING (a diamond). Four of
+   * them, and — unlike a crossover's — no route joins one pair to the other:
+   * the two tracks cross, and a train cannot change between them. That absence
+   * is the whole definition of a diamond. */
+  | "crossingEnd";
 
 /** One end of a part, in part-local inches: `x` along the through route from
  * the tie end, `y` lateral toward the diverging side, `angleDeg` the OUTWARD
@@ -5572,6 +5593,29 @@ function weakestOf(...ds: (PartDimension | undefined)[]): DimensionSource {
  * backlog in machine-readable form: every string this returns is a measurement
  * someone could take.
  */
+/**
+ * How steeply a crossing's two tracks cross, in degrees — or null when the part
+ * doesn't say.
+ *
+ * ⭐ **THE ANGLE IS A CROSSING'S ENTIRE GEOMETRY.** A turnout needs a lead, a
+ * points offset and a frog offset because it has a moving path through it; a
+ * diamond is two straight tracks and the angle between them. Everything else
+ * about the part — how much tie strip is moulded on — is packaging.
+ *
+ * Both trade conventions are accepted, because both are how these are sold:
+ * Atlas and Peco sell a crossing by its **angle** ("19° crossing"), Fast Tracks
+ * build one by **frog number**. A published angle wins; otherwise it comes from
+ * the frog number as `atan(1/N)` — {@link turnoutClosure}'s `frogSlope = 1/N`,
+ * the same definition the rest of the library uses. Deriving it a second way
+ * here would be how the two drift apart.
+ */
+export function crossingAngleDeg(part: TrackPart): number | null {
+  if (part.actualAngle) return part.actualAngle.deg;
+  const n = part.frogNumber;
+  if (n == null || !(n > 0)) return null;
+  return (Math.atan(1 / n) * 180) / Math.PI;
+}
+
 export function partGeometryGap(part: TrackPart): string | null {
   if (part.kind === "flex") return null;
   // ⭐ A BUMPER NEEDS NO MEASUREMENT TO BE PLACEABLE. Its job is to say that an
@@ -5597,7 +5641,13 @@ export function partGeometryGap(part: TrackPart): string | null {
     if (part.frogNumber == null) return "no frog number — the crossing angle is unknown";
     return null;
   }
-  if (part.kind === "crossing") return "crossing geometry is not modelled yet";
+  if (part.kind === "crossing") {
+    if (crossingAngleDeg(part) == null)
+      return "no crossing angle — nothing says how steeply the two tracks cross";
+    if (!part.overallLength)
+      return "no overall length — the part has no ends to put joints on";
+    return null;
+  }
   if (part.kind === "curved-turnout")
     return "a curved turnout needs both radii AND its points/frog landmarks; only the radii are published";
   if (!part.pointsOffset)
@@ -5702,6 +5752,47 @@ export function partGeometry(
         ["a2", "b1"],
       ],
       source: weakestOf(part.overallLength, part.trackSpacing),
+      divergingEndMeasured: false,
+    };
+  }
+
+  if (part.kind === "crossing") {
+    // ⭐⭐ FOUR ENDS, TWO ROUTES, AND THEY DO NOT MEET. A crossover's four ends
+    // are joined by four routes because a train can change tracks there; here
+    // the two routes share a point on the drawing and nothing else. A diamond
+    // is defined by what it does NOT connect, so the routes list is where that
+    // fact lives — and the walk gets it for free: arriving on one route, the
+    // only way on is the far end of that same route.
+    const theta = crossingAngleDeg(part)!;
+    const rad = (theta * Math.PI) / 180;
+    // Length is measured ALONG A ROUTE, as every length in this library is —
+    // never a bounding box. ⚠️ A symmetric moulding is assumed: the tracks
+    // cross at the middle and both routes are the same length. Every crossing
+    // sold is symmetric; an asymmetric one would need its own dimension rather
+    // than a fudge here, and would announce itself by not fitting.
+    const L = part.overallLength!.inches;
+    const half = L / 2;
+    const cx = half;
+    const dx = half * Math.cos(rad);
+    const dy = half * Math.sin(rad);
+    return {
+      joints: [
+        { id: "a1", role: "crossingEnd", x: 0, y: 0, angleDeg: 180 },
+        { id: "a2", role: "crossingEnd", x: L, y: 0, angleDeg: 0 },
+        { id: "b1", role: "crossingEnd", x: cx - dx, y: -dy, angleDeg: norm360(180 + theta) },
+        { id: "b2", role: "crossingEnd", x: cx + dx, y: dy, angleDeg: norm360(theta) },
+      ],
+      routes: [
+        ["a1", "a2"],
+        ["b1", "b2"],
+      ],
+      // An angle taken off the frog number is DERIVED, however well measured the
+      // length is — so a caller can still tell "we know this crossing" from "we
+      // worked its angle out from a ratio".
+      source: weakestOf(part.overallLength, {
+        inches: 0,
+        source: part.actualAngle?.source ?? "derived",
+      }),
       divergingEndMeasured: false,
     };
   }
@@ -7672,11 +7763,19 @@ export function moduleConversionReport(
   // ⚠️ BLOCKERS ARE NOT QUESTIONS. A question has an answer the owner can give;
   // these are shapes the piece model cannot express at all yet, so the offer is
   // withheld rather than made and then abandoned half way.
+  // ⏳ A CROSSING IS NOW HALF A QUESTION, AND STILL LISTED HERE. The piece model
+  // CAN express a diamond ({@link partGeometry}, {@link genericCrossingPart}),
+  // so the old reason — "not modelled yet" — stopped being true. What is missing
+  // is the ANGLE: a 1-D `crossings` entry records the two tracks and a position
+  // and never says how steeply they cross, and by the rule above that is an
+  // answer an owner could give. Until the questionnaire asks it, converting
+  // would have to pick an angle on their behalf, so the offer is still withheld
+  // — but for the honest reason.
   for (const c of doc.crossings ?? [])
     blockers.push({
       kind: "crossing",
       ref: c.id,
-      why: "crossing geometry is not modelled yet, so a diamond has no piece to become",
+      why: "the document doesn't say what angle these tracks cross at, and nothing may choose one for you",
     });
   if (doc.loop)
     blockers.push({
