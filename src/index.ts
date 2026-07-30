@@ -600,6 +600,29 @@ export interface BenchworkPoint {
   x: number;
   y: number;
   bulge?: number;
+  /**
+   * A SECOND bend on the same edge, at its far end — which turns one edge from a
+   * single arc into an **S**.
+   *
+   * ⭐ **BECAUSE THAT IS WHAT FLEX TRACK IS FOR** (Will, 2026-07-30). A length of
+   * flex is most often used to step a route across to a line parallel to the one
+   * it left — out of a turnout and into its lane, around an obstruction and back.
+   * That shape needs curvature in BOTH directions, and one `bulge` is one
+   * circular arc, so a single edge could never draw it. This type came from
+   * benchwork OUTLINES, where a polygon of straight edges with the odd arc is
+   * exactly right; track is not a polygon.
+   *
+   * `bulge` bows the first half of the edge, `bulgeEnd` the second, both signed
+   * the same way (+ to the left of the P→next direction). **Equal and opposite
+   * gives the S**; equal and alike gives a bow that matches what `bulge` alone
+   * always drew.
+   *
+   * ⚠️ **OPTIONAL, AND ABSENT MEANS EXACTLY WHAT IT USED TO.** Omit it and the
+   * edge is the same circular arc as before, sampled by the same code — so every
+   * stored document, every benchwork outline and every consumer keeps its current
+   * shape with nothing to migrate.
+   */
+  bulgeEnd?: number;
 }
 
 /** NB: a module has NO compass direction of its own, deliberately. It has ends
@@ -845,13 +868,50 @@ export function samplePath(
     const p1 = pts[i + 1];
     out.push({ x: p0.x, y: p0.y });
     const bulge = p0.bulge ?? 0;
-    if (!bulge) continue; // straight edge
+    const bulgeEnd = p0.bulgeEnd;
+    if (!bulge && !bulgeEnd) continue; // straight edge
     const dx = p1.x - p0.x;
     const dy = p1.y - p0.y;
     const c = Math.hypot(dx, dy);
     if (c < 1e-6) continue;
     const nx = -dy / c;
     const ny = dx / c;
+    if (bulgeEnd != null) {
+      /**
+       * TWO BENDS ON ONE EDGE — a cubic whose controls sit a third and two
+       * thirds along, pushed out by each end's own bulge. Opposite signs give
+       * the S a length of flex actually makes; matching signs give a bow.
+       *
+       * ⭐ **`bulge` KEEPS ITS MEANING.** The 4/3 is not a fudge: a symmetric
+       * cubic with both controls offset by `h` bows `3h/4` at its middle, so
+       * `h = 4·bulge/3` makes an edge with `bulgeEnd === bulge` bow by `bulge`
+       * — the same distance the circular arc below has always bowed. One
+       * number, one meaning, whichever branch draws it.
+       *
+       * ⭐ **AND IT IS SMOOTH FOR *ANY* PAIR OF BENDS.** An S could always be
+       * faked with a middle vertex and two opposing arcs — but measured, that
+       * is smooth at exactly ONE configuration: equal chords with equal and
+       * opposite bulges (1.5° at the join). Move either handle off that and a
+       * corner appears — bulges 1/−2 turn 29.9° at the join, chords 4+8 turn
+       * 24.5°, and two bends the SAME way turn 72°. Nobody dragging by hand
+       * lands on the one symmetric case, so the two-arc S was a corner in
+       * practice. A cubic has no join to kink.
+       */
+      const k = 4 / 3;
+      const cx1 = p0.x + dx / 3 + nx * bulge * k;
+      const cy1 = p0.y + dy / 3 + ny * bulge * k;
+      const cx2 = p0.x + (dx * 2) / 3 + nx * bulgeEnd * k;
+      const cy2 = p0.y + (dy * 2) / 3 + ny * bulgeEnd * k;
+      for (let s = 1; s < segsPerArc; s++) {
+        const t = s / segsPerArc;
+        const u = 1 - t;
+        out.push({
+          x: u * u * u * p0.x + 3 * u * u * t * cx1 + 3 * u * t * t * cx2 + t * t * t * p1.x,
+          y: u * u * u * p0.y + 3 * u * u * t * cy1 + 3 * u * t * t * cy2 + t * t * t * p1.y,
+        });
+      }
+      continue;
+    }
     const mid = { x: (p0.x + p1.x) / 2 + nx * bulge, y: (p0.y + p1.y) / 2 + ny * bulge };
     const circ = circleThrough(p0, mid, p1);
     if (!circ) continue;
@@ -897,6 +957,11 @@ export function trackPath(
       x: p.x,
       y: p.y,
       ...(Number.isFinite(p.bulge) && p.bulge ? { bulge: p.bulge } : {}),
+      // ⚠️ KEPT EVEN WHEN ZERO, unlike `bulge`. A zero `bulgeEnd` is not the
+      // same statement as no `bulgeEnd`: it says this edge's far half is
+      // deliberately straight — half of an S whose other half bends — and
+      // dropping it would turn that edge back into a plain circular arc.
+      ...(Number.isFinite(p.bulgeEnd) ? { bulgeEnd: p.bulgeEnd } : {}),
     }));
   return pts.length >= 2 ? pts : null;
 }
