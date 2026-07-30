@@ -1475,6 +1475,52 @@ describe("editor state machine", () => {
     expect(state.turnouts[0].pos).toBe(Math.round(216 * (396 / 432))); // 198
   });
 
+  it("docToState keeps THOUSANDTHS when nothing is rescaled (#220)", () => {
+    // The real numbers off FMN-0078: a scissors crossover's frogs, derived by
+    // the package itself at 40.104 / 42.396. Opening the module rounded them to
+    // 40.1 / 42.4 and the editor's autosave wrote that back — the app could not
+    // hold a number it had computed. Same length in and out ⇒ nothing to absorb.
+    const doc = stateToDoc(
+      {
+        ...emptyEditorState(96),
+        turnouts: [
+          { id: "sw1", name: "", pos: 40.104, onTrack: "main", divergeTrack: "xoA", kind: "left" },
+          { id: "sw2", name: "", pos: 42.396, onTrack: "main", divergeTrack: "xoB", kind: "right" },
+        ],
+        extraTracks: [
+          // `moduleTrackId: null` explicitly — an un-adopted track reads back as
+          // null, and leaving it off would fail the whole-doc comparison below
+          // for a reason that has nothing to do with precision.
+          { id: "xoA", role: "crossover", lane: 1, fromPos: 40.104, toPos: 42.396, moduleTrackId: null },
+        ],
+      } as EditorState,
+      "M",
+    );
+    const back = docToState(doc, 96);
+    expect(back.turnouts.map((t) => t.pos)).toEqual([40.104, 42.396]);
+    const xo = back.extraTracks.find((t) => t.id === "xoA");
+    expect(xo?.fromPos).toBe(40.104);
+    expect(xo?.toPos).toBe(42.396);
+    // ⭐ The property that matters, not just the two numbers: the document that
+    // comes back out is the one that went in. A save can then never degrade it.
+    expect(stateToDoc(back, "M")).toEqual(doc);
+  });
+
+  it("docToState still rounds to hundredths when it DOES rescale (#220)", () => {
+    // The guard keeps its job — 100.004 × (48/96) = 50.002, float noise from a
+    // real multiply, and that is what hundredths are for.
+    const doc = stateToDoc(
+      {
+        ...emptyEditorState(96),
+        turnouts: [
+          { id: "sw1", name: "", pos: 100.004, onTrack: "main", divergeTrack: "x", kind: "right" },
+        ],
+      } as EditorState,
+      "M",
+    );
+    expect(docToState(doc, 48).turnouts[0].pos).toBe(50);
+  });
+
   it("docToState adopts module_tracks not yet in the doc", () => {
     const doc = stateToDoc(emptyEditorState(240), "M");
     const state = docToState(doc, 240, [

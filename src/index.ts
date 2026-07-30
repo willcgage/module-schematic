@@ -2855,8 +2855,21 @@ export function docToState(
   // back over the owner's measurement. #132 asks owners to type positions taken
   // off XTrkCAD to the tenth, so this was destroying exactly the precision we
   // requested (and left the editor disagreeing with every raw-doc renderer by up
-  // to half an inch). Hundredths still absorb float noise from a real rescale.
-  const sc = (p: number) => Math.round(p * scale * 100) / 100;
+  // to half an inch).
+  //
+  // ⭐⭐ AND WHEN NOTHING IS BEING RESCALED, DON'T TOUCH THE NUMBER AT ALL (#220).
+  // The rounding is a guard against float noise *from the multiply*, so it has a
+  // job only when `scale !== 1`. At `scale === 1` there is no noise to absorb and
+  // `p * 1` is exactly `p`, so rounding is pure loss — and because the editor
+  // autosaves, that loss is written back. It cost FMN-0078 its crossover: the
+  // app's own derived frog positions carry THOUSANDTHS (40.104 / 42.396, from
+  // {@link crossoverAssembly}), so opening the module rewrote them as 40.1 /
+  // 42.4. An app that cannot hold a number it computed itself will keep
+  // disagreeing with its own geometry, one save at a time.
+  //
+  // ⚠️ `scale` is `len / docLen`, so equal lengths give EXACTLY 1 — this is an
+  // identity test on the multiply, not a tolerance on the positions.
+  const sc = (p: number) => (scale === 1 ? p : Math.round(p * scale * 100) / 100);
 
   const nameOf = (id: number | null | undefined): string => {
     const mt = id != null ? moduleTracks.find((m) => m.id === id) : undefined;
