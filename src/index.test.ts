@@ -7665,3 +7665,119 @@ describe("crossing geometry (the diamond)", () => {
     expect(BUILT_IN_TRACK_PARTS.filter((p) => p.kind === "crossing")).toEqual([]);
   });
 });
+
+describe("a second bend on one edge — the S a length of flex makes", () => {
+  const chord: BenchworkPoint[] = [{ x: 0, y: 0 }, { x: 12, y: 0 }];
+  const offAxis = (pts: { x: number; y: number }[]) => pts.map((p) => p.y);
+
+  it("⛔ absent bulgeEnd draws EXACTLY what it always drew", () => {
+    // The regression that matters: every stored document and benchwork outline
+    // keeps its shape, sampled by the same branch as before.
+    const arc = samplePath([{ x: 0, y: 0, bulge: 2 }, { x: 12, y: 0 }]);
+    expect(arc.length).toBeGreaterThan(2);
+    // A circular arc through (0,0) and (12,0) bowing 2 at the middle.
+    const mid = arc[Math.floor(arc.length / 2)];
+    expect(mid.x).toBeCloseTo(6, 6);
+    expect(Math.abs(mid.y)).toBeCloseTo(2, 6);
+  });
+
+  it("bows the same distance as the arc when both bends match", () => {
+    // `bulge` must not change meaning depending on which branch draws it.
+    const cubic = samplePath([{ x: 0, y: 0, bulge: 2, bulgeEnd: 2 }, { x: 12, y: 0 }]);
+    const mid = cubic[Math.floor(cubic.length / 2)];
+    expect(mid.x).toBeCloseTo(6, 6);
+    expect(Math.abs(mid.y)).toBeCloseTo(2, 6);
+  });
+
+  it("⭐ equal and opposite bends give an S — it crosses the chord in the middle", () => {
+    const s = samplePath([{ x: 0, y: 0, bulge: 2, bulgeEnd: -2 }, { x: 12, y: 0 }]);
+    const ys = offAxis(s);
+    // Crosses at the midpoint...
+    const mid = s[Math.floor(s.length / 2)];
+    expect(mid.x).toBeCloseTo(6, 6);
+    expect(mid.y).toBeCloseTo(0, 6);
+    // ...and the two halves lie on OPPOSITE sides, which is the whole point.
+    const firstHalf = ys.slice(1, Math.floor(ys.length / 2));
+    const secondHalf = ys.slice(Math.floor(ys.length / 2) + 1, -1);
+    expect(Math.min(...firstHalf)).toBeGreaterThan(0);
+    expect(Math.max(...secondHalf)).toBeLessThan(0);
+  });
+
+  it("⭐ has no corner in it, where two arcs stuck together do", () => {
+    /**
+     * The reason the S is ONE edge and not two.
+     *
+     * An absolute threshold would only measure how finely the curve is sampled,
+     * so this measures the SHAPE of the turning instead: on a smooth curve every
+     * vertex turns by about the same amount, and a corner is one vertex turning
+     * far more than its neighbours. `max / mean` says which you have.
+     */
+    const turns = (pts: { x: number; y: number }[]) => {
+      const out: number[] = [];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const a = Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x);
+        const b = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
+        out.push(Math.abs(((b - a) * 180) / Math.PI));
+      }
+      return out;
+    };
+    const peak = (pts: { x: number; y: number }[]) => {
+      const t = turns(pts);
+      const mean = t.reduce((a, b) => a + b, 0) / t.length;
+      return Math.max(...t) / mean;
+    };
+
+    // ⚠️ MEASURED, NOT ASSUMED. Two opposing arcs are NOT automatically kinked:
+    // over equal chords with equal and opposite bulges they meet at mirrored
+    // tangents and are perfectly smooth. That is the one configuration where
+    // the old model could draw an S properly.
+    const symmetric = samplePath(
+      [{ x: 0, y: 0, bulge: 1 }, { x: 6, y: 0, bulge: -1 }, { x: 12, y: 0 }],
+      48,
+    );
+    expect(peak(symmetric)).toBeLessThan(2);
+
+    // ⭐ But it is the ONLY one, and it is not a shape a hand-drag lands on.
+    // Move either handle off it and a real corner appears at the join.
+    const unevenBulges = samplePath(
+      [{ x: 0, y: 0, bulge: 1 }, { x: 6, y: 0, bulge: -2 }, { x: 12, y: 0 }],
+      48,
+    );
+    const unevenChords = samplePath(
+      [{ x: 0, y: 0, bulge: 1 }, { x: 4, y: 0, bulge: -1 }, { x: 12, y: 0 }],
+      48,
+    );
+    expect(peak(unevenBulges)).toBeGreaterThan(8);
+    expect(peak(unevenChords)).toBeGreaterThan(8);
+
+    // ⭐ One edge with two bends stays smooth at ANY pair of values, which is
+    // the property that makes it worth having rather than the S itself.
+    for (const [b1, b2] of [[2, -2], [1, -2], [3, -0.5], [2, 2], [0.5, -3]]) {
+      const cubic = samplePath([{ x: 0, y: 0, bulge: b1, bulgeEnd: b2 }, { x: 12, y: 0 }], 48);
+      expect(peak(cubic), `bulge ${b1}/${b2}`).toBeLessThan(2);
+    }
+  });
+
+  it("a straight edge is still straight, and a zero far bend still bends near", () => {
+    expect(samplePath(chord)).toEqual([{ x: 0, y: 0 }, { x: 12, y: 0 }]);
+    // ⚠️ bulgeEnd: 0 is a STATEMENT — this half is straight — not an absence.
+    const half = samplePath([{ x: 0, y: 0, bulge: 2, bulgeEnd: 0 }, { x: 12, y: 0 }]);
+    const ys = offAxis(half);
+    expect(Math.max(...ys)).toBeGreaterThan(0.5); // it bends near the start
+    expect(ys[ys.length - 1]).toBeCloseTo(0, 6); // and arrives flat
+  });
+
+  it("survives the round trip through trackPath, zero included", () => {
+    const kept = trackPath([{ x: 0, y: 0, bulge: 1, bulgeEnd: -1 }, { x: 10, y: 0 }])!;
+    expect(kept[0]).toMatchObject({ bulge: 1, bulgeEnd: -1 });
+    const zero = trackPath([{ x: 0, y: 0, bulge: 1, bulgeEnd: 0 }, { x: 10, y: 0 }])!;
+    expect(zero[0]).toHaveProperty("bulgeEnd", 0);
+  });
+
+  it("measures an S by its real length, not its chord", () => {
+    const straight = pathLengthInches(chord);
+    const s = pathLengthInches([{ x: 0, y: 0, bulge: 2, bulgeEnd: -2 }, { x: 12, y: 0 }]);
+    expect(straight).toBeCloseTo(12, 6);
+    expect(s).toBeGreaterThan(12.3); // the flex you cut is longer than the gap
+  });
+});
