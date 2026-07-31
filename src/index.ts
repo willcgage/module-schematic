@@ -5628,6 +5628,24 @@ export function crossoverAssembly(part: TrackPart): {
   approachInches: number;
   /** Where the four point-sets sit along the assembly. */
   pointsAtInches: [number, number];
+  /**
+   * Points → frog along the track, for ONE point-set.
+   *
+   * ⭐ **THE FROG IS ONE GAUGE OF LATERAL IN FROM THE POINTS**, where the two
+   * inner rails actually cross. At slope tan θ that is `gauge / tan θ` along the
+   * track — 2.124″ on a #6, i.e. `gauge × N` for a true 1:N frog. This is the
+   * number that makes frog-to-frog `(spacing − 2×gauge) / tan θ` rather than the
+   * crossing run, and it is the SAME relationship {@link turnoutClosure} already
+   * models for a single turnout.
+   *
+   * ⚠️ It exists because a crossover's turnouts are NOT generic turnouts: a
+   * document's `pos` marks a frog (#132), so anything drawing the diverging rail
+   * has to start it here and not at a per-frog formula's lead.
+   */
+  pointsToFrogInches: number;
+  /** Where the four FROGS sit along the assembly — what a document's turnout
+   * `pos` values must agree with, since `pos` IS the frog. */
+  frogsAtInches: [number, number];
   /** The X where the two crossing routes meet — a real diamond in the middle. */
   scissorsAtInches: number;
 } | null {
@@ -5644,12 +5662,18 @@ export function crossoverAssembly(part: TrackPart): {
   const crossingRunInches = spacing / tan;
   const mid = lengthInches / 2;
   const half = crossingRunInches / 2;
+  // One gauge of lateral, taken at the frog angle — see `pointsToFrogInches`.
+  const pointsToFrogInches = RAIL_GAUGE_INCHES / tan;
   return {
     lengthInches,
     spacingInches: spacing,
     crossingRunInches,
     approachInches: mid - half,
     pointsAtInches: [mid - half, mid + half],
+    pointsToFrogInches,
+    // Each frog sits INSIDE its own point-set, so the pair closes toward the
+    // scissors — which is why frog-to-frog is shorter than the crossing run.
+    frogsAtInches: [mid - half + pointsToFrogInches, mid + half - pointsToFrogInches],
     scissorsAtInches: mid,
   };
 }

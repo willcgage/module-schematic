@@ -7015,6 +7015,44 @@ describe("a double crossover is one assembly", () => {
     expect(a.pointsAtInches[0]).toBeCloseTo(1.764, 3);
   });
 
+  // ⭐ The frog is ONE GAUGE of lateral in from the points, so it sits INSIDE
+  // the point-set and the pair closes toward the scissors. This is the number a
+  // renderer needs: `pos` marks a frog, so a diverging rail drawn from a generic
+  // per-frog lead starts in the wrong place and never meets the assembly.
+  it("puts each frog one gauge inside its point-set (#FMN-0078)", () => {
+    const a = crossoverAssembly(six())!;
+    // ⚠️ 2.1245″, not exactly `gauge × N` = 2.124″ — this part publishes its own
+    // MEASURED angle, which is a hair off a true 1:6, and the derivation uses it.
+    // That is the point of `gauge / tan θ`: it follows the product, not the ratio.
+    expect(a.pointsToFrogInches).toBeCloseTo(0.354 * 6, 2);
+    expect(a.pointsToFrogInches).toBeCloseTo(
+      0.354 / (a.spacingInches / a.crossingRunInches),
+      9,
+    );
+    expect(a.frogsAtInches[0]).toBeCloseTo(a.pointsAtInches[0] + a.pointsToFrogInches, 6);
+    expect(a.frogsAtInches[1]).toBeCloseTo(a.pointsAtInches[1] - a.pointsToFrogInches, 6);
+    // ⭐ Frog-to-frog is the crossing run less a gauge at EACH end — the #197
+    // formula, reached a second, independent way.
+    expect(a.frogsAtInches[1] - a.frogsAtInches[0]).toBeCloseTo(
+      (a.spacingInches - 2 * 0.354) / (a.spacingInches / a.crossingRunInches),
+      9,
+    );
+    // The real fixture: FMN-0078 centres this assembly on 41.25″, and its four
+    // turnouts are authored at 40.104 / 42.396. Those must BE the frogs.
+    const centre = 41.25;
+    const start = centre - a.lengthInches / 2;
+    expect(start + a.frogsAtInches[0]).toBeCloseTo(40.104, 2);
+    expect(start + a.frogsAtInches[1]).toBeCloseTo(42.396, 2);
+    // …and the point-sets are what the fixture's connector path already carries.
+    expect(start + a.pointsAtInches[0]).toBeCloseTo(37.98, 2);
+    expect(start + a.pointsAtInches[1]).toBeCloseTo(44.52, 2);
+    // The scissors sits midway between the frogs, so each leg is half the run.
+    expect(a.scissorsAtInches - a.frogsAtInches[0]).toBeCloseTo(
+      a.frogsAtInches[1] - a.scissorsAtInches,
+      6,
+    );
+  });
+
   // ⚠️ Drawn as a chord, the rail would leave the railhead for most of the
   // assembly and the X would land nowhere near the middle — the sectional-curve
   // mistake arriving by another door.
