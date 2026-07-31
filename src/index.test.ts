@@ -1811,6 +1811,61 @@ describe("endplate poses (#175)", () => {
     expect(partExtent(p)).toBeNull();
   });
 
+  it("takes a MANUFACTURER's published figures, but never a derived one", () => {
+    // Will, 2026-07-31: "For fast tracks, run with the default." A maker's own
+    // spec is not a guess — Fast Tracks publish to two decimals and build to true
+    // frog ratios. A DERIVED offset is a formula wearing a measurement's clothes,
+    // and that is what this rule was written against; only its scope changed.
+    const base = {
+      id: "probe", manufacturer: "Fast Tracks", line: "Code 55", scale: "N" as const,
+      name: "#6", kind: "turnout" as const, frogNumber: 6,
+    };
+    const published = partExtent({
+      ...base,
+      pointsOffset: { inches: 1.2, source: "manufacturer" },
+      overallLength: { inches: 6.26, source: "manufacturer" },
+    });
+    expect(published).toMatchObject({ behindPoints: 1.2, aheadOfPoints: 6.26 - 1.2 });
+
+    // One published + one measured is fine — the pair is what matters, not a
+    // single provenance for both.
+    expect(
+      partExtent({
+        ...base,
+        pointsOffset: { inches: 1.2, source: "measured" },
+        overallLength: { inches: 6.26, source: "manufacturer" },
+      }),
+    ).not.toBeNull();
+
+    for (const bad of ["derived", "unverified"] as const)
+      expect(
+        partExtent({
+          ...base,
+          pointsOffset: { inches: 1.2, source: bad },
+          overallLength: { inches: 6.26, source: "manufacturer" },
+        }),
+        `${bad} must not earn a body`,
+      ).toBeNull();
+  });
+
+  it("...and that relaxation changes NOTHING in the shipped library today", () => {
+    // ⭐ The blast radius, pinned. Every Fast Tracks part publishes an overall
+    // length but NOT ONE publishes a pointsOffset, so none of them gains a body
+    // from this — a single points-offset reading is still what completes them.
+    // The generic turnouts are `derived` and must stay refused.
+    const turnouts = BUILT_IN_TRACK_PARTS.filter((p) => p.frogNumber != null);
+    const withExtent = turnouts.filter((p) => partExtent(p) !== null).map((p) => p.id);
+    expect(withExtent).toEqual([
+      "atlas-c55-n-5",
+      "atlas-c55-n-7",
+      "atlas-c55-n-10",
+      "atlas-c55-n-wye",
+      "atlas-c55-n-wye-35",
+    ]);
+    expect(turnouts.filter((p) => p.id.startsWith("fast-tracks")).every((p) => partExtent(p) === null)).toBe(true);
+    expect(turnouts.filter((p) => p.id.startsWith("generic")).every((p) => partExtent(p) === null)).toBe(true);
+  });
+
   it("carries divergingLength through the stored round-trip", () => {
     const merged = mergeStoredParts([
       {
