@@ -4789,18 +4789,38 @@ export interface PartExtent {
  * a guess into a drawing that says "this is where your turnout ends".
  */
 export function partExtent(part: TrackPart | null | undefined): PartExtent | null {
+  /**
+   * ⭐ A MANUFACTURER'S PUBLISHED FIGURE COUNTS; A DERIVED ONE STILL DOES NOT
+   * (Will, 2026-07-31: *"For fast tracks, run with the default."*).
+   *
+   * The rule this replaces demanded `measured` for everything, and it was
+   * written against `derived` — a per-frog formula laundered into a drawing that
+   * asserts "your turnout ends HERE". A maker's own spec is not that: Fast Tracks
+   * publish to two decimals and build to TRUE frog ratios, which is a better
+   * number than most tape measures give.
+   *
+   * ⚠️ `derived` and `unverified` are still refused, so the generic turnouts —
+   * whose offsets are a formula — keep drawing no tie strip and no rail joints.
+   * That distinction is the whole point of the rule; only its scope changed.
+   *
+   * ⚠️ ON ITS OWN THIS UNBLOCKS NOTHING, and that is worth knowing rather than
+   * discovering: not one of the 16 Fast Tracks parts publishes a `pointsOffset`,
+   * so they still return null here. What it does is halve what has to be
+   * measured — a single points-offset reading now completes a part, because its
+   * overall length is already published.
+   */
+  const usable = (d: PartDimension | undefined | null): d is PartDimension =>
+    !!d && (d.source === "measured" || d.source === "manufacturer");
   const pts = part?.pointsOffset;
   const overall = part?.overallLength;
-  if (!pts || !overall) return null;
-  if (pts.source !== "measured" || overall.source !== "measured") return null;
+  if (!usable(pts) || !usable(overall)) return null;
   const frog = part?.frogOffset;
   const aheadOfPoints = overall.inches - pts.inches;
-  const frogMeasured = frog && frog.source === "measured";
   return {
     behindPoints: pts.inches,
     aheadOfPoints,
-    pastFrog: frogMeasured ? overall.inches - frog.inches : aheadOfPoints,
-    behindFrog: frogMeasured ? frog.inches : pts.inches,
+    pastFrog: usable(frog) ? overall.inches - frog.inches : aheadOfPoints,
+    behindFrog: usable(frog) ? frog.inches : pts.inches,
   };
 }
 
