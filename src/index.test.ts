@@ -42,6 +42,8 @@ import {
   samplePath,
   pathLengthInches,
   measuredAlongPath,
+  turnoutDivergingLeg,
+  RAIL_GAUGE_INCHES,
   trackPath,
   carCapacity,
   N_CAR_LENGTH_INCHES,
@@ -7931,3 +7933,104 @@ describe("a second bend on one edge — the S a length of flex makes", () => {
     expect(s).toBeGreaterThan(12.3); // the flex you cut is longer than the gap
   });
 });
+
+// ── A turnout's diverging leg, lifted out of the canvas (#226) ────────────────
+describe("turnoutDivergingLeg", () => {
+  /** A straight main along +x, normals pointing +y — the simplest honest host. */
+  const straightHost = (rel: number) => ({ x: rel, y: 0, nx: 0, ny: 1 });
+
+  /**
+   * ⭐ PINNED TO WHAT THE CANVAS ACTUALLY DREW. These are read off FMN-0068's
+   * rendered SVG on production (web v0.57.1) for `sw2` — a #6 at pos 27.8 facing
+   * west — before the geometry was lifted. If the lift changed the drawing, these
+   * numbers move; that is the whole point of writing them down.
+   */
+  const sw2 = () =>
+    turnoutDivergingLeg({
+      sampleAt: straightHost,
+      relFrogInches: 27.8,
+      toward: -1,
+      side: 1,
+      size: 6,
+    });
+
+  it("puts the throat a lead back from the frog, at the drawn 3.296875″", () => {
+    expect(sw2().leadInches).toBeCloseTo(3.296875, 9);
+    expect(sw2().points[0].x).toBeCloseTo(31.096875, 9);
+  });
+
+  it("ends the rail a past-frog beyond, at the drawn 26.284375″", () => {
+    const leg = sw2();
+    expect(leg.pastFrogInches).toBeCloseTo(1.515625, 9);
+    expect(leg.railEnd.x).toBeCloseTo(26.284375, 9);
+    // The lateral the canvas drew at the rail end.
+    expect(leg.railEnd.y).toBeCloseTo(0.6066041666666666, 9);
+  });
+
+  it("crosses the rails HALF a gauge off the through route, not a full one", () => {
+    // ⚠️ Not the diverging centre-line's position at the lead — that is a full
+    // gauge out, which is the definition of the lead. The frog is where the two
+    // INNER rails meet.
+    const leg = sw2();
+    expect(leg.frog.x).toBeCloseTo(27.8, 9);
+    expect(leg.frog.y).toBeCloseTo(RAIL_GAUGE_INCHES / 2, 9);
+  });
+
+  it("throws to the side it is given", () => {
+    const right = turnoutDivergingLeg({ sampleAt: straightHost, relFrogInches: 27.8, toward: -1, side: -1, size: 6 });
+    expect(right.railEnd.y).toBeCloseTo(-0.6066041666666666, 9);
+    expect(right.railEnd.x).toBeCloseTo(26.284375, 9);
+  });
+
+  it("faces the other way when `toward` flips", () => {
+    const east = turnoutDivergingLeg({ sampleAt: straightHost, relFrogInches: 27.8, toward: 1, side: 1, size: 6 });
+    expect(east.points[0].x).toBeCloseTo(27.8 - 3.296875, 9);
+    expect(east.railEnd.x).toBeCloseTo(27.8 + 1.515625, 9);
+  });
+
+  it("a wye takes HALF the divergence — it behaves as a #2N", () => {
+    const wye = turnoutDivergingLeg({ sampleAt: straightHost, relFrogInches: 20, toward: 1, side: 1, size: 3, wye: true });
+    const plain6 = turnoutDivergingLeg({ sampleAt: straightHost, relFrogInches: 20, toward: 1, side: 1, size: 6 });
+    expect(wye.leadInches).toBeCloseTo(plain6.leadInches, 9);
+    expect(wye.pastFrogInches).toBeCloseTo(plain6.pastFrogInches, 9);
+  });
+
+  it("a crossover leg stops where it meets its partner, and is never lengthened", () => {
+    const free = turnoutDivergingLeg({ sampleAt: straightHost, relFrogInches: 40, toward: 1, side: 1, size: 6 });
+    const met = turnoutDivergingLeg({
+      sampleAt: straightHost, relFrogInches: 40, toward: 1, side: 1, size: 6,
+      meetAtSpacingInches: 1.09,
+    });
+    expect(met.spanInches).toBeLessThan(free.spanInches);
+    // Half the gap, less a gauge, times N past the lead — exact, not fitted.
+    expect(met.spanInches).toBeCloseTo(met.leadInches + (1.09 / 2 - RAIL_GAUGE_INCHES) * 6, 9);
+    // A gap too narrow to reach must not EXTEND the body.
+    const tiny = turnoutDivergingLeg({
+      sampleAt: straightHost, relFrogInches: 40, toward: 1, side: 1, size: 6,
+      meetAtSpacingInches: RAIL_GAUGE_INCHES,
+    });
+    expect(tiny.spanInches).toBeCloseTo(free.spanInches, 9);
+  });
+
+  it("an override lead wins over the per-frog rule — a crossover's own point-set", () => {
+    const leg = turnoutDivergingLeg({
+      sampleAt: straightHost, relFrogInches: 41.25, toward: 1, side: 1, size: 6,
+      leadOverrideInches: 2.1245,
+    });
+    expect(leg.leadInches).toBeCloseTo(2.1245, 9);
+    expect(leg.points[0].x).toBeCloseTo(41.25 - 2.1245, 9);
+  });
+
+  it("follows a curved host — the leg is walked, not drawn straight", () => {
+    // A host that bends: normals rotate with it, so the leg has to pick that up.
+    const bent = (rel: number) => {
+      const a = rel * 0.02;
+      return { x: Math.sin(a) / 0.02, y: (1 - Math.cos(a)) / 0.02, nx: -Math.sin(a), ny: Math.cos(a) };
+    };
+    const leg = turnoutDivergingLeg({ sampleAt: bent, relFrogInches: 20, toward: 1, side: 1, size: 6 });
+    // Not collinear: the middle of the leg is off the chord between its ends.
+    const a = leg.points[0], b = leg.railEnd, m = leg.points[8];
+    const cross = (b.x - a.x) * (m.y - a.y) - (b.y - a.y) * (m.x - a.x);
+    expect(Math.abs(cross)).toBeGreaterThan(1e-6);
+  });
+})
