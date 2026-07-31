@@ -41,6 +41,7 @@ import {
   sampleBenchworkOutline,
   samplePath,
   pathLengthInches,
+  measuredAlongPath,
   trackPath,
   carCapacity,
   N_CAR_LENGTH_INCHES,
@@ -4373,6 +4374,71 @@ describe("flex track pieces (#193)", () => {
     const s = emptyEditorState(96);
     const doc = stateToDoc({ ...s, flexByTrack: { [MAIN_TRACK_ID]: { cuts: [30, 60] } } }, "M");
     expect(docToState(doc, 48).flexByTrack[MAIN_TRACK_ID].cuts).toEqual([15, 30]);
+  });
+
+  it("does NOT rescale the cuts on a run measured along its own path", () => {
+    // ⭐ The opposite of the test above, and for the reason that makes them
+    // different: these cuts index into the track's PATH, which is kept as
+    // authored. Halving the module leaves the drawn route exactly where it was,
+    // so halving its joints would slide them off it (#226).
+    const s = emptyEditorState(96);
+    s.extraTracks.push({
+      id: "br1",
+      role: "branch",
+      lane: 2,
+      fromPos: 27.8,
+      toPos: 27.8,
+      path: [{ x: 27.8, y: 0 }, { x: 27.8, y: 22 }],
+      moduleTrackId: null,
+      trackName: "To endplate C",
+    });
+    const doc = stateToDoc({ ...s, flexByTrack: { br1: { cuts: [11] } } }, "M");
+    expect(docToState(doc, 48).flexByTrack.br1.cuts).toEqual([11]);
+  });
+})
+
+// ── Which axis a run is measured along (#226) ─────────────────────────────────
+describe("measuredAlongPath (#226)", () => {
+  const route = {
+    path: [{ x: 27.8, y: 0 }, { x: 27.8, y: 22 }],
+    fromPos: 27.8,
+    toPos: 27.8,
+  };
+
+  it("a drawn route with no extent along the module is measured along itself", () => {
+    expect(measuredAlongPath(route)).toBe(true);
+  });
+
+  it("a drawn run that DOES cover module is still measured along the module", () => {
+    // A bent siding has a real extent from A — its positions stay absolute, and
+    // nothing about this change may move them.
+    expect(measuredAlongPath({ ...route, fromPos: 12, toPos: 40 })).toBe(false);
+  });
+
+  it("a track with no path is measured along the module, however degenerate", () => {
+    expect(measuredAlongPath({ path: null, fromPos: 27.8, toPos: 27.8 })).toBe(false);
+    expect(measuredAlongPath({ path: [{ x: 1, y: 1 }], fromPos: 5, toPos: 5 })).toBe(false);
+  });
+
+  it("fails CLOSED when there are no positions to compare", () => {
+    // No evidence the module axis is unusable ⇒ keep the frame everything else
+    // already assumes, rather than silently re-parameterising a run.
+    expect(measuredAlongPath({ ...route, fromPos: null, toPos: null })).toBe(false);
+    expect(measuredAlongPath({ path: route.path })).toBe(false);
+  });
+
+  it("says nothing about the stored role — a return loop qualifies too", () => {
+    // ⭐ The label is the owner's (#226). A loop is drawn across the board for
+    // exactly the same reason a route to endplate C is, and the frame follows
+    // the geometry, not the word. Keying off role:"branch" got the loop right
+    // only by accident.
+    expect(
+      measuredAlongPath({
+        path: [{ x: 96, y: 0 }, { x: 110, y: 14 }, { x: 96, y: 28 }],
+        fromPos: 96,
+        toPos: 96,
+      }),
+    ).toBe(true);
   });
 })
 

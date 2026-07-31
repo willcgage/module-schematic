@@ -946,6 +946,43 @@ export function pathLengthInches(
   return total;
 }
 
+/**
+ * ⭐ IS THIS RUN MEASURED ALONG ITS OWN PATH, rather than along the module?
+ *
+ * A route to a third endplate leaves the main and crosses the board, so the
+ * stretch of MODULE it covers is degenerate — FMN-0068's runs 27.8 → 27.8. Every
+ * position on such a run — how long it is, where a rail joint falls — has to be
+ * measured along the line that was drawn, because projecting back onto the main
+ * collapses: a square 90° exit projects to ZERO, the documented reason these
+ * routes were invisible to begin with (#181).
+ *
+ * ⚠️ **THIS IS NOT A TEST ON `role`.** What a route MEANS operationally is the
+ * layout's question, not the module's (#226) — `role: "branch"` is the owner's
+ * label, and the return-loop generator emits it too. What decides the frame is
+ * geometry: a drawn path, and no usable axis along the module to measure it
+ * against. That is equally true of a loop and of a route to endplate C, which is
+ * why keying off the label kept getting the loop right by luck.
+ *
+ * ⭐ ONE DEFINITION, because two places ask the same question: the editor, to cut
+ * the run into buyable lengths, and {@link docToState}, to know that those cuts
+ * must NOT rescale with the module. Two answers to this would put a module's
+ * joints in one place and its drawing in another.
+ */
+export function measuredAlongPath(
+  t: Pick<SchematicTrack, "path" | "fromPos" | "toPos">,
+): boolean {
+  if (!trackPath(t.path)) return false;
+  // Fails CLOSED: without two real positions to compare there is no evidence the
+  // module axis is unusable, and the along-module frame is what everything else
+  // already assumes.
+  if (typeof t.fromPos !== "number" || !Number.isFinite(t.fromPos)) return false;
+  if (typeof t.toPos !== "number" || !Number.isFinite(t.toPos)) return false;
+  // An identity test, not a tolerance. These routes are written with the SAME
+  // number at both ends — the turnout they leave from — so a run with any real
+  // extent along the module is one that can be measured along the module.
+  return Math.abs(t.toPos - t.fromPos) < 0.01;
+}
+
 /** Normalise an authored track path from a doc, or null if it isn't a real path
  * (needs ≥ 2 valid points). Keeps per-vertex bulge. */
 export function trackPath(
@@ -2977,8 +3014,17 @@ export function docToState(
     const partId = typeof t.flexPartId === "string" && t.flexPartId ? t.flexPartId : undefined;
     // An EMPTY authored list is meaningful — "no joints, one uncut piece" — and
     // is a different statement from absent, which means "derive them".
+    // ⚠️ A RUN MEASURED ALONG ITS OWN PATH KEEPS ITS CUTS AS AUTHORED. Cuts
+    // normally rescale with the module exactly as fromPos/toPos do. But these
+    // index into the track's `path`, and a path is kept as authored — never
+    // rescaled, like the benchwork outline it was drawn on. Scaling them would
+    // slide every joint along a line that did not move (#226).
+    const asAuthored = measuredAlongPath(t);
     const cuts = Array.isArray(t.flexCuts)
-      ? t.flexCuts.filter((c) => Number.isFinite(c)).map(sc).sort((a, b) => a - b)
+      ? t.flexCuts
+          .filter((c) => Number.isFinite(c))
+          .map((c) => (asAuthored ? c : sc(c)))
+          .sort((a, b) => a - b)
       : undefined;
     if (partId || cuts) flexByTrack[t.id] = { ...(partId ? { partId } : {}), ...(cuts ? { cuts } : {}) };
   }
