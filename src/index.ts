@@ -9146,6 +9146,31 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     let lane = trk.lane;
     const sw = turnoutsByTrack.get(id)?.[0];
     const ext = extentOf(trk);
+    /**
+     * ⭐⭐ A ROUTE PINNED TO AN ENDPLATE HAS NO FREE CHOICE OF SIDE, so the hand
+     * does not get a vote — the same exemption a crossover leg already gets in
+     * the canvas ("a side that is determined has nothing for hand to state").
+     *
+     * ⛔ THIS IS WHY FMN-0068 REPORTED A CROSSING THAT ISN'T THERE. Such a route
+     * has a DEGENERATE along-module extent — `fromPos === toPos === 27.8` — so
+     * `far - sw.pos` below is **zero**, and the code went on to ask a right-hand
+     * turnout which way it throws. It answered "down", giving lane −2, while
+     * {@link moduleFeatures}'s own `branchConnectors` read the endplate's
+     * `at.side` ("up") and said +2. Two derivations of one fact, disagreeing —
+     * and the crossing check believed the wrong one, telling an owner their
+     * route crossed Main 2 when it runs the other way entirely.
+     *
+     * The endplate is the authored fact: the route has to reach it. Reading the
+     * side from there makes this agree with `branchConnectors` BY CONSTRUCTION
+     * rather than by two functions staying in step.
+     */
+    const pinnedTo = (doc.endplates ?? []).find((e) => e.trackId === id && e.at);
+    if (pinnedTo) {
+      lane = (pinnedTo.at!.side === "down" ? -1 : 1) * Math.abs(trk.lane);
+      resolving.delete(id);
+      resolvedLanes.set(id, lane);
+      return lane;
+    }
     if (sw && (sw.kind === "left" || sw.kind === "right") && !isCrossover(id) && ext) {
       const parentLane = resolveLane(sw.onTrack);
       let sign: number;

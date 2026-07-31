@@ -7602,6 +7602,63 @@ describe("implicitCrossings", () => {
     turnouts: [{ id: "sw5", pos: 60, onTrack: "main", divergeTrack: "spur1", kind: "left" }],
   });
 
+  /**
+   * FMN-0068's real shape: a route to a placed 3rd endplate, pinned UP, off a
+   * RIGHT-hand turnout, with Main 2 sitting DOWN at lane −1.
+   *
+   * ⭐ Its along-module extent is DEGENERATE — `fromPos === toPos` — because the
+   * route runs across the board. That is what made `resolveLane` ask the hand
+   * which way it throws (it said "down", lane −2) while `branchConnectors` read
+   * the endplate's own `side: "up"` and said +2. The crossing check believed the
+   * hand and told the owner their route crossed Main 2 when it runs the other way.
+   */
+  const routeToEndplateUp = (side: "up" | "down"): ModuleSchematicDoc => ({
+    version: 1,
+    module: "FMN-0068",
+    lengthInches: 47.9,
+    endplates: [
+      { id: "A", label: "West", tracks: [{ trackId: "main", lane: 0, config: "double" }] },
+      { id: "B", label: "East", tracks: [{ trackId: "main", lane: 0, config: "single" }] },
+      {
+        id: "C", label: "Branch 1", kind: "branch", trackId: "branch1",
+        at: { pos: 14, side },
+        tracks: [{ trackId: "main", lane: 0, config: "single" }],
+      },
+    ],
+    tracks: [
+      { id: "main", role: "main", lane: 0, from: "A", to: "B" },
+      { id: "main2", role: "main", lane: -1, fromPos: 0, toPos: 36 },
+      {
+        id: "branch1", role: "branch", lane: 2, fromPos: 27.8, toPos: 27.8,
+        trackName: "To endplate C",
+        path: [{ x: 26.28, y: 0.61 }, { x: 18, y: 2.35 }, { x: 11.91, y: 8 }, { x: 11.91, y: 12 }],
+      },
+    ],
+    turnouts: [{ id: "sw2", pos: 27.8, onTrack: "main", divergeTrack: "branch1", kind: "right", size: 6 }],
+  });
+
+  it("a route pinned to an UP endplate does not report against a DOWN Main 2", () => {
+    // Will, 2026-07-31, on the real FMN-0068: "it looks just fine and is joined
+    // to the diverging route off of Main 1, not Main 2." The endplate says up,
+    // the drawn path goes up; the turnout's HAND is not what decides this.
+    expect(implicitCrossings(routeToEndplateUp("up"))).toEqual([]);
+  });
+
+  it("...but still reports when the endplate really is on Main 2's side", () => {
+    // ⭐ The other half, so this is not just "the check went quiet". Pin the same
+    // route DOWN and Main 2 at lane −1 genuinely sits between it and the main.
+    const out = implicitCrossings(routeToEndplateUp("down"));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      turnoutId: "sw2",
+      trackId: "branch1",
+      crossesTrackId: "main2",
+      lane: -1,
+      fromLane: 0,
+      toLane: -2,
+    });
+  });
+
   it("reports a spur drawn across Main 2", () => {
     expect(implicitCrossings(crossesMain2)).toEqual([
       {
