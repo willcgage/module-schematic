@@ -4142,6 +4142,32 @@ export const FLEX_TRACK_PARTS: TrackPart[] = [
  * ENCRYPTED (`/Encrypt /Standard`), so they are deliberately not the source
  * here — the public product pages say the same thing and can be cited.
  */
+/**
+ * ⭐⭐ MEASURED POINTS OFFSETS, one per fixture actually built and read.
+ *
+ * Fast Tracks publish a length, an angle and a radius, but NOT where the points
+ * sit along the tie strip — and that is the landmark the app needs to say where
+ * a turnout physically stops. It is also the only one a catalogue cannot give:
+ * a fixture is cut by its builder, so the answer is on the part in your hand.
+ *
+ * ⚠️ Keyed by `kind-N`, so a fixture with no entry simply has no `pointsOffset`
+ * and keeps drawing no tie strip and no rail joints — the honest default, rather
+ * than one part's reading standing in for its neighbours (a #6 is not a #5).
+ */
+const FAST_TRACKS_MEASURED_POINTS: Record<string, { inches: number; note: string }> = {
+  "turnout-6": {
+    inches: 1.19,
+    note:
+      "Will Gage, physical Fast Tracks #6 build, 2026-07-31 — tie end to point tips. " +
+      "✓ CROSS-CHECKS its neighbours: Atlas's measured #5 is 1.75″ and its #7 is " +
+      "0.625″, so a #6 belongs between them and 1.19″ is almost exactly the midpoint. " +
+      "⚠️ NO FROG READING YET — the tie strip and its rail joints draw (both are " +
+      "measured from the POINTS), but `turnoutOccupiedSpan` still refuses, because a " +
+      "document's `pos` is the FROG and the published angle+radius put it ~3.78″ " +
+      "further along. Guessing it would cut the flex to fit a turnout that isn't there.",
+  },
+};
+
 export const FAST_TRACKS_N_ME55: TrackPart[] = (
   [
     // [kind, N, angle°, divergingR, defaultLength, minLength, substitutionR]
@@ -4183,6 +4209,16 @@ export const FAST_TRACKS_N_ME55: TrackPart[] = (
       note: `${spec}. Matches atan(1/${n}) to the published digits — Fast Tracks build to TRUE frog ratios, unlike Atlas's sectional angles.`,
     },
     divergingRadius: { inches: divR, source: manufacturer, note: spec },
+    // Present only for a fixture somebody has actually measured — see the map.
+    ...(FAST_TRACKS_MEASURED_POINTS[`${kind}-${n}`]
+      ? {
+          pointsOffset: {
+            inches: FAST_TRACKS_MEASURED_POINTS[`${kind}-${n}`].inches,
+            source: "measured" as DimensionSource,
+            note: FAST_TRACKS_MEASURED_POINTS[`${kind}-${n}`].note,
+          },
+        }
+      : {}),
     overallLength: {
       inches: dflt,
       source: manufacturer,
@@ -4679,6 +4715,21 @@ export function turnoutOccupiedSpan(input: {
 }): OccupiedSpan | null {
   const e = input.extent;
   if (!e) return null;
+  /**
+   * ⛔ NO FROG READING, NO SPAN. `pos` marks the FROG, so this places the moulding
+   * by measuring back from it — and without a frog offset the extent's
+   * `behindFrog`/`pastFrog` are a placeholder that pretends the frog IS the
+   * points. On a Fast Tracks #6 measured only at its points that is **3.78″
+   * out**: the span would come back 22.73→28.99 where the part really sits
+   * 26.51→32.77, and the flex either side would be cut to fit a turnout that
+   * isn't there.
+   *
+   * ⭐ The tie strip and its rail joints are unaffected — they are measured from
+   * the POINTS and stay correct on a points-only part. This refuses only the one
+   * thing that genuinely needs the third reading, rather than withholding the two
+   * that don't (#189: never a joint on track nobody has checked).
+   */
+  if (!e.frogKnown) return null;
   // ⭐⭐ ANCHORED ON THE FROG, because that is what a document's `pos` is (Will,
   // 2026-07-27). This read `behindPoints`/`aheadOfPoints`, which put the whole
   // moulding `lead` too far along the run — 3.59″ on an Atlas #7 — so the flex
@@ -4750,28 +4801,47 @@ export const TIE_HALF_LENGTH_INCHES = 0.319;
 /** Where a turnout part physically starts and stops, relative to its POINTS.
  * All inches; `aheadOfPoints` is the end of the tie strip, which is essentially
  * where the diverging rail stops and the owner's flex track begins. */
-export interface PartExtent {
-  /** Points → the near end of the tie strip. Positive = the strip starts this
-   * far BEHIND the points (it always does — that end is plain approach track). */
-  behindPoints: number;
-  /** Points → the far end of the tie strip. */
-  aheadOfPoints: number;
-  /** Frog → the far end. How much turnout there still is past the frog. */
-  pastFrog: number;
-  /**
-   * Frog → the NEAR end of the tie strip.
-   *
-   * ⭐⭐ **THIS IS THE ONE A BODY IS MEASURED BACK FROM.** A document's `pos` is
-   * the FROG (Will, 2026-07-27), so a turnout occupies
-   * `[pos − behindFrog, pos + pastFrog]`. Anchoring on the points instead put
-   * every turnout body `lead` too far along — 3.59″ on an Atlas #7.
-   *
-   * ⚠️ Falls back to `behindPoints` when the frog was never measured: without a
-   * frog reading there is nowhere to anchor, and the points is the only landmark
-   * left. `pastFrog` degrades the same way, so the pair stays consistent.
-   */
-  behindFrog: number;
-}
+/**
+ * Where a part's moulding sits, relative to its own landmarks.
+ *
+ * ⭐⭐ A DISCRIMINATED UNION ON PURPOSE. The two halves are known independently:
+ * `behindPoints`/`aheadOfPoints` need only the points and the overall length,
+ * which is enough to draw the tie strip and its rail joints (both are measured
+ * from the points). Anchoring a body on the FROG needs a third reading — and a
+ * document's `pos` IS the frog.
+ *
+ * This used to hand back a `pastFrog`/`behindFrog` pair that silently fell back
+ * to the points when no frog had been measured. Nothing exercised it while every
+ * measured part happened to have a frog reading; the moment one didn't, that
+ * fallback leaked into the leg geometry and moved a #6's rail end by 3.55″. So
+ * the pair is now ABSENT unless it is real, and reading it without checking
+ * `frogKnown` is a compile error rather than a plausible wrong number.
+ */
+export type PartExtent =
+  | {
+      /** Points → the near end of the tie strip. Positive = the strip starts this
+       * far BEHIND the points (it always does — that end is plain approach track). */
+      behindPoints: number;
+      /** Points → the far end of the tie strip. */
+      aheadOfPoints: number;
+      frogKnown: false;
+    }
+  | {
+      behindPoints: number;
+      aheadOfPoints: number;
+      frogKnown: true;
+      /** Frog → the far end. How much turnout there still is past the frog. */
+      pastFrog: number;
+      /**
+       * Frog → the NEAR end of the tie strip.
+       *
+       * ⭐⭐ **THIS IS THE ONE A BODY IS MEASURED BACK FROM.** A document's `pos`
+       * is the FROG (Will, 2026-07-27), so a turnout occupies
+       * `[pos − behindFrog, pos + pastFrog]`. Anchoring on the points instead put
+       * every turnout body `lead` too far along — 3.59″ on an Atlas #7.
+       */
+      behindFrog: number;
+    };
 
 /**
  * A part's real extent, or **null when it hasn't been measured**.
@@ -4819,8 +4889,9 @@ export function partExtent(part: TrackPart | null | undefined): PartExtent | nul
   return {
     behindPoints: pts.inches,
     aheadOfPoints,
-    pastFrog: usable(frog) ? overall.inches - frog.inches : aheadOfPoints,
-    behindFrog: usable(frog) ? frog.inches : pts.inches,
+    ...(usable(frog)
+      ? { frogKnown: true as const, pastFrog: overall.inches - frog.inches, behindFrog: frog.inches }
+      : { frogKnown: false as const }),
   };
 }
 
@@ -4858,13 +4929,33 @@ export function turnoutPartForSize(
   );
   if (!turnouts.length) return null;
   const dist = (p: TrackPart) => Math.abs((p.frogNumber as number) - size);
+  /**
+   * ⭐ HOW COMPLETELY A PART CAN BE DRAWN — the tie-break, graded.
+   *
+   * Two parts can share a frog number (Atlas sell a #5; Fast Tracks make a #5
+   * fixture), and this used to be a yes/no: does it have an extent at all? That
+   * discriminated while at most one of any pair was measured. Will's Fast Tracks
+   * #6 (2026-07-31) broke it — measured at its POINTS only, it has an extent too,
+   * so a stored, fully-measured Peco #6 and the fixture both scored 1 and ARRAY
+   * ORDER decided which a bare `#6` became. A coin flip where a rule belongs.
+   *
+   * The grades answer the question the old comment already asked, in degrees:
+   * 2 = its routes can be placed (the frog is known, so `pos` means something) ·
+   * 1 = it knows where it starts and stops, enough for a tie strip and its rail
+   * joints · 0 = nothing drawable.
+   */
+  const drawnness = (p: TrackPart): number => {
+    const e = partExtent(p);
+    if (!e) return 0;
+    return e.frogKnown ? 2 : 1;
+  };
   return turnouts.reduce((best, p) => {
     const d = dist(p);
     const bd = dist(best);
     if (d !== bd) return d < bd ? p : best;
-    // Same frog number: prefer the one that can be drawn at its real size.
-    if (!partExtent(best) && partExtent(p)) return p;
-    return best;
+    // Same frog number: prefer the one we can draw MORE of. Ties beyond that
+    // keep the earlier entry.
+    return drawnness(p) > drawnness(best) ? p : best;
   });
 }
 
@@ -4949,8 +5040,13 @@ export function pastFrogInchesForSize(
   const measured = library
     .filter((p) => p.kind === "turnout" && p.frogNumber != null)
     .map((p) => ({ n: p.frogNumber as number, ext: partExtent(p) }))
-    .filter((p): p is { n: number; ext: PartExtent } => p.ext != null)
-    .map((p) => ({ n: p.n, past: p.ext.pastFrog }))
+    // ⛔ ONLY parts whose FROG was actually read. A part measured at its points
+    // alone knows where it starts and stops but not where its frog sits, and its
+    // extent says so (`frogKnown: false`). Interpolating across one of those
+    // would drag the whole curve toward a number that isn't a past-frog distance
+    // at all — Will's #6, measured at its points, would have contributed 5.07″
+    // where the real figure is nearer 1.5″, moving every drawn rail end.
+    .flatMap((p) => (p.ext && p.ext.frogKnown ? [{ n: p.n, past: p.ext.pastFrog }] : []))
     .sort((a, b) => a.n - b.n);
 
   // Nothing measured at all: fall back to the frog angle itself. A turnout
@@ -6003,6 +6099,23 @@ export function partGeometryGap(part: TrackPart): string | null {
     return "no points offset — without it there is nowhere for the diverging route to begin";
   if (!part.overallLength) return "no overall length — the part has no end to put a joint on";
   if (part.frogNumber == null) return "no frog number — the diverging angle is unknown";
+  /**
+   * ⭐ THE LEAD IS THE LAST LANDMARK, and it needs the FROG.
+   *
+   * Points and overall length are enough to say where a part starts and stops —
+   * the tie strip and its rail joints draw from those alone. They are NOT enough
+   * to place its routes: the diverging one leaves at the points and crosses at
+   * the frog, so without a frog reading (or a published lead) there is no
+   * geometry to build.
+   *
+   * ⚠️ This case had never occurred, because every part measured at its points
+   * had also been measured at its frog. Will's Fast Tracks #6 (2026-07-31) is the
+   * first with one and not the other, and it came out of `partsPlaceable` as
+   * "dimensions present but inconsistent" — which is wrong and unactionable.
+   * Nothing is inconsistent; one reading is missing, and this says which.
+   */
+  if (!part.lead && !part.frogOffset)
+    return "no frog offset — the points are known but not where the rails cross, so the routes cannot be placed";
   return null;
 }
 

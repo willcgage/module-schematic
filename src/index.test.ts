@@ -1848,6 +1848,38 @@ describe("endplate poses (#175)", () => {
       ).toBeNull();
   });
 
+  it("the Fast Tracks #6 has a body now, and knows it does NOT know its frog", () => {
+    // Will measured the points offset on his own build, 2026-07-31. The overall
+    // length is Fast Tracks' published default, which now counts.
+    const e = partExtentForSize(6)!;
+    expect(e).not.toBeNull();
+    expect(e.behindPoints).toBe(1.19);
+    expect(e.aheadOfPoints).toBeCloseTo(6.26 - 1.19, 9);
+    // ⭐ The half that is NOT known, said out loud rather than faked.
+    expect(e.frogKnown).toBe(false);
+  });
+
+  it("a span is REFUSED without a frog reading, and granted with one", () => {
+    // ⛔ `pos` marks the FROG, so placing a body needs the frog. Without it the
+    // extent's behindFrog/pastFrog pretend the frog IS the points — 3.78" out on
+    // a #6 — and the flex either side would be cut to fit a turnout that is not
+    // there. The tie strip and its rail joints are measured from the POINTS and
+    // are unaffected, which is why only this one thing is withheld.
+    expect(turnoutOccupiedSpan({ pos: 27.8, extent: partExtentForSize(6), facing: -1 })).toBeNull();
+
+    const atlas7 = partExtentForSize(7)!;
+    expect(atlas7.frogKnown).toBe(true);
+    expect(turnoutOccupiedSpan({ pos: 27.8, extent: atlas7, facing: -1 })).not.toBeNull();
+  });
+
+  it("one fixture's reading never stands in for its neighbours", () => {
+    // A #6 is not a #5 or a #7. Only the fixture actually measured gains a body;
+    // the other Fast Tracks turnouts keep drawing none.
+    const ft = (n: number) => BUILT_IN_TRACK_PARTS.find((p) => p.id === `fast-tracks-n-me55-t-${n}`)!;
+    expect(partExtent(ft(6))).not.toBeNull();
+    for (const n of [4, 4.5, 5, 7, 8, 9, 10, 12]) expect(partExtent(ft(n)), `#${n}`).toBeNull();
+  });
+
   it("...and that relaxation changes NOTHING in the shipped library today", () => {
     // ⭐ The blast radius, pinned. Every Fast Tracks part publishes an overall
     // length but NOT ONE publishes a pointsOffset, so none of them gains a body
@@ -1861,8 +1893,15 @@ describe("endplate poses (#175)", () => {
       "atlas-c55-n-10",
       "atlas-c55-n-wye",
       "atlas-c55-n-wye-35",
+      "fast-tracks-n-me55-t-6",
     ]);
-    expect(turnouts.filter((p) => p.id.startsWith("fast-tracks")).every((p) => partExtent(p) === null)).toBe(true);
+    // ⚠️ The #6 is the one exception now — Will measured it. Every other Fast
+    // Tracks fixture still has no body.
+    expect(
+      turnouts
+        .filter((p) => p.id.startsWith("fast-tracks") && p.id !== "fast-tracks-n-me55-t-6")
+        .every((p) => partExtent(p) === null),
+    ).toBe(true);
     expect(turnouts.filter((p) => p.id.startsWith("generic")).every((p) => partExtent(p) === null)).toBe(true);
   });
 
@@ -1894,6 +1933,7 @@ describe("endplate poses (#175)", () => {
       aheadOfPoints: 4.25,
       pastFrog: 1.84375,
       behindFrog: 3.15625,
+      frogKnown: true,
     });
   });
 
@@ -1914,10 +1954,12 @@ describe("endplate poses (#175)", () => {
   });
 
   it("partExtent refuses to guess — length is packaging, not a function of N", () => {
-    // The #5 and the #7 are BOTH 6.00″. There is no measured #6, and the parts
-    // either side cannot supply one, so nothing is drawn rather than a fiction.
-    expect(partExtentForSize(6)).toBeNull();
+    // The #5 and the #7 are BOTH 6.00″, so nothing about N predicts a length.
+    // ⚠️ The #6 USED to be the example here; Will measured his Fast Tracks #6 on
+    // 2026-07-31, so the #4 carries the point now — the parts either side still
+    // cannot supply a length for a size nobody has read.
     expect(partExtentForSize(4)).toBeNull();
+    expect(partExtentForSize(8)).toBeNull();
     expect(partExtentForSize(7)).not.toBeNull();
     expect(partExtentForSize(10)).not.toBeNull();
 
@@ -3285,8 +3327,12 @@ describe("track parts library (#179 stage 3)", () => {
       expect(p.overallLength, `${p.id} default length`).toBeTruthy();
       expect(p.minimumLength, `${p.id} minimum length`).toBeTruthy();
       expect(p.substitutionRadius, `${p.id} substitution R`).toBeTruthy();
-      // What they DON'T — and inventing these is what the library forbids.
-      expect(p.pointsOffset, `${p.id} points`).toBeUndefined();
+      // What they DON'T publish — and inventing these is what the library forbids.
+      // ⭐ EXCEPT where somebody measured the fixture they built: Will read the
+      // points on his #6 (2026-07-31). That is a reading off a real part, not a
+      // catalogue figure, which is exactly the distinction this test protects.
+      if (p.id !== "fast-tracks-n-me55-t-6")
+        expect(p.pointsOffset, `${p.id} points`).toBeUndefined();
       expect(p.frogOffset, `${p.id} frog`).toBeUndefined();
       expect(p.lead, `${p.id} lead`).toBeUndefined();
       // A fixture has no length of its own; the builder cuts the rail.
@@ -3294,7 +3340,12 @@ describe("track parts library (#179 stage 3)", () => {
       expect(p.minimumLength!.inches).toBeLessThan(p.overallLength!.inches);
       // …so it claims no body, and flex still runs through it (#193). Honest:
       // we do not know where someone's hand-built turnout stops.
-      expect(partExtent(p), `${p.id} extent`).toBeNull();
+      // ⭐ EXCEPT the #6 Will measured (2026-07-31): it now knows where it starts
+      // and stops. It still claims no ROUTES — that needs the frog — so nothing
+      // about "we do not know where a hand-built turnout stops" is weakened for
+      // the fixtures nobody has read.
+      if (p.id !== "fast-tracks-n-me55-t-6")
+        expect(partExtent(p), `${p.id} extent`).toBeNull();
     }
   });
 
@@ -4360,12 +4411,14 @@ describe("flex track pieces (#193)", () => {
       aheadOfPoints: 4.875,
       pastFrog: 2.375,
       behindFrog: 4.125,
+      frogKnown: true,
     });
     expect(partExtent(w35)).toEqual({
       behindPoints: 0.75,
       aheadOfPoints: 4.25,
       pastFrog: 1.84375,
       behindFrog: 3.15625,
+      frogKnown: true,
     });
   });
 
@@ -5063,9 +5116,16 @@ describe("part geometry", () => {
     ]);
     // Every Fast Tracks turnout and wye is blocked for ONE reason, and it is a
     // reading, not a modelling problem: they publish no points offset.
+    // ⭐ TWO reasons now, not one: Will measured his #6's points on 2026-07-31, so
+    // that fixture's gap has moved on to the frog while the other thirteen still
+    // publish neither landmark. The backlog got one item shorter, not one part
+    // closer to being drawn.
     const ft = blocked.filter((b) => b.part.manufacturer === "Fast Tracks" && b.part.kind !== "crossover");
     expect(ft).toHaveLength(14);
-    for (const b of ft) expect(b.why).toMatch(/points offset/);
+    for (const b of ft)
+      expect(b.why, b.part.id).toMatch(
+        b.part.id === "fast-tracks-n-me55-t-6" ? /frog offset/ : /points offset/,
+      );
     expect(partGeometry(trackPart("fast-tracks-n-me55-t-6")!)).toBeNull();
   });
 
@@ -5278,10 +5338,14 @@ describe("track graph", () => {
     const graph = buildTrackGraph([
       flex("a", 0, 0, 10),
       { id: "ft", partId: "fast-tracks-n-me55-t-6", x: 0, y: 0, rotationDeg: 0 },
+      { id: "ft8", partId: "fast-tracks-n-me55-t-8", x: 0, y: 0, rotationDeg: 0 },
       { id: "ghost", partId: "no-such-part", x: 0, y: 0, rotationDeg: 0 },
     ]);
-    expect(graph.unplaceable.map((u) => u.piece).sort()).toEqual(["ft", "ghost"]);
-    expect(graph.unplaceable.find((u) => u.piece === "ft")!.why).toMatch(/points offset/);
+    expect(graph.unplaceable.map((u) => u.piece).sort()).toEqual(["ft", "ft8", "ghost"]);
+    // Each part names the reading IT is missing — the #6 was measured at its
+    // points (2026-07-31), so its gap is the frog; the #8 still has neither.
+    expect(graph.unplaceable.find((u) => u.piece === "ft")!.why).toMatch(/frog offset/);
+    expect(graph.unplaceable.find((u) => u.piece === "ft8")!.why).toMatch(/points offset/);
     expect(graph.unplaceable.find((u) => u.piece === "ghost")!.why).toMatch(/no such part/);
   });
 
@@ -6681,11 +6745,21 @@ describe("what a 1-D document would become as pieces", () => {
   });
 
   it("blames the measurement, not the owner, for a named part we cannot place", () => {
-    const r = moduleConversionReport(
+    // ⭐ BOTH gaps covered, each by the part that actually has it. The #6 was
+    // measured at its points (2026-07-31) so its gap moved on to the frog; the #8
+    // nobody has touched still has the original one. Testing only one would let
+    // the other message rot.
+    const frogGap = moduleConversionReport(
       doc({ turnouts: [to({ partId: "fast-tracks-n-me55-t-6" })] }),
     );
-    expect(r.turnouts[0].partId).toBeNull();
-    expect(r.turnouts[0].why).toMatch(/no points offset/);
+    expect(frogGap.turnouts[0].partId).toBeNull();
+    expect(frogGap.turnouts[0].why).toMatch(/no frog offset/);
+
+    const pointsGap = moduleConversionReport(
+      doc({ turnouts: [to({ partId: "fast-tracks-n-me55-t-8" })] }),
+    );
+    expect(pointsGap.turnouts[0].partId).toBeNull();
+    expect(pointsGap.turnouts[0].why).toMatch(/no points offset/);
   });
 
   it("offers only parts that can actually be drawn, exact frog first", () => {
