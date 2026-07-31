@@ -5573,6 +5573,180 @@ export function turnoutClosure(
   };
 }
 
+// ─── A TURNOUT'S DIVERGING LEG ───────────────────────────────────────────────
+
+/** One sample of a host polyline: a point and its unit normal. Whatever the
+ * caller walks — the module's centre-line, a spur's own drawn path — has to be
+ * able to answer this at an arc length. */
+export interface HostSample {
+  x: number;
+  y: number;
+  nx: number;
+  ny: number;
+}
+
+export interface TurnoutDivergingLegInput {
+  /**
+   * Sample the host polyline at an arc length along it.
+   *
+   * ⭐ THE HOST STAYS WITH THE CALLER, deliberately. Which polyline a turnout
+   * sits on — a straight main, a curved one, a spur's authored path — is a fact
+   * about the MODULE's shape, not about the turnout, and the two renderers build
+   * it differently (one from the benchwork centre-line and its lane pinches, one
+   * from a stored path). What belongs here is the turnout geometry that both of
+   * them were otherwise obliged to reimplement.
+   */
+  sampleAt: (relInches: number) => HostSample;
+  /** Arc length along the host where the FROG sits. A turnout's `pos` marks its
+   * frog (Will, 2026-07-27), and the closure below is built so the rails cross
+   * exactly there. */
+  relFrogInches: number;
+  /** Which way along the host the turnout faces — the direction its points look. */
+  toward: 1 | -1;
+  /** Which side the diverging route throws to. */
+  side: 1 | -1;
+  size: number;
+  /** A wye splits SYMMETRICALLY, so each route takes HALF the divergence — each
+   * leg leaves at half the frog angle, i.e. behaves as a #2N. */
+  wye?: boolean;
+  /** A curved turnout is drawn stretched, so its diverging route reads as a
+   * pronounced arc rather than a subtle bow. */
+  curved?: boolean;
+  library?: TrackPart[];
+  /**
+   * The points→frog distance, when the caller knows it better than the per-frog
+   * rule does. A crossover's turnouts are NOT generic turnouts: the assembly
+   * publishes where its own points sit relative to its frogs, and using the
+   * generic lead instead started every leg outside its own point-set (#224).
+   */
+  leadOverrideInches?: number | null;
+  /**
+   * Track spacing of the assembly this leg belongs to, when it is one half of a
+   * crossover. The leg then stops where it MEETS ITS PARTNER rather than running
+   * its full body: two full bodies want more lateral than the gap has, so they
+   * overshoot and the band bridging them slopes backwards (#196).
+   *
+   * ⚠️ The gap is the PART's own spacing, never something re-measured off the
+   * host — through a crossover the mains pinch, so a host normal is tilted and a
+   * tiny tilt multiplies into a real error over the connector's length (#225).
+   */
+  meetAtSpacingInches?: number | null;
+  /** How many segments to walk. The curve near the points has to read as a
+   * curve, so this is not 2. */
+  steps?: number;
+}
+
+export interface TurnoutDivergingLeg {
+  /** The leg itself, throat → rail end, in host space. */
+  points: { x: number; y: number }[];
+  /** Where the two INNER RAILS cross — half a gauge off the through centre-line,
+   * NOT the diverging centre-line's position at the lead (which is a full gauge
+   * out; that is the definition of the lead). Using the latter put the frog
+   * marker 0.177″ off the rails it marks. */
+  frog: { x: number; y: number };
+  /** The end of the turnout's own diverging rail — where the part stops and the
+   * owner's flex begins. This is what a track end snaps to (#189), and what a
+   * route's flex has to start from if it is not to count moulding as track. */
+  railEnd: { x: number; y: number };
+  leadInches: number;
+  /** The lead the CLOSURE was built from, before the ramp clamp. A caller easing
+   * the route on past the part (the owner's flex bending onto its lane) has to
+   * build its longer closure from the same number, or the two profiles disagree
+   * where they meet. */
+  closureLeadInches: number;
+  /** Frog → the end of the diverging rail, along the host axis. */
+  pastFrogInches: number;
+  /** Points → rail end, along the host axis. */
+  spanInches: number;
+  /** Lateral offset from the through route at arc length `s` past the points. */
+  offsetAt: (s: number) => number;
+}
+
+/**
+ * ⭐⭐ WHERE A TURNOUT'S DIVERGING ROUTE GOES — one definition, for every caller.
+ *
+ * This was written inside MR's canvas, which meant the only way to know where a
+ * turnout's rail actually ENDS was to be the canvas. The snap that joins track to
+ * a turnout, the ring that says nothing is joined, and the flex derivation that
+ * needs to know a route starts at the rail rather than at the frog were therefore
+ * three different answers to one question — and two of them did not exist.
+ *
+ * ⚠️ NOTHING IS INVENTED HERE. The lead and the past-frog length are the same
+ * {@link leadInchesForSize} and {@link pastFrogInchesForSize} the drawing already
+ * used, and the profile is {@link turnoutClosure}. The leg stops at the END OF THE
+ * PART and reaches for nothing beyond it: a turnout is as long as the turnout is,
+ * and the gap between its rail and the owner's track is REAL — it is their flex
+ * (#189).
+ */
+export function turnoutDivergingLeg(
+  input: TurnoutDivergingLegInput,
+): TurnoutDivergingLeg {
+  const {
+    sampleAt,
+    relFrogInches,
+    toward,
+    side,
+    size,
+    wye = false,
+    curved = false,
+    library = BUILT_IN_TRACK_PARTS,
+    leadOverrideInches = null,
+    meetAtSpacingInches = null,
+    steps = 16,
+  } = input;
+
+  const n = size > 0 ? size : 6;
+  const stretch = curved ? 2.2 : 1;
+  const effN = wye ? n * 2 : n;
+  // The RAMP: how far the diverging route runs to reach one full track spacing.
+  // Its slope is the frog ratio 1:N, which is what makes the leg leave at the
+  // right angle. It is NOT points→frog — that mistake put the throat a whole
+  // ramp-length back, so facing turnouts 11″ apart drew overlapping (#173).
+  const ramp = n * FREEMO_TRACK_SPACING_INCHES * stretch;
+  const leadIn = leadOverrideInches ?? leadInchesForSize(effN, library) * stretch;
+  const cl = turnoutClosure(effN, { leadInches: leadIn });
+  const lead = Math.min(ramp, cl.lead);
+  const pastFrog = pastFrogInchesForSize(effN, library) * stretch;
+  const bodySpan = lead + pastFrog;
+  // Past the frog the closure is straight at 1/N, so the distance at which it
+  // has reached a given offset is exact rather than fitted. Never LENGTHENS a
+  // leg — a turnout whose body already stops short of the meeting point is
+  // untouched.
+  const span = (() => {
+    if (meetAtSpacingInches == null) return bodySpan;
+    const half = meetAtSpacingInches / 2;
+    if (!(half > RAIL_GAUGE_INCHES)) return bodySpan;
+    return Math.min(bodySpan, lead + (half - RAIL_GAUGE_INCHES) * effN);
+  })();
+
+  const relThroat = relFrogInches - toward * lead;
+  const at = (s: number) => {
+    const p = sampleAt(Math.max(0, relThroat + toward * s));
+    const off = side * cl.offsetAt(s);
+    return { x: p.x + off * p.nx, y: p.y + off * p.ny };
+  };
+
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i <= steps; i++) points.push(at((span * i) / steps));
+
+  const frog = (() => {
+    const p = sampleAt(Math.max(0, relThroat + toward * lead));
+    const off = side * (RAIL_GAUGE_INCHES / 2);
+    return { x: p.x + off * p.nx, y: p.y + off * p.ny };
+  })();
+
+  return {
+    points,
+    frog,
+    railEnd: points[points.length - 1],
+    leadInches: lead,
+    closureLeadInches: leadIn,
+    pastFrogInches: span - lead,
+    spanInches: span,
+    offsetAt: cl.offsetAt,
+  };
+}
+
 // ─── PIECE GEOMETRY (ADR 0001) ───────────────────────────────────────────────
 // A part's ENDS, in the part's own frame, so a piece graph has something to
 // snap. `PartEnd` already carried position and tangent for imported .xtp files;
