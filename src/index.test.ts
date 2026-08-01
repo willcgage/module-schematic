@@ -68,6 +68,8 @@ import {
   TURNOUT_LEAD_INCHES_PER_FROG,
   ATLAS_CODE55_N,
   BUILT_IN_TRACK_PARTS,
+  JOINT_SNAP_INCHES,
+  placedJoints,
   type PlaceOnTrack,
   trackPart,
   turnoutPartForSize,
@@ -7099,6 +7101,62 @@ describe("rebuilding a drawn module as pieces", () => {
       expect(
         docToGraph(doc, { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(400)).refused,
       ).toBeNull();
+    });
+
+    // ⛔⛔ THE BUG THE FIRST ATTEMPT SHIPPED. Every piece was placed by sampling
+    // ITS OWN span's start on the polyline. A 30″ piece's real far end and the
+    // polyline's point 30″ along are not the same place on a curve, and they
+    // differ by far more than JOINT_SNAP_INCHES (0.01″) — so consecutive pieces
+    // never shared a joint, the graph fragmented, and a 386″ module walked as
+    // 45.5″ with 21 "not reachable from the endplate" warnings.
+    it("chains the pieces so consecutive joints coincide exactly", () => {
+      const R = 240;
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(R));
+      expect(c.refused).toBeNull();
+      const joints = placedJoints(c.graph!.pieces, BUILT_IN_TRACK_PARTS);
+      const main = c.graph!.pieces
+        .filter((p) => /^f-main-/.test(p.id))
+        .sort((a, b) => Number(a.id.split("-")[2]) - Number(b.id.split("-")[2]));
+      expect(main.length).toBeGreaterThan(2);
+
+      let worst = 0;
+      let joinsChecked = 0;
+      for (let i = 1; i < main.length; i += 1) {
+        const b = joints.find((j) => j.piece === main[i - 1].id && j.joint === "b");
+        const a = joints.find((j) => j.piece === main[i].id && j.joint === "a");
+        if (!b || !a) continue;
+        const gap = Math.hypot(b.x - a.x, b.y - a.y);
+        // Only CONTIGUOUS cuts chain — a gap of a turnout body's length is the
+        // turnout sitting between them, which is not a break.
+        if (gap > 1) continue;
+        joinsChecked += 1;
+        worst = Math.max(worst, gap);
+      }
+      expect(joinsChecked).toBeGreaterThan(0);
+      expect(worst).toBeLessThan(JOINT_SNAP_INCHES);
+    });
+
+    // ⏳ NOT YET: THE BODIES DO NOT CHAIN, only the flex between them. Each
+    // turnout is still placed by its own sample, so two ADJACENT turnouts — the
+    // pair at 13″ and 19″ here, whose 6″ bodies touch — do not meet on a curve,
+    // and the walk stops at the first one.
+    //
+    // This documents the remaining gap rather than asserting the fix: the run
+    // walks SHORT (14.78 of 96), and that number is the honest measure of how
+    // far the chain gets. When the bodies chain too it should approach 96, and
+    // this test should be turned into the assertion it wants to be.
+    it("still walks short until the turnout bodies chain as well", () => {
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(600));
+      const g = graphToDoc(c.graph!.pieces, {
+        startAt: c.graph!.startAt,
+        start2: c.graph!.start2 ?? null,
+        base: blairstown(),
+      });
+      // ⭐ A derived length far under the module's own is the cheap signal that
+      // a chain is broken — it is how the first attempt announced itself (45.5
+      // against 386) without ever refusing.
+      expect(g.doc.lengthInches).toBeLessThan(96);
+      expect(g.doc.lengthInches).toBeGreaterThan(0);
     });
 
     it("falls back to the flat lay when the caller cannot place a track", () => {
