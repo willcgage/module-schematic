@@ -328,6 +328,47 @@ describe("endplate face width (#per-endplate authoring)", () => {
     expect(docToState(bare, 96).turnouts[0].partId).toBeUndefined();
   });
 
+  // #120: the module detail page's Endplates section is going away, so naming
+  // an end has to work in the builder. It could not: stateToDoc wrote the
+  // constant "West"/"East" over whatever the owner had typed.
+  it("round-trips the owner's name for endplate A/B", () => {
+    const doc = stateToDoc(
+      { ...emptyEditorState(96), endplateLabels: { A: "UP Spokane N", B: "MR Plummer W" } },
+      "M",
+    );
+    const byId = Object.fromEntries(doc.endplates.map((e) => [e.id, e]));
+    expect(byId.A.label).toBe("UP Spokane N");
+    expect(byId.B.label).toBe("MR Plummer W");
+    expect(docToState(doc, 96).endplateLabels).toEqual({
+      A: "UP Spokane N",
+      B: "MR Plummer W",
+    });
+  });
+
+  it("an unnamed end keeps its default word, and does not become an authored name", () => {
+    const bare = stateToDoc(emptyEditorState(96), "M");
+    const byId = Object.fromEntries(bare.endplates.map((e) => [e.id, e]));
+    expect(byId.A.label).toBe("West");
+    expect(byId.B.label).toBe("East");
+    // ⭐ THE POINT OF THIS TEST. Every doc ever saved carries "West"/"East", so
+    // reading the label back unconditionally would mark all 42 modules as
+    // having named their ends — a default silently promoted to an override,
+    // which is exactly what #182 fixed for poses.
+    expect(docToState(bare, 96).endplateLabels).toEqual({});
+  });
+
+  it("a loop's default words are its own, and blank names never blank a label", () => {
+    const loop = { ...emptyEditorState(96), loop: true };
+    const doc = stateToDoc(loop, "M");
+    expect(doc.endplates[0].label).toBe("Entry");
+    expect(docToState(doc, 96).endplateLabels).toEqual({});
+
+    // A blank/whitespace entry means "unnamed", not "erase the label" — an end
+    // with no name has always read as Entry/West on the board.
+    const blank = stateToDoc({ ...loop, endplateLabels: { A: "   " } }, "M");
+    expect(blank.endplates[0].label).toBe("Entry");
+  });
+
   it("round-trips authored widths through docToState (unscaled by length)", () => {
     const doc = stateToDoc(
       { ...emptyEditorState(96), endplateWidths: { A: 18 } },

@@ -2398,6 +2398,15 @@ export interface EditorState {
   /** Authored endplate face widths by endplate id, inches (Free-moN 12″ min,
    * 24″ recommended). Absent id = the recommended default. */
   endplateWidths: Record<string, number>;
+  /** The owner's NAME for an endplate, by id — "UP Spokane N", "South EP".
+   *
+   * A/B used to be labelled by a constant here ("West"/"East", "Entry"/
+   * "Interchange" on a loop), so a name could be typed on the module detail
+   * page but never reached the document: the next save overwrote the row from
+   * the doc's hard-coded word. Absent or blank id = keep that default, which is
+   * what an unnamed end has always shown. Branch endplates (C+) carry their own
+   * name in `branches[].label` and are unaffected. */
+  endplateLabels: Record<string, string>;
   /** Authored per-endplate TRACK offsets by id — the primary track's signed
    * distance from the plate centre, inches. Absent id = the §2.0 default. */
   endplateTrackOffsets: Record<string, number>;
@@ -2447,6 +2456,7 @@ export function emptyEditorState(lengthInches: number): EditorState {
     poseOverrides: {},
     flexByTrack: {},
     endplateWidths: {},
+    endplateLabels: {},
     endplateTrackOffsets: {},
     outline: [],
     outlineInner: [],
@@ -2648,6 +2658,40 @@ function withWidths(
 }
 
 /**
+ * What endplate A or B is called when its owner has not named it.
+ *
+ * ⭐ ONE DEFINITION, because this word is needed in two places that must agree:
+ * `stateToDoc` writes it, and `docToState` uses it to tell a default apart from
+ * a name someone actually typed. Two copies would drift, and the failure would
+ * be silent — a doc labelled "West" read back as an authored name.
+ */
+export function defaultEndplateLabel(id: "A" | "B", loop: boolean): string {
+  if (loop) return id === "A" ? "Entry" : "Interchange";
+  return id === "A" ? "West" : "East";
+}
+
+/**
+ * Replace an endplate's label with the owner's own name for it (#120).
+ *
+ * ⚠️ The label passed in is a DEFAULT, not a value — `stateToDoc` writes the
+ * constant "West"/"East" (or "Entry"/"Interchange" on a loop) for A and B. So a
+ * name only lands when the owner has actually given one; a blank map entry
+ * leaves the default word standing rather than emptying the label, because an
+ * unnamed end has always read as "West"/"East" and nothing should change for
+ * the modules that never named theirs.
+ */
+function withLabels(
+  endplates: SchematicEndplate[],
+  labels: Record<string, string> | undefined,
+): SchematicEndplate[] {
+  if (!labels) return endplates;
+  return endplates.map((e) => {
+    const name = labels[e.id]?.trim();
+    return name ? { ...e, label: name } : e;
+  });
+}
+
+/**
  * Attach each track's flex settings (#193). Only what the owner has actually
  * chosen is written: an absent product means the default, and absent cuts mean
  * "derive them", which is a different thing from an empty list (that would mean
@@ -2678,7 +2722,8 @@ export function stateToDoc(
     ...(state.loop ? { loop: true } : {}),
     ...(state.loop && state.loopReturn === "main2" ? { loopReturn: "main2" as const } : {}),
     ...(state.mainsSwapped ? { mainsSwapped: true } : {}),
-    endplates: withWidths(
+    endplates: withLabels(
+      withWidths(
       withEdges(
       withPoses(
       [
@@ -2687,13 +2732,13 @@ export function stateToDoc(
             // makes it an INTERCHANGE (second route connects at the loop, e.g.
             // Seaford); configB "none" makes it a pure turnback.
             [
-              { id: "A", label: "Entry", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+              { id: "A", label: defaultEndplateLabel("A", true), tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
               ...(state.configB !== "none"
-                ? [{ id: "B", label: "Interchange", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] }]
+                ? [{ id: "B", label: defaultEndplateLabel("B", true), tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }] }]
                 : []),
             ]
           : [
-              { id: "A", label: "West", tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
+              { id: "A", label: defaultEndplateLabel("A", false), tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configA }] },
               // ⚠️ `configB: "none"` means the module HAS NO FAR ENDPLATE, and
               // that is not loop-only (#184). An *end of the line* or a *pocket*
               // presents one conforming face and the track simply stops. The
@@ -2705,7 +2750,7 @@ export function stateToDoc(
                 ? [
                     {
                       id: "B",
-                      label: "East",
+                      label: defaultEndplateLabel("B", false),
                       tracks: [{ trackId: MAIN_TRACK_ID, lane: 0, config: state.configB }],
                     },
                   ]
@@ -2726,6 +2771,8 @@ export function stateToDoc(
     ), state.endplateEdges),
       state.endplateWidths,
       state.endplateTrackOffsets,
+    ),
+      state.endplateLabels,
     ),
     // Flex settings are attached to every track at once, at the end — the array
     // below has half a dozen branches and adding two fields to each of them is
@@ -2988,6 +3035,7 @@ export function docToState(
   // Authored endplate face widths by id (unscaled — a cross-track dimension,
   // not a position along the module).
   const endplateWidths: Record<string, number> = {};
+  const endplateLabels: Record<string, string> = {};
   const endplateTrackOffsets: Record<string, number> = {};
   // ⭐ Edge bindings (ADR 0001) — an endplate that IS part of the benchwork.
   // Carried through unscaled: an edge index is a reference, not a dimension.
@@ -3002,6 +3050,20 @@ export function docToState(
       };
     if (typeof e.widthInches === "number" && e.widthInches > 0)
       endplateWidths[e.id] = e.widthInches;
+    // The owner's own name for this end (#120). A/B only — a branch endplate
+    // carries its name in `branches[].label`, and reading it here too would
+    // give one value two homes.
+    //
+    // ⚠️ THE DEFAULT WORD IS NOT A NAME. Every doc ever written by `stateToDoc`
+    // carries the constant "West"/"East" (or "Entry"/"Interchange"), so reading
+    // the label unconditionally would mark every module as having named its
+    // ends — the same silent promotion of a derived value to an authored one
+    // that pinned endplates in #182. Only a label the emitter would not itself
+    // have produced is the owner's.
+    if ((e.id === "A" || e.id === "B") && typeof e.label === "string") {
+      const name = e.label.trim();
+      if (name && name !== defaultEndplateLabel(e.id, loop)) endplateLabels[e.id] = name;
+    }
     // Signed, and 0 is meaningful (explicitly centred) — keep any finite value.
     if (typeof e.trackOffsetInches === "number" && Number.isFinite(e.trackOffsetInches))
       endplateTrackOffsets[e.id] = e.trackOffsetInches;
@@ -3075,6 +3137,7 @@ export function docToState(
     poseOverrides,
     flexByTrack,
     endplateWidths,
+    endplateLabels,
     endplateTrackOffsets,
     endplateEdges,
     outline,
