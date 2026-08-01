@@ -8500,6 +8500,8 @@ export function docToGraph(
   if (!(mainLen > 0)) return refuse("this module has no length to lay track along");
 
   const pieces: TrackPiece[] = [];
+  /** Each laid piece's position in the FLAT frame — the order a run is welded in. */
+  const flatAt = new Map<string, number>();
   const notLaid: { id: string; why: string }[] = [];
   const warnings: string[] = [];
   const rad = (d: number) => (d * Math.PI) / 180;
@@ -8690,6 +8692,47 @@ export function docToGraph(
     piece.lengthInches = len;
   };
 
+  /**
+   * ⭐⭐ WELD `cur` ONTO `prev` so their nearest joints coincide EXACTLY.
+   *
+   * Chaining the flex closed the gaps between flex pieces, but each BODY was
+   * still placed by its own sample — so two adjacent turnouts (blairstown's
+   * pair at 13″ and 19″, whose 6″ bodies touch) never met on a curve and the
+   * walk stopped at the first. This welds every element of a run to the one
+   * before it, whatever kind it is.
+   *
+   * The joint PAIR is chosen by proximity: both pieces are already sampled onto
+   * roughly the right spot, so the nearest pair is the one meant to join — and
+   * proximity is only choosing WHICH joint. The position and heading then come
+   * from the joint exactly, so the result is exact by construction rather than
+   * "near enough to snap".
+   */
+  const weldTo = (prev: TrackPiece, cur: TrackPiece) => {
+    const pjs = jointsOf(prev);
+    const cjs = jointsOf(cur);
+    if (!pjs.length || !cjs.length) return;
+    let best: { pj: PlacedJoint; cj: PlacedJoint; d: number } | null = null;
+    for (const pj of pjs)
+      for (const cj of cjs) {
+        const d = Math.hypot(pj.x - cj.x, pj.y - cj.y);
+        if (!best || d < best.d) best = { pj, cj, d };
+      }
+    if (!best) return;
+    // Face back the way we came: two joined ends point at each other.
+    const delta = norm180(norm180(best.pj.headingDeg + 180) - best.cj.headingDeg);
+    cur.rotationDeg = norm180(cur.rotationDeg + delta);
+    const moved = jointAt(cur, best.cj.joint);
+    if (!moved) return;
+    cur.x = r3(cur.x + (best.pj.x - moved.x));
+    cur.y = r3(cur.y + (best.pj.y - moved.y));
+  };
+
+  /** Weld a whole run, in the order its elements sit along the module. */
+  const chainRun = (ordered: { at: number; piece: TrackPiece }[]) => {
+    const seq = [...ordered].sort((a, b) => a.at - b.at);
+    for (let i = 1; i < seq.length; i += 1) weldTo(seq[i - 1].piece, seq[i].piece);
+  };
+
   /** Lay the plain track of one straight run at `hostY`, between two positions,
    * around the bodies already sitting in it. */
   const layFlex = (
@@ -8745,6 +8788,7 @@ export function docToGraph(
       const shape = trackId ? placeSpan(trackId, f.fromPos, f.toPos) : null;
       if (!shape) {
         placed.push(flat);
+        flatAt.set(flat.id, f.fromPos);
         prevEnd = null;
         prevToPos = f.toPos;
         return;
@@ -8779,6 +8823,7 @@ export function docToGraph(
           : {}),
       };
       placed.push(piece);
+      flatAt.set(piece.id, f.fromPos);
       // The far joint of the piece as actually placed — bend included, since
       // `placedJoints` runs a flex end through `flexRunEnd(length, radius)`.
       const end = jointAt(piece, "b");
@@ -9058,6 +9103,15 @@ export function docToGraph(
       m.id,
       on.map((l) => ({ span: l.span, piece: l.piece })),
     );
+    // ⭐ Now weld the run: bodies and flex together, in the order they sit
+    // along the module. Chaining inside `layFlex` closes flex-to-flex; this
+    // closes the joins the flex cannot see — turnout to turnout, and the
+    // bodies to the flex either side of them.
+    if (placeAt)
+      chainRun([
+        ...on.map((l) => ({ at: l.span.fromPos, piece: l.piece })),
+        ...laidFlex.map((f) => ({ at: flatAt.get(f.id) ?? 0, piece: f })),
+      ]);
     /**
      * ⚠️⚠️ **THE PINCH.** A #6 assembly is 1.09″ wide while the mains run
      * {@link FREEMO_TRACK_SPACING_INCHES} apart, so Main 2's rail has to come in
@@ -9264,7 +9318,12 @@ export function docToGraph(
         pieces.push(l.piece);
         laidTurnouts.set(l.t.id, l);
       }
-      layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts, branch.id, on.map((l) => ({ span: l.span, piece: l.piece })));
+      const laidBranch = layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts, branch.id, on.map((l) => ({ span: l.span, piece: l.piece })));
+      if (placeAt)
+        chainRun([
+          ...on.map((l) => ({ at: l.span.fromPos, piece: l.piece })),
+          ...laidBranch.map((f) => ({ at: flatAt.get(f.id) ?? 0, piece: f })),
+        ]);
     }
   }
 

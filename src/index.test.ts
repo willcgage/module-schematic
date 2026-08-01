@@ -7136,27 +7136,31 @@ describe("rebuilding a drawn module as pieces", () => {
       expect(worst).toBeLessThan(JOINT_SNAP_INCHES);
     });
 
-    // ⏳ NOT YET: THE BODIES DO NOT CHAIN, only the flex between them. Each
-    // turnout is still placed by its own sample, so two ADJACENT turnouts — the
-    // pair at 13″ and 19″ here, whose 6″ bodies touch — do not meet on a curve,
-    // and the walk stops at the first one.
+    // ⭐⭐ THE WELD. Chaining the flex closed flex-to-flex; each BODY was still
+    // placed by its own sample, so two adjacent turnouts never met on a curve
+    // and the walk stopped at the first (14.78 of 96). Every element of a run
+    // is now welded to the one before it, whatever kind it is.
     //
-    // This documents the remaining gap rather than asserting the fix: the run
-    // walks SHORT (14.78 of 96), and that number is the honest measure of how
-    // far the chain gets. When the bodies chain too it should approach 96, and
-    // this test should be turned into the assertion it wants to be.
-    it("still walks short until the turnout bodies chain as well", () => {
+    // ⏳ Still short of the full 96: a siding does not yet weld to the turnout
+    // that OPENS it — each run welds internally, and the diverging connection
+    // between runs is not part of either. This test PINS the progress so the
+    // number has to move when that lands, rather than asserting a completeness
+    // that is not there.
+    it("welds the bodies too, so the run walks most of the module", () => {
       const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(600));
       const g = graphToDoc(c.graph!.pieces, {
         startAt: c.graph!.startAt,
         start2: c.graph!.start2 ?? null,
         base: blairstown(),
       });
+      // Was 14.78 when only the flex chained; ~83.2 now.
+      expect(g.doc.lengthInches).toBeGreaterThan(75);
       // ⭐ A derived length far under the module's own is the cheap signal that
       // a chain is broken — it is how the first attempt announced itself (45.5
       // against 386) without ever refusing.
-      expect(g.doc.lengthInches).toBeLessThan(96);
-      expect(g.doc.lengthInches).toBeGreaterThan(0);
+      expect(g.doc.lengthInches).toBeLessThanOrEqual(96);
+      // Down from 10; what remains is the run-to-run diverging connection.
+      expect((g.warnings ?? []).filter((w) => /not reachable/.test(w)).length).toBeLessThan(5);
     });
 
     it("falls back to the flat lay when the caller cannot place a track", () => {
