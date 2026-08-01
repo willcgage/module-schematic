@@ -1652,6 +1652,29 @@ export function endplateFaceSegments(
  */
 export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
   const centerline = moduleCenterline(input);
+  /**
+   * ⭐⭐ THE BENCHWORK'S SPINE, WHICH IS NOT THE TRACK'S PATH.
+   *
+   * Will, 2026-08-01: *"The Endplate is a part of the benchwork. This keeps
+   * causing issues that we end up having circular issues with."* This is where
+   * the circularity actually lived: `moduleCenterline` lets an authored
+   * `mainPath` WIN (it is the main *track* centre-line, as its own name says),
+   * and the band + endplate faces were built from it — so the drawn TRACK
+   * defined the BENCHWORK, which defined the ENDPLATE. Exactly inverted from
+   * the build order the app is organised around (modulerepo#47: benchwork is
+   * layer 1, trackwork layer 2).
+   *
+   * Two different things were sharing one name:
+   *   - the BOARD's axis — what the benchwork is shaped around, and where its
+   *     ends (and therefore its endplates) are. Comes from the module's own
+   *     geometry: length, type/degrees/offset, sections, outline.
+   *   - the TRACK's path — what `pos` is measured along, so turnouts, signals
+   *     and industries follow the shape the owner actually drew.
+   *
+   * `centerline` stays the track's path, so nothing positional moves. Only the
+   * benchwork stops chasing it.
+   */
+  const spine = input.mainPath ? moduleCenterline({ ...input, mainPath: undefined }) : centerline;
   const widthA = endplateWidthFor(input.endplateWidths, "A");
   const widthB = endplateWidthFor(input.endplateWidths, "B");
   const authored = benchworkOutline(input);
@@ -1681,7 +1704,9 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
     secs.length > 1 || secs.some((s) => (s.outline?.length ?? 0) >= 3);
   const sectionOutlines = sectionsOwnShape
     ? sectionFootprints(input, {
-        centerline,
+        // Sections ARE benchwork — boards chained end to end — so they take the
+        // spine for the same reason the band and the faces do.
+        centerline: spine,
         widthA,
         widthB,
         offsetA: offA,
@@ -1690,13 +1715,15 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
     : [];
   return {
     centerline,
-    band: benchworkBand(centerline, widthA, widthB, offA, offB),
+    // ⭐ Both of these are BENCHWORK, so both read the spine — never the drawn
+    // track. See the note on `spine` above.
+    band: benchworkBand(spine, widthA, widthB, offA, offB),
     // Only emit a face where the module actually presents one. A loop's
     // centre-line ends at the THROAT, and an end of the line / pocket simply
     // stops — a far face there is a plate the module hasn't got (#191).
     endplateFaces: hasNoFarEndplate(input)
-      ? endplateFaceSegments(centerline, widthA, widthB, offA, offB).slice(0, 1)
-      : endplateFaceSegments(centerline, widthA, widthB, offA, offB),
+      ? endplateFaceSegments(spine, widthA, widthB, offA, offB).slice(0, 1)
+      : endplateFaceSegments(spine, widthA, widthB, offA, offB),
     outline: sectionOutlines.length || !authored ? null : sampleBenchworkOutline(authored),
     // The donut hole, arc-sampled — only when there's a solid outline to punch it
     // out of (a sectioned module isn't a donut). Renderers cut it from `outline`.
