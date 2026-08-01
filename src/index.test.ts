@@ -498,6 +498,32 @@ describe("moduleFootprint (physical single-module geometry)", () => {
     expect(fp.outline).not.toBeNull();
     expect(fp.outline!.length).toBeGreaterThan(4); // the bulged edge tessellated
   });
+
+  // ⭐⭐ Will, 2026-08-01: "The Endplate is a part of the benchwork." The board's
+  // ends are a fact about the BOARD, so a mainline drawn short, long or wandering
+  // must not move them — while `pos` still follows the track the owner drew.
+  it("the drawn mainline moves the TRACK's centre-line but never the benchwork or its endplate faces", () => {
+    const base = { lengthInches: 96, geometryType: "straight" as const };
+    const plain = moduleFootprint(base);
+    // Same module, with a main drawn 8in short of the end and bowed off-axis.
+    const drawn = moduleFootprint({
+      ...base,
+      mainPath: [{ x: 0, y: 0 }, { x: 88, y: -6 }],
+    });
+
+    // The TRACK's path follows what was drawn — that is what `pos` measures along.
+    expect(drawn.centerline[drawn.centerline.length - 1].x).toBeCloseTo(88);
+    expect(drawn.centerline[drawn.centerline.length - 1].y).toBeCloseTo(-6);
+
+    // The BENCHWORK does not budge: the far endplate face stays at the board's
+    // own end, not the track's.
+    const farFace = (fp: ReturnType<typeof moduleFootprint>) =>
+      fp.endplateFaces[fp.endplateFaces.length - 1];
+    expect(farFace(drawn).mid.x).toBeCloseTo(96);
+    expect(farFace(drawn).mid.y).toBeCloseTo(0);
+    expect(farFace(drawn)).toEqual(farFace(plain));
+    expect(drawn.band).toEqual(plain.band);
+  });
 });
 
 describe("double track (main2)", () => {
