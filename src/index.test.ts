@@ -68,6 +68,7 @@ import {
   TURNOUT_LEAD_INCHES_PER_FROG,
   ATLAS_CODE55_N,
   BUILT_IN_TRACK_PARTS,
+  type PlaceOnTrack,
   trackPart,
   turnoutPartForSize,
   partExtent,
@@ -7019,6 +7020,94 @@ describe("rebuilding a drawn module as pieces", () => {
     const doc = blairstown();
     doc.mainPath = [{ x: 0, y: 0 }, { x: 40, y: 4 }, { x: 96, y: 0 }];
     expect(docToGraph(doc, { turnoutPartId: SW }).refused).toMatch(/drawn with bends/);
+  });
+
+  // ⭐⭐ NOT ALL TRACK RUNS DOWN THE CENTRE-LINE (Will, 2026-08-01). The
+  // conversion used to lay every piece at `x = pos, y = lane, rotation = 0` —
+  // the STRAIGHTENED frame, not the board — so on a module whose centre-line
+  // curves the pieces came out in a straight line somewhere else entirely.
+  describe("laying pieces where the track really is", () => {
+    /** A board running due north-east: heading is constant, so nothing bends,
+     * but nothing is on the module's +x axis either. */
+    const diagonal: PlaceOnTrack = (_id, pos) => ({
+      x: (pos * Math.SQRT1_2),
+      y: (pos * Math.SQRT1_2),
+      headingDeg: 45,
+    });
+    /** A constant-radius curve: heading turns a fixed amount per inch, which is
+     * exactly what a circular arc is. R = arc / θ. */
+    const arcAt = (radius: number): PlaceOnTrack => (_id, pos) => {
+      const th = pos / radius;
+      return {
+        x: radius * Math.sin(th),
+        y: radius * (1 - Math.cos(th)),
+        headingDeg: (th * 180) / Math.PI,
+      };
+    };
+
+    it("puts the pieces on the track's real line, not the module's axis", () => {
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, diagonal);
+      expect(c.refused).toBeNull();
+      const flex = c.graph!.pieces.filter((p) => p.id.startsWith("f-"));
+      expect(flex.length).toBeGreaterThan(0);
+      for (const p of flex) {
+        expect(p.rotationDeg).toBeCloseTo(45, 6);
+        // On a 45° line the two coordinates are equal. The old lay put every
+        // one of these at y = the lane offset, on an axis the track never ran on.
+        expect(p.y).toBeCloseTo(p.x, 3);
+        expect(p.radiusInches).toBeUndefined();
+      }
+    });
+
+    it("bends each piece to the radius its own stretch actually has", () => {
+      const R = 240;
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(R));
+      expect(c.refused).toBeNull();
+      const flex = c.graph!.pieces.filter((p) => p.id.startsWith("f-") && p.lengthInches! > 1);
+      expect(flex.length).toBeGreaterThan(0);
+      for (const p of flex) {
+        // Derived from the polyline, not invented: turning θ over arc s IS s/θ.
+        expect(p.radiusInches).toBeCloseTo(R, 0);
+      }
+    });
+
+    it("keeps a straight run straight instead of describing it as a vast arc", () => {
+      // A hair of turn is float noise, and 1e-3° over 30″ is a 1.7-million-inch
+      // radius — a straight piece described in the most alarming way possible.
+      const noisy: PlaceOnTrack = (_id, pos) => ({ x: pos, y: 0, headingDeg: 1e-4 * pos });
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, noisy);
+      const flex = c.graph!.pieces.filter((p) => p.id.startsWith("f-"));
+      expect(flex.every((p) => p.radiusInches === undefined)).toBe(true);
+    });
+
+    it("turns a west-facing turnout about the track's heading, not the module's", () => {
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, diagonal);
+      const sw = c.graph!.pieces.filter((p) => p.id.startsWith("t-"));
+      expect(sw.length).toBeGreaterThan(0);
+      // Every turnout faces along the 45° track — either with it or end-for-end.
+      for (const p of sw) expect([45, -135]).toContainEqual(Math.round(p.rotationDeg));
+      // …and none of them is left sitting on the module's axis.
+      expect(sw.every((p) => Math.abs(p.y - p.x) < 1e-3)).toBe(true);
+    });
+
+    it("lays a bent mainline now that the radius can be read off the drawing", () => {
+      const doc = blairstown();
+      doc.mainPath = [{ x: 0, y: 0 }, { x: 40, y: 4 }, { x: 96, y: 0 }];
+      // Still refused with no placer — laying it flat would silently straighten
+      // the owner's curve, which is what the refusal was protecting against.
+      expect(docToGraph(doc, { turnoutPartId: SW }).refused).toMatch(/drawn with bends/);
+      expect(
+        docToGraph(doc, { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(400)).refused,
+      ).toBeNull();
+    });
+
+    it("falls back to the flat lay when the caller cannot place a track", () => {
+      const none: PlaceOnTrack = () => null;
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, none);
+      expect(c.refused).toBeNull();
+      const flex = c.graph!.pieces.filter((p) => p.id.startsWith("f-"));
+      expect(flex.every((p) => p.rotationDeg === 0)).toBe(true);
+    });
   });
 
   it("names track it could not lay rather than losing it quietly", () => {

@@ -8346,6 +8346,32 @@ export interface ConversionAnswers {
   overrides?: Record<string, string>;
 }
 
+/**
+ * Where a point on a track REALLY is, in module coordinates.
+ *
+ * ⭐⭐ **NOT ALL TRACK RUNS DOWN THE CENTRE-LINE** (Will, 2026-08-01), and the
+ * conversion used to behave as though it did: it laid every piece at
+ * `x = pos, y = laneOffset, rotationDeg = 0`, which is the STRAIGHTENED 1-D
+ * frame, not the board. On a module whose centre-line curves — FMN-0064 chains
+ * eight sections into a 386″ × 148.5″ shape — the pieces came out in a straight
+ * line while the track they were converted from ran somewhere else entirely.
+ *
+ * The caller supplies this because **which polyline a piece sits on is a fact
+ * about the MODULE's shape**, exactly as {@link turnoutDivergingLeg} takes its
+ * `sampleAt`. The app already resolves it for every track it draws: the main is
+ * the centre-line, a drawn track is its own path, and a positional siding is the
+ * centre-line offset to its lane. Absent = lay flat, the old behaviour.
+ *
+ * `absPos` is inches from endplate A **measured along the module**, which is
+ * what a document stores; converting that to an arc length along whatever
+ * polyline the track really is belongs to the caller too, since it is the same
+ * projection its renderer already does.
+ */
+export type PlaceOnTrack = (
+  trackId: string,
+  absPos: number,
+) => { x: number; y: number; headingDeg: number } | null;
+
 export interface DocToGraphResult {
   /** The graph to store, or null when the document could not be converted. */
   graph: NonNullable<ModuleSchematicDoc["graph"]> | null;
@@ -8402,6 +8428,10 @@ export function docToGraph(
   doc: ModuleSchematicDoc,
   answers: ConversionAnswers = {},
   library = BUILT_IN_TRACK_PARTS,
+  /** Where each track really runs — see {@link PlaceOnTrack}. Absent = the old
+   * flat lay, which is correct only for a straight module whose track is all on
+   * the centre-line. */
+  placeAt: PlaceOnTrack | null = null,
 ): DocToGraphResult {
   const refuse = (why: string): DocToGraphResult => ({
     graph: null,
@@ -8413,7 +8443,13 @@ export function docToGraph(
   const report = moduleConversionReport(doc, library);
   if (report.alreadyGraph) return refuse("this module is already authored as pieces");
   if (!report.offerable) return refuse(report.blockers.map((b) => b.why).join("; "));
-  if ((doc.mainPath?.length ?? 0) > 2)
+  // ⭐ CURVED RUNS ARE SUPPORTED NOW — when the caller says where the track is.
+  // The refusal was honest while every piece was laid flat: a bent mainline
+  // needs each bend's radius, and there was nowhere to get one. Given a
+  // {@link PlaceOnTrack} the radius is READ OFF the drawn path rather than
+  // invented, so the reason no longer holds. Without one we still lay flat, and
+  // a bent run would come out straight — so the refusal stands in that case.
+  if (!placeAt && (doc.mainPath?.length ?? 0) > 2)
     return refuse(
       "this module's mainline is drawn with bends, and laying it as pieces would need each bend's radius — convert it once curved runs are supported",
     );
@@ -8474,6 +8510,52 @@ export function docToGraph(
   const jointsOf = (p: TrackPiece) => placedJoints([p], library);
   const jointAt = (p: TrackPiece, id: string) => jointsOf(p).find((j) => j.joint === id) ?? null;
   type Cursor = { x: number; y: number; headingDeg: number };
+
+  /**
+   * Put a laid piece where the track REALLY is.
+   *
+   * Takes the flat-frame span the 1-D lay produced and asks {@link PlaceOnTrack}
+   * for the two ends, then reads the piece's placement off the answer:
+   *
+   * - **origin + heading** come from the `from` end, so the piece starts exactly
+   *   where the run does rather than at `x = pos, y = lane`;
+   * - **radius** is DERIVED from how much the heading turned across the span.
+   *   Turning θ over an arc `s` is a radius of `s / θ` — the same relationship
+   *   the curve model already uses, read off the polyline instead of invented.
+   *   The sign is the side, matching {@link TrackPiece.radiusInches}.
+   *
+   * ⚠️ Below a hair of turn a run is straight and must stay straight: a
+   * thousandth of a degree over 30″ is a 1.7-million-inch radius, which is a
+   * straight piece described in the most alarming way possible.
+   */
+  const STRAIGHT_ENOUGH_DEG = 0.05;
+  const placeSpan = (
+    trackId: string,
+    fromPos: number,
+    toPos: number,
+  ): { x: number; y: number; rotationDeg: number; radiusInches?: number } | null => {
+    if (!placeAt) return null;
+    const a = placeAt(trackId, fromPos);
+    const b = placeAt(trackId, toPos);
+    if (!a || !b) return null;
+    const arc = Math.abs(toPos - fromPos);
+    const turn = norm180(b.headingDeg - a.headingDeg);
+    if (!(arc > 0) || Math.abs(turn) < STRAIGHT_ENOUGH_DEG) {
+      return { x: r3(a.x), y: r3(a.y), rotationDeg: a.headingDeg };
+    }
+    return {
+      x: r3(a.x),
+      y: r3(a.y),
+      rotationDeg: a.headingDeg,
+      radiusInches: r3(arc / rad(turn)),
+    };
+  };
+
+  /** Where a body (a turnout) sits — a point, not a span, so no radius. */
+  const placePoint = (
+    trackId: string,
+    pos: number,
+  ): { x: number; y: number; headingDeg: number } | null => (placeAt ? placeAt(trackId, pos) : null);
 
   /**
    * A transition curve: leave `from` on its current heading, arrive parallel to
@@ -8561,12 +8643,20 @@ export function docToGraph(
     // anywhere — this reads the side off the document's lanes.
     const want = Math.sign((branch?.lane ?? hostLane) - hostLane) || 1;
     const unflipped = facing > 0 ? 1 : -1;
+    // ⭐ A turnout is a FIXED MOULDING — it has no radius to derive, so only its
+    // origin and heading move. Facing west still means turning it end-for-end,
+    // but about the track's real heading rather than the module's +x.
+    const at = placePoint(t.onTrack, throatPos);
     const piece: TrackPiece = {
       id: `t-${t.id}`,
       partId: part.id,
-      x: throatPos,
-      y: hostY,
-      rotationDeg: facing > 0 ? 0 : 180,
+      x: at ? r3(at.x) : throatPos,
+      y: at ? r3(at.y) : hostY,
+      rotationDeg: at
+        ? norm180(at.headingDeg + (facing > 0 ? 0 : 180))
+        : facing > 0
+          ? 0
+          : 180,
       ...(unflipped !== want ? { flipped: true } : {}),
       ...(t.name ? { name: t.name } : {}),
     };
@@ -8609,16 +8699,27 @@ export function docToGraph(
     toPos: number,
     occupied: OccupiedSpan[],
     cuts?: number[] | null,
+    /** Which track this run IS, so its pieces can be put where it really runs.
+     * Absent = the flat lay (a synthesised connector with no track of its own). */
+    trackId?: string | null,
   ) => {
     const out = flexPieces({ fromPos, toPos, maxPieceInches: maxPiece, occupied, cuts: cuts ?? null });
-    const placed: TrackPiece[] = out.map((f, i) => ({
-      id: `f-${label}-${i}`,
-      partId: flexId,
-      x: f.fromPos,
-      y: hostY,
-      rotationDeg: 0,
-      lengthInches: r3(f.lengthInches),
-    }));
+    const placed: TrackPiece[] = out.map((f, i) => {
+      const flat = {
+        id: `f-${label}-${i}`,
+        partId: flexId,
+        x: f.fromPos,
+        y: hostY,
+        rotationDeg: 0,
+        lengthInches: r3(f.lengthInches),
+      };
+      // ⭐ Each cut is placed on its OWN span, so a run that curves through the
+      // module comes out as a chain of pieces each bent to the radius its own
+      // stretch actually has — which is what a builder does with flex, and why
+      // the radius belongs to the piece rather than the part.
+      const real = trackId ? placeSpan(trackId, f.fromPos, f.toPos) : null;
+      return real ? { ...flat, ...real } : flat;
+    });
     pieces.push(...placed);
     return placed;
   };
@@ -8889,6 +8990,7 @@ export function docToGraph(
       endPos,
       [...on.map((l) => l.span), ...assemblySpans],
       m.flexCuts,
+      m.id,
     );
     /**
      * ⚠️⚠️ **THE PINCH.** A #6 assembly is 1.09″ wide while the mains run
@@ -9096,7 +9198,7 @@ export function docToGraph(
         pieces.push(l.piece);
         laidTurnouts.set(l.t.id, l);
       }
-      layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts);
+      layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts, branch.id);
     }
   }
 
