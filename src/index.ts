@@ -8702,10 +8702,39 @@ export function docToGraph(
     /** Which track this run IS, so its pieces can be put where it really runs.
      * Absent = the flat lay (a synthesised connector with no track of its own). */
     trackId?: string | null,
+    /** The BODIES this run is being laid around, already placed. A cut that
+     * begins where a turnout ends must continue from that turnout's own joint —
+     * re-sampling the polyline there leaves the same gap chaining exists to
+     * close, just at the turnout instead of between two flex pieces. */
+    bodies?: { span: OccupiedSpan; piece: TrackPiece }[],
   ) => {
     const out = flexPieces({ fromPos, toPos, maxPieceInches: maxPiece, occupied, cuts: cuts ?? null });
-    const placed: TrackPiece[] = out.map((f, i) => {
-      const flat = {
+    /**
+     * ⭐⭐ THE PIECES CHAIN. Each cut takes its SHAPE from the polyline — the
+     * heading it sets off on and the radius its own stretch is bent to — but a
+     * continuing piece takes its POSITION from the previous piece's far joint,
+     * never from a fresh sample.
+     *
+     * ⛔⛔ Sampling every piece independently is what broke the first attempt.
+     * A 30″ piece's real far end and the polyline's point 30″ along are not the
+     * same place on a curve, and they differ by far more than
+     * {@link JOINT_SNAP_INCHES} (0.01″). So consecutive pieces never shared a
+     * joint, the graph FRAGMENTED, and `graphToDoc` walked 45.5″ of a 386″
+     * module with 21 "not reachable from the endplate" warnings.
+     *
+     * Chaining makes the joint exact BY CONSTRUCTION, which is the same
+     * standard {@link aimEndAt} is held to: "close enough to snap" is the habit
+     * that lets real drift in.
+     *
+     * ⚠️ Only a CONTIGUOUS cut chains. `flexPieces` breaks the run around each
+     * turnout body, and the piece after a turnout starts at the turnout, not at
+     * the flex before it — so a new group re-samples the polyline.
+     */
+    const placed: TrackPiece[] = [];
+    let prevEnd: { x: number; y: number; headingDeg: number } | null = null;
+    let prevToPos: number | null = null;
+    out.forEach((f, i) => {
+      const flat: TrackPiece = {
         id: `f-${label}-${i}`,
         partId: flexId,
         x: f.fromPos,
@@ -8713,12 +8742,48 @@ export function docToGraph(
         rotationDeg: 0,
         lengthInches: r3(f.lengthInches),
       };
-      // ⭐ Each cut is placed on its OWN span, so a run that curves through the
-      // module comes out as a chain of pieces each bent to the radius its own
-      // stretch actually has — which is what a builder does with flex, and why
-      // the radius belongs to the piece rather than the part.
-      const real = trackId ? placeSpan(trackId, f.fromPos, f.toPos) : null;
-      return real ? { ...flat, ...real } : flat;
+      const shape = trackId ? placeSpan(trackId, f.fromPos, f.toPos) : null;
+      if (!shape) {
+        placed.push(flat);
+        prevEnd = null;
+        prevToPos = f.toPos;
+        return;
+      }
+      let continues =
+        prevEnd != null && prevToPos != null && Math.abs(f.fromPos - prevToPos) < 1e-6;
+      // Starting against a body? Continue from ITS joint. Which of the two or
+      // three is decided by proximity to the sampled start — the sample is
+      // right to within an inch, and it is only being used to CHOOSE the joint;
+      // the position and heading then come from the joint exactly.
+      if (!continues && bodies?.length) {
+        const touching = bodies.find(
+          (b) =>
+            Math.abs(b.span.toPos - f.fromPos) < 0.51 ||
+            Math.abs(b.span.fromPos - f.fromPos) < 0.51,
+        );
+        if (touching) {
+          const near = jointsOf(touching.piece)
+            .map((j) => ({ j, d: Math.hypot(j.x - shape.x, j.y - shape.y) }))
+            .sort((a, b) => a.d - b.d)[0];
+          if (near) {
+            prevEnd = { x: near.j.x, y: near.j.y, headingDeg: near.j.headingDeg };
+            continues = true;
+          }
+        }
+      }
+      const piece: TrackPiece = {
+        ...flat,
+        ...shape,
+        ...(continues && prevEnd
+          ? { x: r3(prevEnd.x), y: r3(prevEnd.y), rotationDeg: prevEnd.headingDeg }
+          : {}),
+      };
+      placed.push(piece);
+      // The far joint of the piece as actually placed — bend included, since
+      // `placedJoints` runs a flex end through `flexRunEnd(length, radius)`.
+      const end = jointAt(piece, "b");
+      prevEnd = end ? { x: end.x, y: end.y, headingDeg: end.headingDeg } : null;
+      prevToPos = f.toPos;
     });
     pieces.push(...placed);
     return placed;
@@ -8991,6 +9056,7 @@ export function docToGraph(
       [...on.map((l) => l.span), ...assemblySpans],
       m.flexCuts,
       m.id,
+      on.map((l) => ({ span: l.span, piece: l.piece })),
     );
     /**
      * ⚠️⚠️ **THE PINCH.** A #6 assembly is 1.09″ wide while the mains run
@@ -9198,7 +9264,7 @@ export function docToGraph(
         pieces.push(l.piece);
         laidTurnouts.set(l.t.id, l);
       }
-      layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts, branch.id);
+      layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts, branch.id, on.map((l) => ({ span: l.span, piece: l.piece })));
     }
   }
 
