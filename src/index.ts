@@ -10461,6 +10461,46 @@ export interface ModuleGeometryInput {
   loop?: boolean;
 }
 
+/**
+ * ⭐⭐ THE MODULE'S LENGTH, READ OFF ITS BENCHWORK (modulerepo#268).
+ *
+ * Will, 2026-08-01: *"benchwork edges own the endplates"* — and the last of the
+ * circularity is that `lengthInches` POSITIONS endplate B while dragging
+ * endplate B SETS `lengthInches`. The cure is for the length to be a readout of
+ * the board: the distance from endplate A's face to endplate B's.
+ *
+ * ⚠️ RETURNS null UNLESS THE BENCHWORK ACTUALLY DEFINES BOTH ENDS. That is what
+ * keeps this from being circular all over again: a plate that is only *derived*
+ * onto an edge got there from `lengthInches`, so measuring between two such
+ * plates would just hand the same number back. Both ends must be **authored**
+ * edge bindings — the owner saying "this edge is my endplate" — for the board to
+ * have an opinion of its own. Anything else keeps the authored length.
+ *
+ * ⭐ AND IT IS THE FACE-TO-FACE DISTANCE, NOT A FASCIA LENGTH. FMN-0078 is
+ * tapered: its fasciae run 96.333″ while its ends are 96″ apart. A module's
+ * length is how far it is from one neighbour to the next, which is the ends —
+ * nobody measures a module along its side rail.
+ */
+export function benchworkLengthInches(input: {
+  outline?: BenchworkPoint[] | null;
+  sections?: SchematicSection[] | null;
+  endplateEdges?: Record<string, EndplateEdge> | null;
+}): number | null {
+  const edges = input.endplateEdges;
+  if (!edges) return null;
+  const a = edges["A"];
+  const b = edges["B"];
+  if (!a || !b) return null;
+  const outlineFor = (e: EndplateEdge) =>
+    (e.section ? input.sections?.find((s) => s.id === e.section)?.outline : input.outline) ??
+    input.outline;
+  const pa = endplateEdgePose(outlineFor(a), a);
+  const pb = endplateEdgePose(outlineFor(b), b);
+  if (!pa || !pb) return null;
+  const d = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+  return d > 0 ? Math.round(d * 1000) / 1000 : null;
+}
+
 /** Signed turn a module applies to the through track (CCW/left positive). */
 export function geometryTurnDegrees(
   geometryType?: string | null,
