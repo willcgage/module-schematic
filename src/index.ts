@@ -10254,6 +10254,15 @@ export interface EndplatePose {
   /** Set when this pose came from an {@link EndplateEdge} — read off the
    * benchwork rather than stored. Its width and face are the board's own. */
   boundToEdge?: boolean;
+  /** ⭐ Set when the binding was DERIVED rather than authored — the plate already
+   * lay on that edge, so the edge owns it (modulerepo#268). Nothing was stored:
+   * reshape the board and this re-resolves, or stops matching and falls back.
+   * Callers can use it to say "this plate is part of your benchwork" without
+   * claiming the owner chose the edge. */
+  edgeDerived?: boolean;
+  /** Set when the module HAS benchwork but this plate lies on none of its edges —
+   * so the board and the plate disagree. Reported, never corrected. */
+  offBenchwork?: boolean;
   /** The face's real width, when bound to an edge. */
   widthInches?: number;
   /** The face's two ends, when bound to an edge — follows a tapered board. */
@@ -10491,6 +10500,79 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
   const half = geo.trackHalfSpacingInches ?? 1;
   const cfg = (i: number): "single" | "double" =>
     geo.endplateConfigs?.[i] === "double" ? "double" : "single";
+  /**
+   * ⭐⭐ THE BENCHWORK EDGE THIS PLATE ALREADY SITS ON (Will, 2026-08-01,
+   * modulerepo#268: *"benchwork edges own the endplates"*).
+   *
+   * Nothing in the catalogue carries an authored `endplateEdges` binding — 0 of
+   * 32 — so "the edge owns the plate" cannot mean "read the binding" without
+   * stranding every existing module. It is DERIVED instead: if a plate's face
+   * already lies along a straight benchwork edge, facing the same way out, then
+   * that edge IS where the plate is, and the plate should be read off it.
+   *
+   * ⭐ THE SAFETY PROPERTY IS THE MATCHING RULE ITSELF. A match requires the
+   * plate and the edge to AGREE — same point, same outward heading — so binding
+   * moves nothing today. What changes is tomorrow: reshape the board and the
+   * plate follows it, instead of staying where a stale `lengthInches` put it.
+   * ⚠️ A derivation, NOT a stored pin. Nothing is written; if the board changes
+   * so the plate no longer lies on any edge, the match simply stops matching
+   * and the caller can say so — the failure mode #182's stale poses had.
+   *
+   * The span comes from the plate's OWN width, centred where it sits, so
+   * binding never widens a plate to swallow its whole edge (modulerepo#275).
+   */
+  const edgeUnderPose = (p: EndplatePose, widthInches: number): EndplateEdge | null => {
+    const ring = geo.outline;
+    if (!ring || ring.length < 3 || !(widthInches > 0)) return null;
+    const n = ring.length;
+    let cx = 0;
+    let cy = 0;
+    for (const v of ring) {
+      cx += v.x;
+      cy += v.y;
+    }
+    cx /= n;
+    cy /= n;
+    const POS_EPS = 0.5; // inches off the edge line / past its ends
+    const DIR_EPS = Math.cos(5 * DEG); // 5° of heading disagreement
+    const hx = Math.cos(p.heading * DEG);
+    const hy = Math.sin(p.heading * DEG);
+    for (let i = 0; i < n; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % n];
+      if (a.bulge) continue; // a curved fascia is never an endplate face (§2.0)
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (!(len > 0)) continue;
+      const ex = dx / len;
+      const ey = dy / len;
+      // Outward normal, away from the centroid — the same rule the resolver and
+      // `snapPoseToOutline` use, so a derived binding and a dragged plate agree.
+      let nx = ey;
+      let ny = -ex;
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      if ((mx - cx) * nx + (my - cy) * ny < 0) {
+        nx = -nx;
+        ny = -ny;
+      }
+      if (hx * nx + hy * ny < DIR_EPS) continue; // faces a different way out
+      // Where the plate sits along the edge, and how far off its line.
+      const t = ((p.x - a.x) * ex + (p.y - a.y) * ey) / len;
+      const off = (p.x - a.x) * nx + (p.y - a.y) * ny;
+      if (Math.abs(off) > POS_EPS) continue;
+      if (t < -POS_EPS / len || t > 1 + POS_EPS / len) continue;
+      // Keep the plate's own width; centre the span on where it actually is.
+      const half = widthInches / 2 / len;
+      const fromT = Math.max(0, Math.min(1, t - half));
+      const toT = Math.max(0, Math.min(1, t + half));
+      if (!(toT > fromT)) continue;
+      return { index: i, fromT, toT };
+    }
+    return null;
+  };
+
   const withOverride = (p: EndplatePose): EndplatePose => {
     // ⭐ AN EDGE BINDING WINS OVER EVERYTHING (ADR 0001). It is not an override
     // in the sense a pose is — it is where the endplate IS, read off the board,
@@ -10517,9 +10599,47 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
       // The edge named nothing usable — a curved fascia, or an outline that has
       // since changed shape. Fall through rather than draw a lie; the caller can
       // see `boundToEdge` is absent and say so.
+      //
+      // ⛔⛔ AND DO NOT QUIETLY DERIVE A DIFFERENT ONE. The owner named this edge;
+      // if it stopped resolving, that is the thing to report. Substituting
+      // whichever edge the plate happens to lie on would repair their broken
+      // binding behind their back and hide it — flag, don't correct
+      // (#190/#193/#275). An existing test caught exactly this.
+      return p;
     }
+    // ⚠️ A HAND-PLACED POSE OUTRANKS A DERIVED BINDING. The owner put it there
+    // deliberately; a derived binding is only an inference about where it
+    // already is. Manual authority above inference — an authored `endplateEdges`
+    // entry still beats both, because that IS the owner choosing the edge.
     const o = geo.poseOverrides?.[p.id];
-    return o ? { ...p, x: o.x, y: o.y, heading: norm360(o.heading), manual: true } : p;
+    if (o) return { ...p, x: o.x, y: o.y, heading: norm360(o.heading), manual: true };
+
+    // ⭐ Otherwise: does this plate already sit on a benchwork edge? Then the
+    // edge owns it (#268). Matching requires agreement, so this moves nothing
+    // today — it makes the plate follow the board when the board changes.
+    const w =
+      p.widthInches ??
+      endplateWidthFor(geo.endplateWidths, p.id) ??
+      FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES;
+    const found = edgeUnderPose(p, w);
+    if (found) {
+      const e = endplateEdgePose(geo.outline, found);
+      if (e)
+        return {
+          ...p,
+          x: e.x,
+          y: e.y,
+          heading: e.heading,
+          widthInches: e.widthInches,
+          face: e.face,
+          boundToEdge: true,
+          edgeDerived: true,
+        };
+    }
+    // The module has benchwork and this plate is on none of it. Say so; never
+    // move the plate onto the board (flag, don't correct — #190/#193/#275).
+    const hasBenchwork = (geo.outline?.length ?? 0) >= 3;
+    return hasBenchwork ? { ...p, offBenchwork: true } : p;
   };
 
   const poses: EndplatePose[] = [];

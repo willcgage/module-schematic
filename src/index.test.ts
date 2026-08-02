@@ -561,6 +561,101 @@ describe("moduleFootprint (physical single-module geometry)", () => {
   });
 });
 
+// ⭐⭐ Will, 2026-08-01 (modulerepo#268): "benchwork edges own the endplates."
+describe("a benchwork edge OWNS the endplate that sits on it", () => {
+  const board = [
+    { x: 0, y: -12 },
+    { x: 96, y: -12 },
+    { x: 96, y: 12 },
+    { x: 0, y: 12 },
+  ];
+  const base = {
+    lengthInches: 96,
+    geometryType: "straight" as const,
+    endplateConfigs: ["single", "single"] as ("single" | "double")[],
+  };
+
+  // ⭐ THE SAFETY PROPERTY. Matching demands the plate and the edge AGREE, so
+  // adopting the edge cannot move anything that was already right. If this ever
+  // fails, the change is silently repositioning existing modules.
+  it("moves nothing today — a plate on its board's end reads the same pose bound as unbound", () => {
+    const withoutBoard = deriveEndplatePoses(base);
+    const withBoard = deriveEndplatePoses({ ...base, outline: board });
+    for (const id of ["A", "B"]) {
+      const u = withoutBoard.find((p) => p.id === id)!;
+      const b = withBoard.find((p) => p.id === id)!;
+      expect(b.x).toBeCloseTo(u.x, 6);
+      expect(b.y).toBeCloseTo(u.y, 6);
+      expect(b.heading).toBeCloseTo(u.heading, 6);
+      expect(b.boundToEdge).toBe(true);
+      expect(b.edgeDerived).toBe(true);
+    }
+  });
+
+  // ⚠️ A DEEPER BOARD DOES NOT WIDEN THE PLATE. The span keeps the plate's own
+  // width and stays centred where it sits — binding must never swallow the edge
+  // (modulerepo#275). The board grows; the endplate is still the endplate.
+  it("stays its own width on a deeper board, centred on the edge", () => {
+    const deeper = board.map((p) => ({ ...p, y: p.y < 0 ? -16 : 16 }));
+    const poses = deriveEndplatePoses({ ...base, outline: deeper });
+    const b = poses.find((p) => p.id === "B")!;
+    expect(b.boundToEdge).toBe(true);
+    expect(b.widthInches).toBeCloseTo(24); // its own width, not the 32in edge
+    expect(b.face![0].y).toBeCloseTo(-12);
+    expect(b.face![1].y).toBeCloseTo(12);
+  });
+
+  // ⚠️⚠️ THE LIMIT OF THIS INCREMENT, PINNED SO NOBODY MISREADS IT. Lengthening
+  // the board does NOT drag the plate along, because the plate's position still
+  // comes from `lengthInches` — the edge is adopted only where it already
+  // agrees. Real ownership needs the length DERIVED from the benchwork, which is
+  // the remaining half of modulerepo#268. Until then this is honestly reported
+  // rather than silently papered over.
+  it("does NOT follow a board lengthened on its own — it reports the disagreement", () => {
+    const longer = board.map((p) => (p.x === 96 ? { ...p, x: 120 } : p));
+    const poses = deriveEndplatePoses({ ...base, outline: longer });
+    const b = poses.find((p) => p.id === "B")!;
+    expect(b.x).toBeCloseTo(96); // where lengthInches puts it
+    expect(b.boundToEdge).toBeFalsy();
+    expect(b.offBenchwork).toBe(true);
+  });
+
+  // ⚠️ Binding must not widen a plate to swallow its edge (modulerepo#275).
+  it("keeps the plate's own width instead of taking the whole edge", () => {
+    const poses = deriveEndplatePoses({
+      ...base,
+      outline: board,
+      endplateWidths: { A: 16, B: 16 },
+    });
+    const b = poses.find((p) => p.id === "B")!;
+    expect(b.widthInches).toBeCloseTo(16); // the edge is 24in long
+  });
+
+  // ⚠️ Manual authority above inference.
+  it("a hand-placed pose outranks a derived binding", () => {
+    const poses = deriveEndplatePoses({
+      ...base,
+      outline: board,
+      poseOverrides: { B: { x: 80, y: 4, heading: 0 } },
+    });
+    const b = poses.find((p) => p.id === "B")!;
+    expect(b.manual).toBe(true);
+    expect(b.boundToEdge).toBeFalsy();
+    expect(b.x).toBeCloseTo(80);
+  });
+
+  // ⛔ Flag, don't correct: a plate off the board is reported where it is.
+  it("reports a plate that lies on no edge instead of moving it onto the board", () => {
+    // A board that stops well short of where the module says its far end is.
+    const shortBoard = board.map((p) => (p.x === 96 ? { ...p, x: 60 } : p));
+    const poses = deriveEndplatePoses({ ...base, outline: shortBoard });
+    const b = poses.find((p) => p.id === "B")!;
+    expect(b.boundToEdge).toBeFalsy();
+    expect(b.offBenchwork).toBe(true);
+    expect(b.x).toBeCloseTo(96); // left where it was, NOT dragged to 60
+  });
+});
+
 describe("double track (main2)", () => {
   it("stateToDoc emits Main 2 as a real track only when an endplate is double", () => {
     const single = stateToDoc(emptyEditorState(96), "M");
