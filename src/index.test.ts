@@ -56,6 +56,7 @@ import {
   MAIN_TRACK_ID,
   MAIN2_TRACK_ID,
   deriveEndplatePoses,
+  benchworkLengthInches,
   poseNeedsManual,
   hasNoFarEndplate,
   poseOverridesFromDoc,
@@ -558,6 +559,58 @@ describe("moduleFootprint (physical single-module geometry)", () => {
     });
     expect(noOutlineNoFootprints.sectionOutlines).toHaveLength(0);
     expect(noOutlineNoFootprints.benchworkAuthored).toBe(false);
+  });
+});
+
+// ⭐⭐ modulerepo#268, the last of the circularity: the length is a READOUT of
+// the board, not a number that positions the endplate that then sets it back.
+describe("benchworkLengthInches", () => {
+  const rect = [
+    { x: 0, y: -12 },
+    { x: 96, y: -12 },
+    { x: 96, y: 12 },
+    { x: 0, y: 12 },
+  ];
+  // Edge 3 is (0,12)->(0,-12) = end A; edge 1 is (96,-12)->(96,12) = end B.
+  const bothEnds = { A: { index: 3 }, B: { index: 1 } };
+
+  it("measures face to face when both ends are authored benchwork edges", () => {
+    expect(benchworkLengthInches({ outline: rect, endplateEdges: bothEnds })).toBeCloseTo(96);
+  });
+
+  // ⭐ A TAPERED BOARD IS THE CASE THAT MATTERS. FMN-0078's fasciae run 96.333in
+  // while its ends are 96in apart — a module's length is end to end, because
+  // that is what its neighbours meet. Nobody measures a module along its side.
+  it("is the face-to-face distance on a tapered board, not the fascia length", () => {
+    const tapered = [
+      { x: 0, y: -8 },
+      { x: 96, y: -16 },
+      { x: 96, y: 16 },
+      { x: 0, y: 8 },
+    ];
+    const fascia = Math.hypot(96 - 0, -16 - -8); // 96.333…
+    expect(fascia).toBeGreaterThan(96.3);
+    expect(
+      benchworkLengthInches({ outline: tapered, endplateEdges: { A: { index: 3 }, B: { index: 1 } } }),
+    ).toBeCloseTo(96);
+  });
+
+  // ⛔⛔ THE GUARD THAT STOPS THIS BEING CIRCULAR AGAIN. A plate only DERIVED onto
+  // an edge got there from `lengthInches`; measuring between two of those would
+  // hand the same number straight back. Both ends must be AUTHORED.
+  it("refuses unless both ends are authored — no outline, one end, or none", () => {
+    expect(benchworkLengthInches({ outline: rect, endplateEdges: {} })).toBeNull();
+    expect(benchworkLengthInches({ outline: rect, endplateEdges: { A: { index: 3 } } })).toBeNull();
+    expect(benchworkLengthInches({ outline: null, endplateEdges: bothEnds })).toBeNull();
+    expect(benchworkLengthInches({ outline: rect })).toBeNull();
+  });
+
+  it("refuses an edge that does not resolve, rather than guessing", () => {
+    const curved = [{ x: 0, y: -12, bulge: 4 }, ...rect.slice(1)];
+    // edge 0 is now a curved fascia; binding an end to it must not yield a length
+    expect(
+      benchworkLengthInches({ outline: curved, endplateEdges: { A: { index: 0 }, B: { index: 1 } } }),
+    ).toBeNull();
   });
 });
 
