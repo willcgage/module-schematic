@@ -1117,6 +1117,22 @@ export interface ModuleFootprint {
    * they are the module's footprint. Empty = this module doesn't use sections,
    * so fall back to `outline ?? band` exactly as before. */
   sectionOutlines: SectionFootprint[];
+  /**
+   * ⭐⭐ HAS THE OWNER ACTUALLY DRAWN A BOARD? (Will, 2026-08-01, modulerepo#268)
+   *
+   * `band` is always produced, so `outline ?? band` always draws *something* —
+   * which meant a module with no benchwork at all was indistinguishable from
+   * one with a real board. **An endplate is part of the benchwork**, so a
+   * module without benchwork has nothing for its plates to belong to, and the
+   * honest response is to TELL THE OWNER rather than quietly stand a derived
+   * ribbon in for the board they never drew.
+   *
+   * False ⇒ `band` is a derived stand-in, not the module's real shape.
+   * ⚠️ Deliberately NOT used to suppress the band: half the catalogue has no
+   * outline, and blanking their boards would be rewriting owners' modules
+   * rather than asking them. Renderers keep drawing; the apps warn.
+   */
+  benchworkAuthored: boolean;
 }
 
 /** Module-local main track centre-line (A→B), sampling arcs for curves/corners.
@@ -1732,6 +1748,9 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
         ? null
         : sampleBenchworkOutline(input.outlineInner),
     sectionOutlines,
+    // Either a real ring the owner drew, or sections that own the shape — both
+    // are benchwork somebody authored. Anything else and `band` is a stand-in.
+    benchworkAuthored: !!authored || sectionOutlines.length > 0,
   };
 }
 

@@ -524,6 +524,34 @@ describe("moduleFootprint (physical single-module geometry)", () => {
     expect(farFace(drawn)).toEqual(farFace(plain));
     expect(drawn.band).toEqual(plain.band);
   });
+
+  // ⭐ A module with no benchwork must be TELLABLE from one with a board, so the
+  // apps can warn instead of standing a derived ribbon in for a board nobody
+  // drew (modulerepo#268). The band still comes out either way — blanking it
+  // would rewrite half the catalogue's modules rather than ask their owners.
+  it("says whether the benchwork was actually authored, without withholding the band", () => {
+    const none = moduleFootprint({ lengthInches: 96, geometryType: "straight" });
+    expect(none.benchworkAuthored).toBe(false);
+    expect(none.band.length).toBeGreaterThan(0); // still drawable
+
+    const drawn = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      outline: [{ x: 0, y: -12 }, { x: 96, y: -12 }, { x: 96, y: 12 }, { x: 0, y: 12 }],
+    });
+    expect(drawn.benchworkAuthored).toBe(true);
+
+    // ⚠️ Bare sections are LENGTHS, not a drawn shape — nobody authored
+    // benchwork there, and saying otherwise would silence the warning on
+    // exactly the modules that need it. (Sections that DO own a shape reach
+    // `benchworkAuthored` through `sectionOutlines`; see moduleFootprint.)
+    const bareSections = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      sections: [{ lengthInches: 48 }, { lengthInches: 48 }],
+    });
+    expect(bareSections.benchworkAuthored).toBe(false);
+  });
 });
 
 describe("double track (main2)", () => {
