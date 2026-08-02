@@ -10668,7 +10668,39 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
         (bound.section
           ? geo.sections?.find((s) => s.id === bound.section)?.outline
           : geo.outline) ?? geo.outline;
-      const e = endplateEdgePose(outline, bound);
+      /**
+       * ⭐⭐ A BINDING WITH NO SPAN MEANS "MY WIDTH", NOT "THE WHOLE EDGE"
+       * (modulerepo#275). `fromT`/`toT` absent used to resolve to 0→1, so
+       * binding a 24″ plate to a 96″ fascia drew a 96″ endplate and discarded
+       * the width the owner had set — FMN-0068's endplate C.
+       *
+       * v0.71.0 fixed it for NEW bindings, but every binding stored before that
+       * has no span, and the only way to repair one was to unbind and rebind:
+       * re-picking the same edge fires no change event, and the face-width route
+       * is shut on exactly the modules that need it, because they have no
+       * authored width. Reading it this way repairs them with nobody doing
+       * anything.
+       *
+       * ⚠️ Safe because a plate whose width already equals its edge resolves
+       * identically — which is every bound plate in the catalogue except the one
+       * this fixes. Measured across all 31 production documents before shipping.
+       */
+      const spanless = bound.fromT == null && bound.toT == null;
+      const resolved =
+        spanless
+          ? {
+              ...bound,
+              ...(endplateSpanOnEdge(
+                outline,
+                bound.index,
+                p,
+                p.widthInches ??
+                  endplateWidthFor(geo.endplateWidths, p.id) ??
+                  FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
+              ) ?? {}),
+            }
+          : bound;
+      const e = endplateEdgePose(outline, resolved);
       if (e)
         return {
           ...p,

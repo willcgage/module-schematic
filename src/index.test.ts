@@ -5532,7 +5532,12 @@ describe("endplate bound to a benchwork edge", () => {
     expect(c.y).toBe(12); // ON the fascia
     expect(c.y).not.toBe(0); // not the centre line
     expect(c.heading).toBe(90);
-    expect(c.widthInches).toBe(96);
+    // ⛔ SUPERSEDES "a spanless binding takes the whole edge" (was 96). Will,
+    // 2026-08-01, modulerepo#275: "The Endplate can be the same or smaller size
+    // than the edge." A plate with no authored span keeps its OWN width — this
+    // is FMN-0068's endplate C, drawn as its whole 96in fascia until now.
+    expect(c.widthInches).toBeCloseTo(FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES);
+    expect(c.widthInches).toBeLessThan(96);
   });
 
   // ⚠️ A binding is NOT a manual pose. Treating a derived pose as manual is what
@@ -5550,10 +5555,21 @@ describe("endplate bound to a benchwork edge", () => {
       { x: 0, y: -18 }, { x: 0, y: 18 }, { x: 96, y: 18 }, { x: 96, y: -18 },
     ];
     const moved = deriveEndplatePoses({
-      lengthInches: 96, outline: wider, endplateEdges: { A: { index: 0 } },
+      lengthInches: 96,
+      outline: wider,
+      endplateEdges: { A: { index: 0 } },
+      // Authored, so the plate's width is the owner's and the reshaped board
+      // does not change it — only where the plate SITS follows the board.
+      endplateWidths: { A: 36 },
     }).find((p) => p.id === "A")!;
     expect(moved.widthInches).toBe(36);
     expect(moved.x).toBe(0);
+    // ⛔ SUPERSEDES "the plate takes whatever the edge became" (#275): with no
+    // authored width it keeps its own, rather than growing with the fascia.
+    const unauthored = deriveEndplatePoses({
+      lengthInches: 96, outline: wider, endplateEdges: { A: { index: 0 } },
+    }).find((p) => p.id === "A")!;
+    expect(unauthored.widthInches).toBeCloseTo(FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES);
   });
 
   // ⚠️ A field the round-trip drops is INVISIBLE — the exact trap that made a
