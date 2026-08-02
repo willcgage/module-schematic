@@ -10462,6 +10462,49 @@ export interface ModuleGeometryInput {
 }
 
 /**
+ * ⭐⭐ THE SPAN A PLATE OF `widthInches` OCCUPIES ON A BENCHWORK EDGE, centred
+ * where it currently sits (modulerepo#275).
+ *
+ * Will, 2026-08-01: *"The whole edge is the endplate regardless of what endplate
+ * number or letter it is… The Endplate can be the same or smaller size than the
+ * edge."* An endplate occupies a SPAN of an edge — the whole of it or part —
+ * with no special case by letter. Binding a plate must therefore keep the width
+ * the owner authored rather than widening it to swallow the edge, which is what
+ * `{index}` alone does (absent `fromT`/`toT` means 0→1).
+ *
+ * ⭐ ONE DEFINITION, TWO CALLERS: the derived binding in `deriveEndplatePoses`
+ * and the editor's own "which edge is this?" control. Computing this in both
+ * places is precisely the drift this codebase keeps paying for.
+ *
+ * Returns null when the edge is missing, curved, or degenerate — never a guess.
+ */
+export function endplateSpanOnEdge(
+  outline: BenchworkPoint[] | null | undefined,
+  index: number,
+  at: { x: number; y: number },
+  widthInches: number,
+): { fromT: number; toT: number } | null {
+  if (!outline || outline.length < 3 || !(widthInches > 0)) return null;
+  const n = outline.length;
+  const i = Math.trunc(index);
+  if (!Number.isFinite(i) || i < 0 || i >= n) return null;
+  const a = outline[i];
+  const b = outline[(i + 1) % n];
+  if (a.bulge) return null; // a curved fascia is not an endplate face (§2.0)
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0)) return null;
+  // Where the plate sits along the edge, clamped so a plate off the end still
+  // yields a span ON the edge rather than one hanging past it.
+  const t = Math.max(0, Math.min(1, ((at.x - a.x) * dx + (at.y - a.y) * dy) / (len * len)));
+  const half = widthInches / 2 / len;
+  const fromT = Math.max(0, Math.min(1, t - half));
+  const toT = Math.max(0, Math.min(1, t + half));
+  return toT > fromT ? { fromT, toT } : null;
+}
+
+/**
  * ⭐⭐ THE MODULE'S LENGTH, READ OFF ITS BENCHWORK (modulerepo#268).
  *
  * Will, 2026-08-01: *"benchwork edges own the endplates"* — and the last of the
@@ -10604,11 +10647,11 @@ export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
       if (Math.abs(off) > POS_EPS) continue;
       if (t < -POS_EPS / len || t > 1 + POS_EPS / len) continue;
       // Keep the plate's own width; centre the span on where it actually is.
-      const half = widthInches / 2 / len;
-      const fromT = Math.max(0, Math.min(1, t - half));
-      const toT = Math.max(0, Math.min(1, t + half));
-      if (!(toT > fromT)) continue;
-      return { index: i, fromT, toT };
+      // ⭐ Via the shared helper, so a derived binding and one the owner makes
+      // from the editor's control compute the SAME span (modulerepo#275).
+      const span = endplateSpanOnEdge(ring, i, p, widthInches);
+      if (!span) continue;
+      return { index: i, ...span };
     }
     return null;
   };

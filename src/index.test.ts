@@ -57,6 +57,7 @@ import {
   MAIN2_TRACK_ID,
   deriveEndplatePoses,
   benchworkLengthInches,
+  endplateSpanOnEdge,
   poseNeedsManual,
   hasNoFarEndplate,
   poseOverridesFromDoc,
@@ -559,6 +560,56 @@ describe("moduleFootprint (physical single-module geometry)", () => {
     });
     expect(noOutlineNoFootprints.sectionOutlines).toHaveLength(0);
     expect(noOutlineNoFootprints.benchworkAuthored).toBe(false);
+  });
+});
+
+// ⭐⭐ modulerepo#275. Will: "The whole edge is the endplate regardless of what
+// endplate number or letter it is … The Endplate can be the same or smaller size
+// than the edge." No special case by letter — a plate occupies a SPAN.
+describe("endplateSpanOnEdge", () => {
+  // Edge 0 runs (0,-12)->(0,12): 24in long, and t grows with +y.
+  const rect = [
+    { x: 0, y: -12 },
+    { x: 0, y: 12 },
+    { x: 48, y: 12 },
+    { x: 48, y: -12 },
+  ];
+
+  it("centres the plate's own width where it sits, leaving the rest of the edge alone", () => {
+    const s = endplateSpanOnEdge(rect, 0, { x: 0, y: 0 }, 12)!;
+    expect(s.fromT).toBeCloseTo(0.25); // 12in centred on a 24in edge
+    expect(s.toT).toBeCloseTo(0.75);
+    // …and that really is 12in of edge, not 24.
+    expect((s.toT - s.fromT) * 24).toBeCloseTo(12);
+  });
+
+  it("takes the whole edge when the plate is as wide as it", () => {
+    const s = endplateSpanOnEdge(rect, 0, { x: 0, y: 0 }, 24)!;
+    expect(s.fromT).toBeCloseTo(0);
+    expect(s.toT).toBeCloseTo(1);
+  });
+
+  // ⚠️ A plate wider than its edge cannot hang off the board — it clamps to the
+  // edge. The DISAGREEMENT is the caller's to report (flag, don't clamp lives
+  // one level up); this function's job is to return a span that exists.
+  it("clamps to the edge rather than returning a span hanging off the board", () => {
+    const s = endplateSpanOnEdge(rect, 0, { x: 0, y: 0 }, 60)!;
+    expect(s.fromT).toBeCloseTo(0);
+    expect(s.toT).toBeCloseTo(1);
+  });
+
+  it("follows where the plate sits, not just the middle", () => {
+    const s = endplateSpanOnEdge(rect, 0, { x: 0, y: 6 }, 12)!;
+    expect(s.fromT).toBeCloseTo(0.5); // centred at t=0.75, half-width 0.25
+    expect(s.toT).toBeCloseTo(1);
+  });
+
+  it("refuses a curved fascia, a missing edge and a zero width — never guesses", () => {
+    const curved = [{ x: 0, y: -12, bulge: 5 }, ...rect.slice(1)];
+    expect(endplateSpanOnEdge(curved, 0, { x: 0, y: 0 }, 12)).toBeNull();
+    expect(endplateSpanOnEdge(rect, 9, { x: 0, y: 0 }, 12)).toBeNull();
+    expect(endplateSpanOnEdge(rect, 0, { x: 0, y: 0 }, 0)).toBeNull();
+    expect(endplateSpanOnEdge(null, 0, { x: 0, y: 0 }, 12)).toBeNull();
   });
 });
 
