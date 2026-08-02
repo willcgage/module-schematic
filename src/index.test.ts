@@ -541,16 +541,23 @@ describe("moduleFootprint (physical single-module geometry)", () => {
     });
     expect(drawn.benchworkAuthored).toBe(true);
 
-    // ⚠️ Bare sections are LENGTHS, not a drawn shape — nobody authored
-    // benchwork there, and saying otherwise would silence the warning on
-    // exactly the modules that need it. (Sections that DO own a shape reach
-    // `benchworkAuthored` through `sectionOutlines`; see moduleFootprint.)
-    const bareSections = moduleFootprint({
+    // ⛔⛔ DO NOT READ THIS AS "BARE SECTIONS ARE NEVER BENCHWORK". It is the
+    // narrow case where `sectionFootprints` yields nothing, so there is neither
+    // an outline nor a section footprint to count. Given the richer input the
+    // app passes, two bare sections DO produce `sectionOutlines` and therefore
+    // report `true` — verified on prod, FMN-0077 (2 sections, no shapes, no
+    // outline) shows no "no benchwork" warning.
+    //
+    // ⚠️ Whether a module that declares boards but draws none should count as
+    // having benchwork is an OPEN QUESTION for Will — modulerepo#268. This
+    // assertion pins today's behaviour for this input only; it is not the rule.
+    const noOutlineNoFootprints = moduleFootprint({
       lengthInches: 96,
       geometryType: "straight",
       sections: [{ lengthInches: 48 }, { lengthInches: 48 }],
     });
-    expect(bareSections.benchworkAuthored).toBe(false);
+    expect(noOutlineNoFootprints.sectionOutlines).toHaveLength(0);
+    expect(noOutlineNoFootprints.benchworkAuthored).toBe(false);
   });
 });
 
