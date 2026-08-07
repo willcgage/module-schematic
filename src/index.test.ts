@@ -4670,6 +4670,39 @@ describe("flex track pieces (#193)", () => {
     expect(resizeFlexPiece(p, 0, -5)).toEqual([1, 60, 90]);
   });
 
+  it("cuts a request longer than the stock length into lengths, not one impossible piece", () => {
+    // Will, 2026-08-07: "A piece can never be longer than its maximum … it
+    // should auto split and create a new piece."
+    const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 }); // 30/30/30/6
+    const cuts = resizeFlexPiece(p, 0, 50, 30)!;
+    const after = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30, cuts });
+    // 50″ of a 30″ product is a 30 and a 20 — what you would actually lay.
+    expect(lens(after).slice(0, 3)).toEqual([30, 20, 10]);
+    expect(after.every((x) => x.lengthInches <= 30 + 1e-6)).toBe(true);
+    expect(flexUsage(after).overlong).toBe(0);
+    // …and the run itself never grew.
+    expect(after.reduce((a, x) => a + x.lengthInches, 0)).toBeCloseTo(96);
+  });
+
+  it("splits the neighbour too, since shrinking one piece is what lengthened it", () => {
+    // Pair is 60. Asking for 5 leaves the neighbour 55 — over a 30″ stock
+    // length, so the impossible piece would just have moved along one.
+    const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 });
+    const after = flexPieces({
+      fromPos: 0,
+      toPos: 96,
+      maxPieceInches: 30,
+      cuts: resizeFlexPiece(p, 0, 5, 30)!,
+    });
+    expect(lens(after).slice(0, 3)).toEqual([5, 30, 25]);
+    expect(flexUsage(after).overlong).toBe(0);
+  });
+
+  it("without a max, resizing behaves exactly as it did", () => {
+    const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 });
+    expect(resizeFlexPiece(p, 0, 50)).toEqual([50, 60, 90]);
+  });
+
   it("won't resize a piece that butts a part or the end of the run", () => {
     const p = flexPieces({ fromPos: 0, toPos: 96, maxPieceInches: 30 });
     expect(resizeFlexPiece(p, 3, 10)).toBeNull(); // last piece → the endplate
