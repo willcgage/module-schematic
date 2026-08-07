@@ -4861,11 +4861,32 @@ export function turnoutOccupiedSpan(input: {
  * Returns the run's COMPLETE new cut list (`flexCuts`), or null when the piece
  * has no neighbour to trade with — the last piece in a gap butts a turnout or
  * the endplate, and its length is set by what it meets, not by preference.
+ *
+ * ⭐⭐ **A PIECE CAN NEVER BE LONGER THAN ITS STOCK LENGTH** (Will, 2026-08-07):
+ * *"A piece can never be longer than its maximum, however, it can be cut to
+ * shrink it. Flagging is ok, but it should auto split and create a new piece."*
+ * Given `maxInches`, a request past it is CUT INTO LENGTHS rather than left as
+ * one piece nobody can buy — asking for 40″ of a 30″ product gives you a 30″
+ * and a 10″, because that is what you would actually lay.
+ *
+ * ⛔ This REVERSES what MR #271 originally specified ("do not silently split");
+ * Will overruled it when asked directly. Splitting here is not the fill-a-run
+ * gesture — it adds joints only inside the span the owner just resized, and the
+ * run's length never changes.
+ *
+ * ⚠️ Both spans either side of the moved joint are subdivided, because BOTH are
+ * changed by the move: shrinking a piece lengthens its neighbour, and leaving
+ * that neighbour 40″ long would just move the impossible piece along one.
+ * Nothing outside those two spans is touched — a gesture may fix what it
+ * breaks, not tidy the rest of the run behind the owner's back.
  */
 export function resizeFlexPiece(
   pieces: FlexPiece[],
   index: number,
   nextLengthInches: number,
+  /** The stock length of the product this run is laid with, from
+   * {@link maxFlexPieceInches}. Omit for the old unbounded behaviour. */
+  maxInches?: number,
 ): number[] | null {
   const piece = pieces[index];
   const next = pieces[index + 1];
@@ -4879,9 +4900,22 @@ export function resizeFlexPiece(
     Math.min(pair - FLEX_MIN_PIECE_INCHES, nextLengthInches),
   );
   const moved = piece.fromPos + want;
+  // Every joint a span longer than one stock length needs, so no piece the
+  // owner just touched comes out longer than the product they named.
+  const split: number[] = [];
+  const max = Number.isFinite(maxInches) && (maxInches ?? 0) > FLEX_EPS ? (maxInches as number) : 0;
+  if (max > 0) {
+    for (const [from, to] of [
+      [piece.fromPos, moved],
+      [moved, next.toPos],
+    ] as const) {
+      for (let at = from + max; at < to - FLEX_EPS; at += max) split.push(at);
+    }
+  }
   return pieces
     .filter((p) => p.toEnd === "piece")
     .map((p) => (p.index === index ? moved : p.toPos))
+    .concat(split)
     .map((v) => Math.round(v * 1000) / 1000)
     .sort((a, b) => a - b);
 }
