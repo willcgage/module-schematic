@@ -458,6 +458,32 @@ describe("sampleBenchworkOutline", () => {
 });
 
 describe("moduleFootprint (physical single-module geometry)", () => {
+  it("hands back the SPINE, so a caller can shape benchwork without reading the track", () => {
+    // modulerepo#255 / #47: a layer may read the layers below it, never above.
+    // The band and the faces have sampled the spine since 0.127.0; this only
+    // exposes the same line so callers can obey the rule too.
+    const noMain = moduleFootprint({ lengthInches: 96, geometryType: "straight" });
+    // With nothing drawn the two coincide — which is exactly why a caller
+    // reading `centerline` for benchwork LOOKS correct until a main is drawn.
+    expect(noMain.spine).toEqual(noMain.centerline);
+
+    const drawn = moduleFootprint({
+      lengthInches: 96,
+      geometryType: "straight",
+      mainPath: [
+        { x: 0, y: 0 },
+        { x: 48, y: 18 },
+        { x: 96, y: 0 },
+      ],
+    });
+    // The track goes where it was drawn; the board does NOT follow it.
+    expect(drawn.centerline).not.toEqual(drawn.spine);
+    expect(drawn.spine).toEqual([{ x: 0, y: 0 }, { x: 96, y: 0 }]);
+    expect(drawn.centerline.some((p) => p.y > 1)).toBe(true);
+    // And the band really is built from the spine, not the drawn main.
+    expect(Math.max(...drawn.band.map((p) => p.y))).toBeLessThan(18);
+  });
+
   it("straight module: centre-line A→B, rectangular band, faces at width, no outline", () => {
     const fp = moduleFootprint({ lengthInches: 96, geometryType: "straight", endplateWidths: { A: 24, B: 24 } });
     expect(fp.centerline).toEqual([{ x: 0, y: 0 }, { x: 96, y: 0 }]);

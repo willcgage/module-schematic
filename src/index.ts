@@ -1103,6 +1103,24 @@ export interface OutlineFace {
 export interface ModuleFootprint {
   /** Main track centre-line A→B (arcs sampled). */
   centerline: BenchworkPoint[];
+  /**
+   * The BENCHWORK's own centre-line — the same line, but computed with
+   * `mainPath` withheld, so the board never chases the drawn track (0.127.0).
+   * Identical to `centerline` when no main is drawn.
+   *
+   * ⭐⭐ EXPOSED BECAUSE THE BENCHWORK MAY NOT READ THE TRACK. A layer may read
+   * the layers below it, never above (modulerepo#47): anything shaping the
+   * board — the band, the endplate faces, a section's derived rectangle — has
+   * to sample THIS, not `centerline`. MR was seeding its section band off
+   * `centerline`, which is layer 2 reading into layer 1, and it only looked
+   * right because the two lines coincide on a module with no drawn main
+   * (modulerepo#255).
+   *
+   * ⚠️ This is a READOUT of what the footprint already used internally, not a
+   * new derivation — `band`, `endplateFaces` and `sectionOutlines` have been
+   * built from it since 0.127.0. Nothing about the geometry changes.
+   */
+  spine: BenchworkPoint[];
   /** Derived benchwork band (endplate-width ribbon); the outline fallback. */
   band: BenchworkPoint[];
   /** Endplate faces: [A end, B end]. */
@@ -1731,6 +1749,9 @@ export function moduleFootprint(input: ModuleFootprintInput): ModuleFootprint {
     : [];
   return {
     centerline,
+    // Handed back so CALLERS can obey the same rule the band and the faces
+    // already do — see the note on `spine` in ModuleFootprint.
+    spine,
     // ⭐ Both of these are BENCHWORK, so both read the spine — never the drawn
     // track. See the note on `spine` above.
     band: benchworkBand(spine, widthA, widthB, offA, offB),
