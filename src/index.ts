@@ -295,6 +295,28 @@ export interface SchematicTrack {
    * the main centre-line + lane, as before. Physical view only; the operations
    * view stays positional (#2d-track). */
   path?: BenchworkPoint[] | null;
+  /**
+   * This run's positions are arc length along its OWN {@link path}, not inches
+   * from endplate A — see {@link measuredAlongPath}, which reads this.
+   *
+   * ⭐⭐ EXPLICIT BECAUSE THE FRAME IS NOT DERIVABLE FROM THE NUMBERS ANY MORE.
+   * It used to be inferred from `fromPos === toPos`: a route across the board
+   * was written with the turnout's position at both ends, so a degenerate
+   * along-module extent WAS the signal. Since `fromPos` became the track's own
+   * start (#253) that identity is gone — a cross-board route now has two real,
+   * different positions like everything else, and nothing in the numbers
+   * distinguishes it from a siding.
+   *
+   * ⛔ Do NOT reintroduce a geometric guess (path length vs along-module
+   * extent). Any gently curved siding has one longer than the other, so a
+   * threshold there is a number that merely CORRELATES with the frame — the
+   * shape that has already made this repo's warnings lie (#229). The author
+   * knows which frame a run is in; the document records it.
+   *
+   * Absent = fall back to the legacy identity, for documents written before
+   * #253 and not yet re-saved.
+   */
+  alongOwnPath?: boolean | null;
   /** The flex product this run is laid with — a slug from the parts library
    * (#193). Absent = the default. Per TRACK, so a module can have its mains in
    * one product and a siding in another. */
@@ -969,18 +991,96 @@ export function pathLengthInches(
  * joints in one place and its drawing in another.
  */
 export function measuredAlongPath(
-  t: Pick<SchematicTrack, "path" | "fromPos" | "toPos">,
+  t: Pick<SchematicTrack, "path" | "fromPos" | "toPos" | "alongOwnPath">,
 ): boolean {
   if (!trackPath(t.path)) return false;
+  // ⭐ THE AUTHORED ANSWER WINS. Since #253 made `fromPos` the track's own start,
+  // the identity below can no longer tell these routes apart — see
+  // {@link SchematicTrack.alongOwnPath}.
+  if (typeof t.alongOwnPath === "boolean") return t.alongOwnPath;
+  // ── Legacy fallback, for documents written before #253 and not re-saved ────
   // Fails CLOSED: without two real positions to compare there is no evidence the
   // module axis is unusable, and the along-module frame is what everything else
   // already assumes.
   if (typeof t.fromPos !== "number" || !Number.isFinite(t.fromPos)) return false;
   if (typeof t.toPos !== "number" || !Number.isFinite(t.toPos)) return false;
-  // An identity test, not a tolerance. These routes are written with the SAME
+  // An identity test, not a tolerance. These routes were written with the SAME
   // number at both ends — the turnout they leave from — so a run with any real
   // extent along the module is one that can be measured along the module.
   return Math.abs(t.toPos - t.fromPos) < 0.01;
+}
+
+/**
+ * Where a module-local point falls along the main centre-line, as inches from
+ * endplate A — the inverse of sampling the centre-line at a position.
+ *
+ * ⚠️ ARC LENGTH, NOT `x`. On a curved or cornered module the two are different
+ * quantities: a 90°/R30 corner measures 47.124″ along its centre-line where the
+ * chord loses 4.69″ of it. `fromPos`/`toPos` have always been arc length, so a
+ * derivation that reached for `x` would be right on every straight module and
+ * quietly wrong on every curve.
+ *
+ * Null when there is no centre-line to measure against.
+ */
+export function posAlongCenterline(
+  center: { x: number; y: number }[],
+  pt: { x: number; y: number },
+): number | null {
+  if (!Array.isArray(center) || center.length < 2) return null;
+  if (!Number.isFinite(pt?.x) || !Number.isFinite(pt?.y)) return null;
+  let bestD2 = Infinity;
+  let bestPos = 0;
+  let acc = 0;
+  for (let i = 1; i < center.length; i++) {
+    const a = center[i - 1];
+    const b = center[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const segLen = Math.hypot(dx, dy);
+    if (segLen < 1e-9) continue;
+    // Clamped, so a point off either END of the line lands on the nearer end
+    // rather than being extrapolated onto track that does not exist.
+    const t = Math.max(
+      0,
+      Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / (segLen * segLen)),
+    );
+    const px = a.x + t * dx;
+    const py = a.y + t * dy;
+    const d2 = (pt.x - px) ** 2 + (pt.y - py) ** 2;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      bestPos = acc + t * segLen;
+    }
+    acc += segLen;
+  }
+  return bestD2 === Infinity ? null : round3(bestPos);
+}
+
+/**
+ * ⭐⭐ A DRAWN TRACK'S POSITIONAL PAIR, READ OFF THE LINE THAT WAS DRAWN (#253).
+ *
+ * `fromPos` is THE TRACK'S OWN START — where its rail begins — and not the frog
+ * of the turnout that opens it (Will, 2026-08-15). Those were the same number
+ * for every drawn track on prod, which is exactly why the drift was invisible:
+ * the pair was written from the turnout's `pos` (the frog, #132) while the path
+ * was snapped to the RAIL END (#235/#239), leaving the two a turnout's reach
+ * apart — 1.5–2.1″ on all ten drawn tracks in the catalogue.
+ *
+ * ⚠️ Meaningless for a run that is measured along its own path
+ * ({@link measuredAlongPath}) — projecting a cross-board route onto the module
+ * axis is the collapse this model already refuses. Callers must skip those.
+ */
+export function trackExtentFromPath(
+  t: Pick<SchematicTrack, "path">,
+  centerline: { x: number; y: number }[],
+): { fromPos: number; toPos: number } | null {
+  const pts = trackPath(t.path);
+  if (!pts) return null;
+  const poly = samplePath(pts);
+  const fromPos = posAlongCenterline(centerline, poly[0]);
+  const toPos = posAlongCenterline(centerline, poly[poly.length - 1]);
+  if (fromPos == null || toPos == null) return null;
+  return { fromPos, toPos };
 }
 
 /** Normalise an authored track path from a doc, or null if it isn't a real path
@@ -2334,6 +2434,10 @@ export interface EditorTrack {
   /** Authored 2-D path (module-local inches) — a bent/rotated spur's real
    * shape. Absent = derive from the main + lane (#2d-track). */
   path?: BenchworkPoint[];
+  /** This run is measured along its own path, not along the module — see
+   * {@link SchematicTrack.alongOwnPath}. Round-trips so the frame survives a
+   * save; without it every cross-board route would be re-read as a siding. */
+  alongOwnPath?: boolean;
   /** Measured usable length, real inches (#20). Absent = derived (#19). */
   measuredUsableInches?: number;
   /** `role: "crossover"` only — the crossover product this connector was built
@@ -2781,7 +2885,53 @@ function withFlex(state: EditorState, tracks: SchematicTrack[]): SchematicTrack[
 export function stateToDoc(
   state: EditorState,
   recordNumber: string,
+  opts?: {
+    /**
+     * The module's main centre-line, for reading a drawn run's start and end off
+     * the line that was drawn (#253). See {@link trackExtentFromPath}.
+     *
+     * ⚠️ OPTIONAL, AND ITS ABSENCE MEANS "DON'T TOUCH THE NUMBERS". A position
+     * is arc length along this line, so without it there is no frame to measure
+     * in — and a straight one assumed on a curved module would move every drawn
+     * track by the difference between an arc and its chord. Fails closed: no
+     * centre-line, no correction, exactly as before this shipped.
+     */
+    centerline?: BenchworkPoint[] | null;
+  },
 ): ModuleSchematicDoc {
+  const center = trackPath(opts?.centerline) ? samplePath(opts!.centerline!) : null;
+  /**
+   * ⭐⭐ WHERE A DRAWN RUN ACTUALLY STARTS AND ENDS (#253).
+   *
+   * `fromPos` is the track's own start, not the frog of the turnout that opens
+   * it (Will, 2026-08-15). The pair was written from the turnout's `pos` while
+   * the path snapped to the RAIL END, leaving the two a reach apart on every
+   * drawn track in the catalogue. The drawing is the truth; this reads the pair
+   * back off it.
+   *
+   * Null — leave the authored pair alone — when:
+   * - there is no centre-line to measure against;
+   * - the track has no pair to correct (it positions itself by endplate refs,
+   *   so there is no number to drift);
+   * - the run is measured along its OWN path, where projecting onto the module
+   *   axis is the collapse this model refuses ({@link measuredAlongPath});
+   * - the module is authored as PIECES, whose positions are derived from their
+   *   anchors instead (ADR 0001) and must not be second-guessed here.
+   */
+  const drawnExtent = (
+    t: Pick<SchematicTrack, "path" | "fromPos" | "toPos" | "alongOwnPath">,
+  ): { fromPos: number; toPos: number } | null => {
+    if (!center) return null;
+    if ((state.graph?.pieces?.length ?? 0) > 0) return null;
+    if (typeof t.fromPos !== "number" || typeof t.toPos !== "number") return null;
+    if (!trackPath(t.path)) return null;
+    if (measuredAlongPath(t)) return null;
+    return trackExtentFromPath(t, center);
+  };
+  const withDrawnExtent = (t: SchematicTrack): SchematicTrack => {
+    const ext = drawnExtent(t);
+    return ext ? { ...t, ...ext } : t;
+  };
   return {
     version: 1,
     module: recordNumber,
@@ -2867,17 +3017,22 @@ export function stateToDoc(
       (state.configA === "double" ||
         state.configB === "double" ||
         state.turnouts.some((t) => isTransitionTurnout(t) && t.divergeTrack === MAIN2_TRACK_ID))
-        ? [main2Track(state)]
+        ? [withDrawnExtent(main2Track(state))]
         : []),
       ...(state.loop && state.loopReturn === "main2"
         ? [{ id: MAIN2_TRACK_ID, role: "main" as const, lane: 1, fromPos: 0, toPos: state.lengthInches }]
         : []),
-      ...state.extraTracks.map((t) => ({
+      ...state.extraTracks.map((t) => {
+        // #253 — a drawn run begins and ends where its LINE does. Taken before
+        // capacity, which is measured from this run's ends and so has to move
+        // with them rather than describe where it used to start.
+        const ext = drawnExtent(t) ?? { fromPos: t.fromPos, toPos: t.toPos };
+        return {
         id: t.id,
         role: t.role,
         lane: t.lane,
-        fromPos: t.fromPos,
-        toPos: t.toPos,
+        fromPos: ext.fromPos,
+        toPos: ext.toPos,
         moduleTrackId: t.moduleTrackId,
         trackName: t.trackName || undefined,
         // ⚠️ USABLE capacity, measured from the governing turnouts' CLEARANCE
@@ -2885,8 +3040,8 @@ export function stateToDoc(
         // a car can't stand on without fouling the route it diverged from.
         // FMN-0040's 70″ siding is 21 cars drawn and 17 usable.
         capacityFeet: usableCapacity({
-          fromPos: t.fromPos,
-          toPos: t.toPos,
+          fromPos: ext.fromPos,
+          toPos: ext.toPos,
           governing: state.turnouts.filter((sw) => sw.divergeTrack === t.id),
           measuredUsableInches: t.measuredUsableInches,
         }).scaleFeet,
@@ -2896,7 +3051,15 @@ export function stateToDoc(
         ...(state.loop && t.inLoop ? { inLoop: true } : {}),
         ...(t.crossoverPartId ? { crossoverPartId: t.crossoverPartId } : {}),
         ...(t.path && t.path.length >= 2 ? { path: t.path } : {}),
-      })),
+        // ⭐ The frame this run is measured in, carried explicitly since the
+        // numbers no longer imply it (#253) — and WRITTEN whenever the legacy
+        // identity still recognises one, so every save upgrades the document to
+        // the explicit form and the fallback quietly goes out of use. Without
+        // this the flag would only ever exist on data a migration touched, and
+        // the next route an owner drew would have no frame recorded at all.
+        ...(measuredAlongPath(t) ? { alongOwnPath: true } : {}),
+        };
+      }),
     ]),
     turnouts: state.turnouts.map((t) => ({
       id: t.id,
@@ -3050,6 +3213,11 @@ export function docToState(
           : {}),
         // Authored path kept as-drawn (a physical shape, not rescaled with length).
         ...(trackPath(t.path) ? { path: trackPath(t.path)! } : {}),
+        // ⭐ The FRAME this run is measured in, carried through the round trip
+        // (#253). Dropping it here would silently re-read every cross-board
+        // route as an ordinary siding on the next save — the identity that used
+        // to say so is gone.
+        ...(t.alongOwnPath === true ? { alongOwnPath: true } : {}),
         // A MEASURED length is a real-world fact about the physical track, so it
         // rescales with the module exactly as its positions do (#20).
         ...(typeof t.measuredUsableInches === "number" && Number.isFinite(t.measuredUsableInches)
