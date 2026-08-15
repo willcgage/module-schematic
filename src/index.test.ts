@@ -42,6 +42,8 @@ import {
   samplePath,
   pathLengthInches,
   measuredAlongPath,
+  posAlongCenterline,
+  trackExtentFromPath,
   turnoutDivergingLeg,
   RAIL_GAUGE_INCHES,
   trackPath,
@@ -4914,6 +4916,185 @@ describe("measuredAlongPath (#226)", () => {
     ).toBe(true);
   });
 })
+
+// ── `fromPos` is the track's OWN START, not the frog (#253) ───────────────────
+describe("a drawn run's positions come from the line that was drawn (#253)", () => {
+  /** A plain 120″ module: its centre-line is the x axis. */
+  const straight = [{ x: 0, y: 0 }, { x: 120, y: 0 }];
+  /** FMN-0040's spur1 as it sits on prod — the pair written from the turnout's
+   *  frog (42) while the path starts at the rail end (40.22), 1.78″ apart. */
+  const spur1 = {
+    id: "spur1",
+    role: "spur" as const,
+    lane: 1,
+    fromPos: 42,
+    toPos: 1,
+    moduleTrackId: null,
+    trackName: "",
+    path: [{ x: 40.22, y: 1.5 }, { x: 20, y: 6 }, { x: 0.39, y: 6 }],
+  };
+
+  describe("posAlongCenterline", () => {
+    it("measures ARC LENGTH, not x — a corner is longer than its chord", () => {
+      // ⭐ The trap this function exists to avoid. On an L-shaped module the
+      // point (30,15) is 45″ of track from A, while its x says 30. Reaching for
+      // x would be right on every straight module in the catalogue and quietly
+      // wrong on every curve.
+      const corner = [{ x: 0, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 30 }];
+      expect(posAlongCenterline(corner, { x: 30, y: 15 })).toBe(45);
+      expect(posAlongCenterline(corner, { x: 15, y: 0 })).toBe(15);
+    });
+
+    it("projects a point beside the line onto it", () => {
+      expect(posAlongCenterline(straight, { x: 40.22, y: 6 })).toBe(40.22);
+    });
+
+    it("clamps past either end rather than extrapolating onto track that isn't there", () => {
+      expect(posAlongCenterline(straight, { x: -20, y: 0 })).toBe(0);
+      expect(posAlongCenterline(straight, { x: 200, y: 0 })).toBe(120);
+    });
+
+    it("is null without a line to measure against", () => {
+      expect(posAlongCenterline([], { x: 1, y: 1 })).toBeNull();
+      expect(posAlongCenterline([{ x: 0, y: 0 }], { x: 1, y: 1 })).toBeNull();
+    });
+  });
+
+  describe("trackExtentFromPath", () => {
+    it("reads a spur's real start and end off its path", () => {
+      expect(trackExtentFromPath(spur1, straight)).toEqual({ fromPos: 40.22, toPos: 0.39 });
+    });
+
+    it("is null for a track with no path to read", () => {
+      expect(trackExtentFromPath({ path: null }, straight)).toBeNull();
+    });
+  });
+
+  describe("measuredAlongPath now reads the AUTHORED frame", () => {
+    const route = {
+      path: [{ x: 26.28, y: 0.61 }, { x: 11.91, y: 12 }],
+      fromPos: 26.28,
+      toPos: 11.91,
+    };
+
+    it("the flag decides, in both directions", () => {
+      // ⭐⭐ THE WHOLE POINT. Once the pair is the track's own start, a
+      // cross-board route has two real, different positions — the identity that
+      // used to identify it is gone, and only the authored frame is left.
+      expect(measuredAlongPath({ ...route, alongOwnPath: true })).toBe(true);
+      expect(
+        measuredAlongPath({ path: route.path, fromPos: 27.8, toPos: 27.8, alongOwnPath: false }),
+      ).toBe(false);
+    });
+
+    it("falls back to the legacy identity for a document not yet re-saved", () => {
+      expect(measuredAlongPath({ path: route.path, fromPos: 27.8, toPos: 27.8 })).toBe(true);
+      expect(measuredAlongPath(route)).toBe(false);
+    });
+  });
+
+  describe("stateToDoc", () => {
+    const base = { ...emptyEditorState(120), extraTracks: [spur1] };
+    const trackOf = (d: ReturnType<typeof stateToDoc>) =>
+      d.tracks.find((t) => t.id === "spur1")!;
+
+    it("moves the pair off the turnout's frog and onto the run's own rail", () => {
+      const t = trackOf(stateToDoc(base, "M", { centerline: straight }));
+      expect(t.fromPos).toBe(40.22);
+      expect(t.toPos).toBe(0.39);
+    });
+
+    it("FAILS CLOSED with no centre-line — the numbers are left exactly as they were", () => {
+      const t = trackOf(stateToDoc(base, "M"));
+      expect(t.fromPos).toBe(42);
+      expect(t.toPos).toBe(1);
+    });
+
+    it("re-measures capacity from the corrected ends", () => {
+      // Capacity is measured from where the run starts and stops, so a run that
+      // turns out to be 1.78″ shorter holds correspondingly fewer cars. Leaving
+      // it behind would be the "two computations of one quantity" this issue is
+      // about, one line from the value that had just been fixed.
+      const before = trackOf(stateToDoc(base, "M")).capacityFeet!;
+      const after = trackOf(stateToDoc(base, "M", { centerline: straight })).capacityFeet!;
+      expect(after).toBeLessThan(before);
+    });
+
+    it("leaves a run measured along its OWN path alone", () => {
+      // Projecting a cross-board route onto the module axis is the collapse the
+      // model refuses — 15.89″ of drawn route would report as 14.37″ of module.
+      const branch1 = {
+        ...spur1,
+        id: "branch1",
+        role: "branch" as const,
+        fromPos: 27.8,
+        toPos: 27.8,
+        alongOwnPath: true,
+        path: [{ x: 26.28, y: 0.61 }, { x: 11.91, y: 12 }],
+      };
+      const doc = stateToDoc({ ...base, extraTracks: [branch1] }, "M", {
+        centerline: straight,
+      });
+      const t = doc.tracks.find((x) => x.id === "branch1")!;
+      expect(t.fromPos).toBe(27.8);
+      expect(t.toPos).toBe(27.8);
+      expect(t.alongOwnPath).toBe(true);
+    });
+
+    it("never INVENTS a pair for a track that positions itself by endplate refs", () => {
+      // Main 1 runs A→B with no numbers at all. It isn't drifting; it has
+      // nothing to drift. Deriving one here would override the endplate
+      // resolution `moduleFeatures` does downstream.
+      const main = stateToDoc(base, "M", { centerline: straight }).tracks.find(
+        (t) => t.id === MAIN_TRACK_ID,
+      )!;
+      expect(main.fromPos).toBeUndefined();
+      expect(main.toPos).toBeUndefined();
+    });
+
+    it("leaves a PIECE-authored module alone — its positions come from anchors", () => {
+      const graph = {
+        pieces: [{ id: "p1" }],
+        startAt: { piece: "p1", joint: "a" },
+      } as unknown as EditorState["graph"];
+      const t = trackOf(stateToDoc({ ...base, graph }, "M", { centerline: straight }));
+      expect(t.fromPos).toBe(42);
+    });
+
+    it("UPGRADES a legacy route to the explicit frame on save", () => {
+      // ⭐ Otherwise the flag would exist only on data a migration touched, and
+      // the next route an owner drew would record no frame at all. Every save
+      // writes it, so the legacy identity goes out of use on its own.
+      const legacy = {
+        ...spur1,
+        id: "branch1",
+        role: "branch" as const,
+        fromPos: 27.8,
+        toPos: 27.8,
+        path: [{ x: 26.28, y: 0.61 }, { x: 11.91, y: 12 }],
+      };
+      const doc = stateToDoc({ ...base, extraTracks: [legacy] }, "M", {
+        centerline: straight,
+      });
+      const t = doc.tracks.find((x) => x.id === "branch1")!;
+      expect(t.alongOwnPath).toBe(true);
+      expect(t.fromPos).toBe(27.8);
+    });
+
+    it("round-trips the frame, so a save can't re-read a route as a siding", () => {
+      const doc = stateToDoc(
+        { ...base, extraTracks: [{ ...spur1, id: "branch1", alongOwnPath: true }] },
+        "M",
+        { centerline: straight },
+      );
+      expect(docToState(doc, 120).extraTracks[0].alongOwnPath).toBe(true);
+      // …and an ordinary siding gains no key.
+      const plain = stateToDoc(base, "M", { centerline: straight });
+      expect(trackOf(plain).alongOwnPath).toBeUndefined();
+      expect(docToState(plain, 120).extraTracks[0].alongOwnPath).toBeUndefined();
+    });
+  });
+});
 
 // ── An industry span running past its track (#194) ────────────────────────────
 describe("span overhang (#194)", () => {
