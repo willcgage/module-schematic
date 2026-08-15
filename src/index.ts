@@ -8848,10 +8848,46 @@ export function docToGraph(
      * one — which came out as a 0.3″ radius instead of 51″. Everything here is
      * relative to the direction of travel. */
     dirSign: 1 | -1 = 1,
+    /**
+     * ⭐⭐ WHERE THE HOST RUNS at the point this track leaves it — and the lane
+     * the host itself sits on.
+     *
+     * ⛔ BOTH QUANTITIES THIS FUNCTION NEEDS ARE RELATIVE TO THE HOST, and
+     * measuring them against the module's axes only worked because a flat lay
+     * puts the host along +x with its lanes at constant y. Given a
+     * {@link PlaceOnTrack} that is no longer true, and the error is not subtle:
+     * on an R=600″ arc blairstown's `mt5-far` came out **119.29″ long, radius
+     * 2761.5, ending at x = −48.2 on a 96″ board**, because its diverging joint
+     * had risen to y = 3.7 and `toY − from.y` read that rise as lateral offset
+     * still to travel.
+     *
+     * The default is the flat frame, so a lay without a placer computes exactly
+     * what it always did — `offFrom` collapses to `from.y`, `offTo` to `toY`,
+     * and the angle to the old `0`/`180`.
+     */
+    host: { x: number; y: number; headingDeg: number; laneY: number } = {
+      x: 0,
+      y: 0,
+      headingDeg: 0,
+      laneY: 0,
+    },
   ): TrackPiece | null => {
-    const theta = rad(norm180(from.headingDeg - (dirSign > 0 ? 0 : 180)));
-    // The piece's own +y is the module's +y only when it runs east.
-    const dy = (toY - from.y) * dirSign;
+    // The host's LEFT normal — the direction a lane offset is measured along.
+    const hostRad = rad(host.headingDeg);
+    const nx = -Math.sin(hostRad);
+    const ny = Math.cos(hostRad);
+    /** How far off the host's centre-line a point already sits, to its left. */
+    const offOf = (p: { x: number; y: number }) =>
+      (p.x - host.x) * nx + (p.y - host.y) * ny;
+    // A LANE is a flat-frame quantity (see `laneOffsetAt`), so the branch's
+    // target is its lane MINUS its host's — an offset between two lanes, which
+    // is frame-independent even though each number is not.
+    const offTo = toY - host.laneY;
+    const theta = rad(
+      norm180(from.headingDeg - (host.headingDeg + (dirSign > 0 ? 0 : 180))),
+    );
+    // The piece's own +y is the host's left only when it runs with the host.
+    const dy = (offTo - offOf(from)) * dirSign;
     if (Math.abs(theta) < 1e-9 || Math.abs(dy) < 1e-9) return null;
     const R = dy / (1 - Math.cos(theta));
     if (!Number.isFinite(R) || R === 0) return null;
@@ -8871,6 +8907,40 @@ export function docToGraph(
       radiusInches: r3(-Math.sign(theta) * mag),
       lengthInches: r3(mag * Math.abs(theta)),
     };
+  };
+
+  /**
+   * Where a host track runs at `pos`, for a branch leaving it there — the frame
+   * {@link transition} needs. Without a {@link PlaceOnTrack} this is the flat
+   * lay's own frame, so the curve comes out exactly as it always did.
+   */
+  const hostFrameAt = (
+    laid: TrackPiece | undefined,
+    hostId: string | undefined,
+    pos: number,
+  ) => {
+    const laneY = laneOffsetAt(trackById.get(hostId ?? "")?.lane ?? 0, 0);
+    // ⛔⛔ READ THE FRAME OFF THE TURNOUT AS PLACED, NOT FROM A FRESH SAMPLE.
+    // `chainRun` welds the host's run together and MOVES its turnouts, so by
+    // the time a branch leaves one, `placeAt(host, pos)` no longer describes
+    // where that turnout actually is — on blairstown's arc the sample sat 1.3″
+    // off the laid turnout, which put the diverging joint on the wrong SIDE of
+    // the host line and tripled the closing curve.
+    const a = laid ? jointAt(laid, "throat") : null;
+    const b = laid ? jointAt(laid, "through") : null;
+    if (!a || !b) return { x: pos, y: laneY, headingDeg: 0, laneY };
+    let hx = b.x - a.x;
+    let hy = b.y - a.y;
+    // ⚠️ Point it the module's own way. A lane's sign is a canonical-frame
+    // fact, so measuring it against a WEST-facing turnout's own direction would
+    // read every offset upside down — and `dirSign` already handles travel.
+    const ref = placeAt && hostId ? placeAt(hostId, pos) : null;
+    const rr = rad(ref?.headingDeg ?? 0);
+    if (hx * Math.cos(rr) + hy * Math.sin(rr) < 0) {
+      hx = -hx;
+      hy = -hy;
+    }
+    return { x: a.x, y: a.y, headingDeg: (Math.atan2(hy, hx) * 180) / Math.PI, laneY };
   };
 
   /** Place a turnout so {@link walkTrackGraph} will report it at `t.pos`. */
@@ -9378,6 +9448,7 @@ export function docToGraph(
           { x: fj.x, y: fj.y, headingDeg: fj.headingDeg },
           y,
           -1,
+          hostFrameAt(l?.piece, closeAt.sw.onTrack, closeAt.sw.pos),
         );
         if (closing) {
           pieces.push(closing);
@@ -9551,7 +9622,13 @@ export function docToGraph(
       }
 
       const branchY = laneOffsetAt(branch.lane ?? 0, 0);
-      const curve = transition(branch.id, { x: dj.x, y: dj.y, headingDeg: dj.headingDeg }, branchY);
+      const curve = transition(
+        branch.id,
+        { x: dj.x, y: dj.y, headingDeg: dj.headingDeg },
+        branchY,
+        1,
+        hostFrameAt(near.piece, t.onTrack, t.pos),
+      );
       let start: Cursor = { x: dj.x, y: dj.y, headingDeg: dj.headingDeg };
       if (curve) {
         pieces.push(curve);
@@ -9578,6 +9655,9 @@ export function docToGraph(
           { x: farJoint.x, y: farJoint.y, headingDeg: farJoint.headingDeg },
           branchY,
           -1,
+          // ⚠️ The FAR turnout's host and position, not the near one's — this
+          // curve leaves the module at the other end of the siding.
+          hostFrameAt(laidTurnouts.get(farSw0!.id)?.piece, farSw0!.onTrack, farSw0!.pos),
         );
         if (farCurve) {
           pieces.push(farCurve);

@@ -7659,10 +7659,46 @@ describe("rebuilding a drawn module as pieces", () => {
       // chain is broken — it is how the first attempt announced itself (45.5
       // against 386) without ever refusing.
       expect(g.doc.lengthInches).toBeCloseTo(96, 1);
-      // ⏳ The ONE remaining break is the SIDING's own run: its opening curve,
-      // flex and closing curve are not chained to each other (measured gaps
-      // 2.01″ and 2.80″). Pinned at 1 so it must move when that lands.
-      expect((g.warnings ?? []).filter((w) => /not reachable/.test(w)).length).toBeLessThanOrEqual(1);
+      // ⏳ What remains adrift is the sidings' FLEX — four pieces, and the count
+      // ROSE from 1 because the frame fix below made four pieces exist that the
+      // arc lay had previously failed to produce at all. The curves themselves
+      // now reach their turnouts. Pinned so it must move when the branch's flex
+      // extent is measured along the arc rather than in flat x.
+      expect((g.warnings ?? []).filter((w) => /not reachable/.test(w)).length).toBeLessThanOrEqual(4);
+    });
+
+    // ⛔⛔ THE BUG THIS PINS: `transition` measured its angle against +x and its
+    // offset as an absolute y — both true only of a FLAT lay, where the host
+    // runs along the axis with its lanes at constant y. Given a placer, neither
+    // holds, and the error was gross: `mt5-far` came out 119.29″ long, radius
+    // 2761.5, ending at x = −48.2 on a 96″ board, while the branch's flex was
+    // not laid at all.
+    //
+    // ⭐ THE INVARIANT: the curve that brings a siding parallel to its host is a
+    // property of the TURNOUT and the LANE. Where the module happens to bend
+    // cannot change it — so flat and arc must agree, exactly.
+    it("lays a siding's curves in its HOST's frame, not the module's axes", () => {
+      const flat = docToGraph(blairstown(), { turnoutPartId: SW });
+      const arc = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(600));
+      const pick = (c: typeof flat, id: string) => c.graph!.pieces.find((p) => p.id === id);
+
+      // Every piece the flat lay produces, the arc lay produces too.
+      expect(arc.graph!.pieces.length).toBe(flat.graph!.pieces.length);
+
+      for (const id of ["mt5", "mt5-far", "spur1", "spur1-far"]) {
+        const f = pick(flat, id)!;
+        const a = pick(arc, id)!;
+        expect(a).toBeDefined();
+        expect(a.lengthInches).toBeCloseTo(f.lengthInches!, 2);
+        expect(Math.abs(a.radiusInches!)).toBeCloseTo(Math.abs(f.radiusInches!), 1);
+      }
+
+      // ⭐ And the blunt guard for the whole class: nothing may land off the
+      // board. A 96″ module cannot have a joint at x = −48.
+      for (const j of buildTrackGraph(arc.graph!.pieces, BUILT_IN_TRACK_PARTS).joints) {
+        expect(j.x).toBeGreaterThan(-2);
+        expect(j.x).toBeLessThan(110);
+      }
     });
 
     // ⛔⛔ THE BUG THIS PINS: `weldTo` chose its joint pair purely by proximity,
