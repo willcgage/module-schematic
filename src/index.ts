@@ -8975,10 +8975,34 @@ export function docToGraph(
    * proximity is only choosing WHICH joint. The position and heading then come
    * from the joint exactly, so the result is exact by construction rather than
    * "near enough to snap".
+   *
+   * ⛔⛔ **BUT PROXIMITY MAY NOT CHOOSE A TURNOUT'S DIVERGING LEG.** That
+   * assumption holds for a piece with two ends and BREAKS on a turnout, which
+   * has three. `chainRun` is walking ONE run, and every turnout in its list
+   * sits ON that run — so the run passes through the turnout throat-to-through,
+   * and the diverging leg belongs to the OTHER run, which will need it.
+   *
+   * On a curve the incoming flex can land nearer the diverge joint than the
+   * throat, and blairstown did exactly that: the main welded onto `sw4.diverge`,
+   * leaving `sw4.through` open, so the main dead-ended into the siding's leg and
+   * everything past it was unreachable (83.22″ of a 96″ module). It never showed
+   * on a FLAT lay, where the throat is unambiguously nearest — which is why it
+   * only surfaced once a {@link PlaceOnTrack} was supplied.
+   *
+   * ⭐ The caller knows which route it is walking; distance does not. Excluding
+   * the diverging leg here is that knowledge, not a tolerance.
    */
   const weldTo = (prev: TrackPiece, cur: TrackPiece) => {
-    const pjs = jointsOf(prev);
-    const cjs = jointsOf(cur);
+    // A run passes through a turnout; it never leaves down the diverging leg.
+    // Fails OPEN: if a piece somehow has nothing else, keep its full set rather
+    // than refuse to weld at all.
+    const throughOnly = (p: TrackPiece) => {
+      const all = jointsOf(p);
+      const thru = all.filter((j) => j.role !== "diverge");
+      return thru.length ? thru : all;
+    };
+    const pjs = throughOnly(prev);
+    const cjs = throughOnly(cur);
     if (!pjs.length || !cjs.length) return;
     let best: { pj: PlacedJoint; cj: PlacedJoint; d: number } | null = null;
     for (const pj of pjs)

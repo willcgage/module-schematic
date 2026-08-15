@@ -7646,21 +7646,74 @@ describe("rebuilding a drawn module as pieces", () => {
     // between runs is not part of either. This test PINS the progress so the
     // number has to move when that lands, rather than asserting a completeness
     // that is not there.
-    it("welds the bodies too, so the run walks most of the module", () => {
+    it("welds the bodies too, so the run walks the WHOLE module", () => {
       const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(600));
       const g = graphToDoc(c.graph!.pieces, {
         startAt: c.graph!.startAt,
         start2: c.graph!.start2 ?? null,
         base: blairstown(),
       });
-      // Was 14.78 when only the flex chained; ~83.2 now.
-      expect(g.doc.lengthInches).toBeGreaterThan(75);
-      // ⭐ A derived length far under the module's own is the cheap signal that
-      // a chain is broken — it is how the first attempt announced itself (45.5
+      // 14.78 with only the flex chained · 83.22 with the bodies welded · 96
+      // once the run stopped welding to the turnouts' DIVERGING legs.
+      // ⭐ A derived length under the module's own is the cheap signal that a
+      // chain is broken — it is how the first attempt announced itself (45.5
       // against 386) without ever refusing.
-      expect(g.doc.lengthInches).toBeLessThanOrEqual(96);
-      // Down from 10; what remains is the run-to-run diverging connection.
-      expect((g.warnings ?? []).filter((w) => /not reachable/.test(w)).length).toBeLessThan(5);
+      expect(g.doc.lengthInches).toBeCloseTo(96, 1);
+      // ⏳ The ONE remaining break is the SIDING's own run: its opening curve,
+      // flex and closing curve are not chained to each other (measured gaps
+      // 2.01″ and 2.80″). Pinned at 1 so it must move when that lands.
+      expect((g.warnings ?? []).filter((w) => /not reachable/.test(w)).length).toBeLessThanOrEqual(1);
+    });
+
+    // ⛔⛔ THE BUG THIS PINS: `weldTo` chose its joint pair purely by proximity,
+    // which is right for a two-ended piece and wrong for a turnout's three. On a
+    // curve the main's flex landed nearer `sw4.diverge` than `sw4.throat`, so
+    // the main welded onto the SIDING's leg, left `sw4.through` open, and
+    // everything past sw4 became unreachable — 83.22″ of a 96″ module.
+    //
+    // ⭐ Invisible on a FLAT lay, where the throat is unambiguously nearest.
+    // That is why it survived until a `PlaceOnTrack` was supplied, and why this
+    // test must run on an arc.
+    it("a run passes THROUGH a turnout — it never welds to the diverging leg", () => {
+      const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(600));
+      const joints = buildTrackGraph(c.graph!.pieces, BUILT_IN_TRACK_PARTS).joints;
+
+      // Group every joint by position, exactly as a connection is decided.
+      const used = new Set<number>();
+      const groups: (typeof joints)[] = [];
+      for (let i = 0; i < joints.length; i += 1) {
+        if (used.has(i)) continue;
+        const grp = [joints[i]];
+        used.add(i);
+        for (let k = i + 1; k < joints.length; k += 1) {
+          if (used.has(k)) continue;
+          if (Math.hypot(joints[i].x - joints[k].x, joints[i].y - joints[k].y) <= JOINT_SNAP_INCHES) {
+            grp.push(joints[k]);
+            used.add(k);
+          }
+        }
+        groups.push(grp);
+      }
+
+      // ⭐ THE FALSIFIER: three ends at one point. Rail has two ends, so a
+      // junction of three is a turnout — and none of them are joined.
+      expect(groups.filter((g) => g.length > 2)).toEqual([]);
+
+      // And the main really does continue THROUGH sw4 rather than stopping on
+      // its diverging leg.
+      const shared = (piece: string, joint: string) =>
+        groups.some((g) => g.length === 2 && g.some((j) => j.piece === piece && j.joint === joint));
+      expect(shared("t-sw4", "throat") || shared("t-sw4", "through")).toBe(true);
+
+      // ⚠️ The diverging leg IS joined — to the siding's closing curve, which is
+      // the whole point of reserving it. What must never sit there is a piece of
+      // the MAIN's own run. (Asserting the joint was simply unshared was my own
+      // error, and this test failed on it.)
+      const divergeGroup = groups.find((g) =>
+        g.some((j) => j.piece === "t-sw4" && j.joint === "diverge"),
+      );
+      const mainOnDiverge = (divergeGroup ?? []).filter((j) => /^f-main-/.test(j.piece));
+      expect(mainOnDiverge).toEqual([]);
     });
 
     it("falls back to the flat lay when the caller cannot place a track", () => {
