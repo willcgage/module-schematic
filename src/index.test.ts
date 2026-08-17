@@ -7645,6 +7645,49 @@ describe("rebuilding a drawn module as pieces", () => {
       }
     });
 
+    // ⭐⭐ WHAT #199 WAS ACTUALLY FOR: a converted module has to come out the
+    // same whatever shape the board is. A siding is a siding only while BOTH its
+    // turnouts reach it, so this is the assertion that the run CLOSES — and it
+    // is the one that stayed false through three earlier attempts, while
+    // "unreachable" read zero and the module quietly derived FOUR SPURS.
+    //
+    // ⚠️ Asserted on the DOCUMENT, not on joint counts. Reachability went to
+    // zero long before this did; the roles are what say the track joined up.
+    it("derives the same module however the board is shaped", () => {
+      const straight = docToGraph(blairstown(), { turnoutPartId: SW });
+      const shaped = [
+        ["R=600", arcAt(600)],
+        ["R=240", arcAt(240)],
+        ["diagonal", diagonal],
+      ] as const;
+      const summarise = (c: ReturnType<typeof docToGraph>) => {
+        const g = graphToDoc(c.graph!.pieces, {
+          startAt: c.graph!.startAt,
+          start2: c.graph!.start2 ?? null,
+          base: blairstown(),
+        });
+        return {
+          length: g.doc.lengthInches,
+          unreachable: (g.warnings ?? []).filter((w) => /not reachable/.test(w)).length,
+          tracks: g.doc.tracks
+            .filter((t) => t.id !== MAIN_TRACK_ID)
+            .map((t) => `${t.id}:${t.role}:${t.fromPos}-${t.toPos}`)
+            .sort(),
+          turnouts: (g.doc.turnouts ?? []).map((t) => `${t.id}@${t.pos}`).sort(),
+        };
+      };
+      const want = summarise(straight);
+      // Sanity: the flat lay is the answer everything else must match.
+      expect(want.tracks).toEqual(["mt5:siding:13-73", "spur1:siding:19-85"]);
+      expect(want.unreachable).toBe(0);
+
+      for (const [label, place] of shaped) {
+        const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, place);
+        expect(c.refused, label).toBeNull();
+        expect(summarise(c), label).toEqual(want);
+      }
+    });
+
     it("keeps a straight run straight instead of describing it as a vast arc", () => {
       // A hair of turn is float noise, and 1e-3° over 30″ is a 1.7-million-inch
       // radius — a straight piece described in the most alarming way possible.
@@ -7757,12 +7800,29 @@ describe("rebuilding a drawn module as pieces", () => {
       // Every piece the flat lay produces, the arc lay produces too.
       expect(arc.graph!.pieces.length).toBe(flat.graph!.pieces.length);
 
-      for (const id of ["mt5", "mt5-far", "spur1", "spur1-far"]) {
+      // ⭐ An OPENING curve is pure geometry — the turnout's divergence and the
+      // lane — so it must come out IDENTICAL whatever the module does.
+      for (const id of ["mt5", "spur1"]) {
         const f = pick(flat, id)!;
         const a = pick(arc, id)!;
         expect(a).toBeDefined();
         expect(a.lengthInches).toBeCloseTo(f.lengthInches!, 2);
         expect(Math.abs(a.radiusInches!)).toBeCloseTo(Math.abs(f.radiusInches!), 1);
+      }
+      // ⚠️ A CLOSING curve is NOT purely that, and must not be pinned as if it
+      // were. It also reconciles the run with the far turnout, which on a curve
+      // sits its own chord off the line (0.030″ at R600) — so it legitimately
+      // differs from the flat lay by a few percent, and that difference IS the
+      // reconciliation. What still has to hold is that it stays the same KIND of
+      // curve: same sense, same order of magnitude, not a wild radius.
+      for (const id of ["mt5-far", "spur1-far"]) {
+        const f = pick(flat, id)!;
+        const a = pick(arc, id)!;
+        expect(a).toBeDefined();
+        expect(Math.sign(a.radiusInches!)).toBe(Math.sign(f.radiusInches!));
+        const ratio = Math.abs(a.radiusInches!) / Math.abs(f.radiusInches!);
+        expect(ratio, `${id} radius ratio`).toBeGreaterThan(0.8);
+        expect(ratio, `${id} radius ratio`).toBeLessThan(1.25);
       }
 
       // ⭐ And the blunt guard for the whole class: nothing may land off the

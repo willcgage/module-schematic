@@ -8910,6 +8910,56 @@ export function docToGraph(
   };
 
   /**
+   * ⭐⭐ WHERE ALONG `trackId` A POINT SITS — the inverse of {@link PlaceOnTrack}.
+   *
+   * ⛔ THE BUG THIS KILLS: a branch's flex extent was passed as the X-COORDINATES
+   * of the curves at either end, into parameters that mean POSITIONS. Flat they
+   * are the same number, so it never showed. Given a placer they are not, and it
+   * broke two ways at once — the flex came out too SHORT to reach the closing
+   * curve, and `layFlex`'s body matching, which picks the joint nearest
+   * `placeAt(track, fromPos)`, sampled the wrong place and chose the curve's FAR
+   * end, sending the run backwards (rot 233° on a 45° board).
+   *
+   * The same confusion as #253's arc-length-versus-`x`, one layer down.
+   *
+   * Coarse scan then bisect: the placer is any polyline the caller likes, so
+   * there is nothing to invert analytically. Without a placer a position IS an
+   * x, and the fallback returns it unchanged — the flat lay is untouched.
+   */
+  const posOfPoint = (
+    trackId: string,
+    p: { x: number; y: number },
+    fallback: number,
+  ): number => {
+    if (!placeAt) return fallback;
+    const span = Math.max(mainLen, 1);
+    let best = fallback;
+    let bestD = Infinity;
+    const consider = (pos: number) => {
+      if (pos < 0 || pos > span) return;
+      const q = placeAt(trackId, pos);
+      if (!q) return;
+      const d = Math.hypot(q.x - p.x, q.y - p.y);
+      if (d < bestD) {
+        bestD = d;
+        best = pos;
+      }
+    };
+    const steps = 240;
+    for (let i = 0; i <= steps; i += 1) consider((span * i) / steps);
+    if (bestD === Infinity) return fallback;
+    // Refine well inside JOINT_SNAP_INCHES — this position decides where a joint
+    // lands, and "near enough" is the habit that lets drift in.
+    let step = span / steps;
+    for (let k = 0; k < 40; k += 1) {
+      step /= 2;
+      consider(best - step);
+      consider(best + step);
+    }
+    return best;
+  };
+
+  /**
    * Where a host track runs at `pos`, for a branch leaving it there — the frame
    * {@link transition} needs. Without a {@link PlaceOnTrack} this is the flat
    * lay's own frame, so the curve comes out exactly as it always did.
@@ -9029,6 +9079,96 @@ export function docToGraph(
     // lets real drift in.
     piece.rotationDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
     piece.lengthInches = len;
+  };
+
+  /**
+   * ⭐⭐ CUT THE LAST PIECE TO LENGTH — never to a different RADIUS.
+   *
+   * A siding closes onto its far turnout, so its run is anchored at BOTH ends
+   * and the flex has to arrive where the closing curve starts. Cutting the last
+   * piece is what a builder does; {@link aimEndAt} is the straight-track version
+   * of the same idea.
+   *
+   * ⛔ LENGTH ONLY. An earlier attempt solved for the RADIUS as well. That does
+   * land the joint exactly — and pulled a 240″ stretch to 165″ to do it. A
+   * piece's curvature describes the track; bending it to hide a positional error
+   * is a wrong answer, and the suite says so by name ("bends each piece to the
+   * radius its own stretch actually has"). Length is the one dimension of a flex
+   * piece that is genuinely free.
+   *
+   * So this closes the ALONG-track component and leaves the LATERAL one, which
+   * is not the flex's to fix: it is the rigid turnout's own chord across the arc
+   * (0.030″ at R600), and the closing curve hangs off that turnout.
+   */
+  /**
+   * Re-shape a TRANSITION curve so its far end lands exactly on a point.
+   *
+   * Its start and heading are fixed by the turnout it leaves, so a circular arc
+   * to a given end is uniquely determined: `flexRunEnd` gives
+   * `(R sin θ, R(1 − cos θ))` for `θ = L/R`, and inverting that pair is exact —
+   * `c² = 2·R·dy`, so `R = c²/2dy` and `θ` follows.
+   *
+   * ⚠️ ONLY EVER A TRANSITION CURVE. Its radius is already DERIVED from the
+   * geometry it reconciles (a turnout's divergence and a lane), not read off the
+   * owner's polyline — so re-deriving it against the track's real position is
+   * the same kind of statement. Doing this to a stretch of plain flex would be
+   * the invention the suite refuses by name.
+   */
+  const fitEndTo = (piece: TrackPiece, to: { x: number; y: number }) => {
+    const rot = rad(piece.rotationDeg ?? 0);
+    const ax = to.x - piece.x;
+    const ay = to.y - piece.y;
+    const dx = ax * Math.cos(rot) + ay * Math.sin(rot);
+    const dy = -ax * Math.sin(rot) + ay * Math.cos(rot);
+    const c2 = dx * dx + dy * dy;
+    if (!(c2 > 0) || dx <= 0) return; // behind us, or nowhere: leave it alone
+    if (Math.abs(dy) < 1e-9) {
+      delete piece.radiusInches;
+      piece.lengthInches = r3(Math.sqrt(c2));
+      return;
+    }
+    const R = c2 / (2 * dy);
+    const theta = Math.atan2(dx / R, 1 - dy / R);
+    const L = R * theta;
+    if (!(L > 0) || !Number.isFinite(L) || !Number.isFinite(R)) return;
+    piece.radiusInches = r3(R);
+    piece.lengthInches = r3(L);
+  };
+
+  const fitLengthTo = (piece: TrackPiece, to: { x: number; y: number }) => {
+    const L0 = piece.lengthInches ?? 0;
+    if (!(L0 > 0)) return;
+    const distAt = (L: number) => {
+      const end = jointAt({ ...piece, lengthInches: L }, "b");
+      return end ? Math.hypot(end.x - to.x, end.y - to.y) : Infinity;
+    };
+    // The end travels along the piece's OWN arc as its length changes, so this
+    // is a 1-D minimisation: scan, then bisect. Never let it go non-positive.
+    let best = L0;
+    let bestD = distAt(L0);
+    const span = Math.max(1, Math.abs(L0) * 0.5);
+    for (let i = -40; i <= 40; i += 1) {
+      const L = L0 + (span * i) / 40;
+      if (L <= 0.01) continue;
+      const d = distAt(L);
+      if (d < bestD) {
+        bestD = d;
+        best = L;
+      }
+    }
+    let step = span / 40;
+    for (let k = 0; k < 40; k += 1) {
+      step /= 2;
+      for (const L of [best - step, best + step]) {
+        if (L <= 0.01) continue;
+        const d = distAt(L);
+        if (d < bestD) {
+          bestD = d;
+          best = L;
+        }
+      }
+    }
+    piece.lengthInches = r3(best);
   };
 
   /**
@@ -9685,6 +9825,10 @@ export function docToGraph(
         farJoint != null
           ? farJoint.x
           : Math.max(branch.fromPos ?? t.pos, branch.toPos ?? t.pos);
+      /** Where the run has to END, as a POINT — so it can be turned into a
+       *  position along this branch rather than used as one. */
+      let endPoint: { x: number; y: number } | null =
+        farJoint != null ? { x: farJoint.x, y: farJoint.y } : null;
       let farCurve: TrackPiece | null = null;
       if (farJoint) {
         // ⚠️ The joint's heading ALREADY points the way this rail runs — west,
@@ -9703,7 +9847,10 @@ export function docToGraph(
         if (farCurve) {
           pieces.push(farCurve);
           const e = jointAt(farCurve, "b");
-          if (e) endX = e.x;
+          if (e) {
+            endX = e.x;
+            endPoint = { x: e.x, y: e.y };
+          }
         }
       }
 
@@ -9732,12 +9879,65 @@ export function docToGraph(
         pieces.push(l.piece);
         laidTurnouts.set(l.t.id, l);
       }
-      const laidBranch = layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts, branch.id, on.map((l) => ({ span: l.span, piece: l.piece })));
-      if (placeAt)
+      // ⛔⛔ POSITIONS, NOT X-COORDINATES. `layFlex` measures the run and asks
+      // the placer where each cut goes, both in inches ALONG the track; handing
+      // it the curves' x was silently right on a flat lay and wrong the moment a
+      // placer existed. See {@link posOfPoint}.
+      const startPos = posOfPoint(branch.id, start, start.x);
+      const endPos = posOfPoint(branch.id, endPoint ?? { x: endX, y: branchY }, endX);
+      const laidBranch = layFlex(
+        branch.id,
+        branchY,
+        startPos,
+        endPos,
+        on.map((l) => l.span),
+        branch.flexCuts,
+        branch.id,
+        // ⭐⭐ THE OPENING CURVE IS A BODY THIS RUN BEGINS AGAINST. The first cut
+        // has nothing before it to chain from, so it samples the placer's line —
+        // while the curve hangs off the turnout AS LAID. Continuing from the
+        // curve's own joint closes exactly that difference.
+        //
+        // ⚠️ THE OPENING CURVE ONLY. `bodies` is for a cut that BEGINS against
+        // something; offering the CLOSING curve let a short run's first cut match
+        // it and set off backwards down the siding (233° on a 45° board).
+        [
+          ...on.map((l) => ({ span: l.span, piece: l.piece })),
+          ...(curve ? [{ span: { fromPos: dj.x, toPos: startPos }, piece: curve }] : []),
+        ],
+      );
+      if (placeAt) {
         chainRun([
           ...on.map((l) => ({ at: l.span.fromPos, piece: l.piece, keepHeading: true })),
           ...laidBranch.map((f) => ({ at: flatAt.get(f.id) ?? 0, piece: f, keepHeading: true })),
         ]);
+        // ⭐ A SIDING IS ANCHORED AT BOTH ENDS, so the run cannot merely be
+        // chained forward: the closing curve is pinned where its far turnout
+        // puts it, and welding the run onto it would drag it off — the module
+        // would then derive two extra SPURS instead of one siding, since a
+        // siding is a siding only while BOTH its turnouts reach it. Cut the last
+        // length of flex to reach it instead — LENGTH only, never the radius.
+        const farEnd = farCurve ? jointAt(farCurve, "b") : null;
+        const last = laidBranch[laidBranch.length - 1];
+        if (farEnd && last) {
+          fitLengthTo(last, farEnd);
+          // ⭐⭐ AND THE CLOSING CURVE COMES THE REST OF THE WAY.
+          //
+          // Cutting the flex closes the ALONG-track error but not the LATERAL
+          // one — 0.027″ here — because that is the rigid turnout's own chord
+          // across the arc, and the flex is following the line, correctly.
+          //
+          // Reconciling a rigid part with where the track really runs is the
+          // TRANSITION CURVE'S WHOLE JOB — it exists to get from a turnout's
+          // diverging rail onto the siding's lane. So it, not the flex, is the
+          // piece that should absorb the difference: its radius is derived from
+          // the geometry it connects rather than read off the polyline, so
+          // adjusting it is not the invention that bending a stretch of plain
+          // flex would be.
+          const arrived = jointAt(last, "b");
+          if (arrived && farCurve) fitEndTo(farCurve, arrived);
+        }
+      }
     }
   }
 
