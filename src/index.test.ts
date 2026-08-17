@@ -7529,22 +7529,46 @@ describe("rebuilding a drawn module as pieces", () => {
   // the STRAIGHTENED frame, not the board — so on a module whose centre-line
   // curves the pieces came out in a straight line somewhere else entirely.
   describe("laying pieces where the track really is", () => {
+    /**
+     * ⛔⛔ EVERY TRACK GETS ITS OWN LANE — and these fixtures did not.
+     *
+     * Both placers used to ignore `trackId`, so a siding was handed the MAIN's
+     * centre-line. {@link PlaceOnTrack} says the opposite in as many words — "a
+     * positional siding is the centre-line offset to its lane" — so the branch
+     * lay had never once been exercised against a placer that behaves like the
+     * real one. That is not a small difference: it moved a measured joint gap
+     * from 0.978″ to 0.147″, and it twice made a fixture artefact look exactly
+     * like a bug in the conversion.
+     *
+     * The offset is along the LEFT NORMAL of the line's heading, which is what
+     * a lane is.
+     */
+    const LANE_OF: Record<string, number> = { mt5: 1, spur1: -1 };
+    const onLane = (
+      id: string,
+      p: { x: number; y: number },
+      headingRad: number,
+    ) => {
+      const off = laneOffsetAt(LANE_OF[id] ?? 0, 0);
+      return {
+        x: p.x + off * -Math.sin(headingRad),
+        y: p.y + off * Math.cos(headingRad),
+        headingDeg: (headingRad * 180) / Math.PI,
+      };
+    };
     /** A board running due north-east: heading is constant, so nothing bends,
      * but nothing is on the module's +x axis either. */
-    const diagonal: PlaceOnTrack = (_id, pos) => ({
-      x: (pos * Math.SQRT1_2),
-      y: (pos * Math.SQRT1_2),
-      headingDeg: 45,
-    });
+    const diagonal: PlaceOnTrack = (id, pos) =>
+      onLane(id, { x: pos * Math.SQRT1_2, y: pos * Math.SQRT1_2 }, Math.PI / 4);
     /** A constant-radius curve: heading turns a fixed amount per inch, which is
      * exactly what a circular arc is. R = arc / θ. */
-    const arcAt = (radius: number): PlaceOnTrack => (_id, pos) => {
+    const arcAt = (radius: number): PlaceOnTrack => (id, pos) => {
       const th = pos / radius;
-      return {
-        x: radius * Math.sin(th),
-        y: radius * (1 - Math.cos(th)),
-        headingDeg: (th * 180) / Math.PI,
-      };
+      return onLane(
+        id,
+        { x: radius * Math.sin(th), y: radius * (1 - Math.cos(th)) },
+        th,
+      );
     };
 
     it("puts the pieces on the track's real line, not the module's axis", () => {
@@ -7554,9 +7578,14 @@ describe("rebuilding a drawn module as pieces", () => {
       expect(flex.length).toBeGreaterThan(0);
       for (const p of flex) {
         expect(p.rotationDeg).toBeCloseTo(45, 6);
-        // On a 45° line the two coordinates are equal. The old lay put every
-        // one of these at y = the lane offset, on an axis the track never ran on.
-        expect(p.y).toBeCloseTo(p.x, 3);
+        // ⭐ Each run sits on ITS OWN lane, offset along the left normal of the
+        // 45° line — so the two coordinates are equal only for the MAIN. The
+        // old lay put every one of these at y = the lane offset, on an axis the
+        // track never ran on; what pins that now is that the offset is taken
+        // PERPENDICULAR to the real line, which on 45° means y − x = off·√2.
+        const track = p.id.replace(/^f-/, "").replace(/-\d+$/, "");
+        const off = laneOffsetAt(LANE_OF[track] ?? 0, 0);
+        expect(p.y - p.x).toBeCloseTo(off * Math.SQRT2, 3);
         expect(p.radiusInches).toBeUndefined();
       }
     });
