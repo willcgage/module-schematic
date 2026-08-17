@@ -9884,7 +9884,21 @@ export function docToGraph(
       // it the curves' x was silently right on a flat lay and wrong the moment a
       // placer existed. See {@link posOfPoint}.
       const startPos = posOfPoint(branch.id, start, start.x);
-      const endPos = posOfPoint(branch.id, endPoint ?? { x: endX, y: branchY }, endX);
+      /**
+       * ⛔⛔ ONLY A REAL LAID POINT GETS ROUND-TRIPPED (#305).
+       *
+       * `endPoint` is set when the run CLOSES onto a far turnout — a place on
+       * the board, which has to be turned into a position. A spur has no far
+       * turnout, and then `endX` is `max(fromPos, toPos)` straight out of the
+       * document: **already a position**. Feeding that through a fabricated
+       * flat-frame point `{x: endX, y: branchY}` asked where a point that is not
+       * on the curve sits on the curve, and the nearest answer is not the right
+       * one — FMN-0032's 50° curve laid pbender's recorded 19″ spur as 10.15″.
+       *
+       * ⭐ Seven inches of an owner's rail, from converting a number that never
+       * needed converting.
+       */
+      const endPos = endPoint ? posOfPoint(branch.id, endPoint, endX) : endX;
       const laidBranch = layFlex(
         branch.id,
         branchY,

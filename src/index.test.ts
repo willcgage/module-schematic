@@ -7543,7 +7543,7 @@ describe("rebuilding a drawn module as pieces", () => {
      * The offset is along the LEFT NORMAL of the line's heading, which is what
      * a lane is.
      */
-    const LANE_OF: Record<string, number> = { mt5: 1, spur1: -1 };
+    const LANE_OF: Record<string, number> = { mt5: 1, spur1: -1, stub: 1 };
     const onLane = (
       id: string,
       p: { x: number; y: number },
@@ -7685,6 +7685,56 @@ describe("rebuilding a drawn module as pieces", () => {
         const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, place);
         expect(c.refused, label).toBeNull();
         expect(summarise(c), label).toEqual(want);
+      }
+    });
+
+    // ⛔⛔ A SPUR IS NOT A SIDING, and every other fixture here is a siding.
+    //
+    // blairstown's `mt5` and `spur1` both have TWO turnouts, so they genuinely
+    // run parallel to the main and the lane model fits them. A one-ended spur
+    // does not: it leaves at its turnout and stops. Nothing in this file
+    // exercised that until now, which is why #305 reached a real owner's module
+    // — FMN-0032's recorded 19″ spur was laid as 10.15″ on its 50° curve.
+    //
+    // The cause was a number that never needed converting: with no far turnout
+    // the run's end is `max(fromPos, toPos)` straight out of the document — a
+    // POSITION already — and it was being round-tripped through a fabricated
+    // flat-frame point, which on a curve resolves somewhere else entirely.
+    it("lays a one-ended spur to its full length on a curve", () => {
+      // ⭐ Modelled on FMN-0032 "Flynn", the module that exposed it: a 49.5″
+      // board whose main sweeps 50°, so R ≈ 49.5/(50°) ≈ 56.7″ — sharp enough
+      // for a spur that does NOT turn with the main to come out badly short. A
+      // gentler curve hides it: at R=600 the same bug costs only 0.1″.
+      const withSpur = (): ModuleSchematicDoc => ({
+        version: 1,
+        lengthInches: 49.5,
+        endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+        tracks: [
+          { id: MAIN_TRACK_ID, role: "main", lane: 0 },
+          { id: "stub", role: "spur", lane: 1, fromPos: 28, toPos: 47, trackName: "Sand House" },
+        ],
+        turnouts: [{ id: "sw1", pos: 28, onTrack: MAIN_TRACK_ID, divergeTrack: "stub" }],
+      });
+      const laidLength = (c: ReturnType<typeof docToGraph>) =>
+        c.graph!.pieces
+          .filter((p) => /stub/.test(p.id))
+          .reduce((a, p) => a + (p.lengthInches ?? 0), 0);
+
+      const flat = docToGraph(withSpur(), { turnoutPartId: SW });
+      expect(flat.refused).toBeNull();
+      const want = laidLength(flat);
+      // Sanity: the flat lay really does lay most of the recorded 19″.
+      expect(want).toBeGreaterThan(15);
+
+      // ⚠️ A BAND, not an equality. A curve legitimately changes the laid length
+      // a little — Flynn's real numbers are 17.24″ flat against 17.18″ curved —
+      // so pinning it to the decimal would be pinning noise. What must never
+      // happen again is losing a WHOLE STRETCH of it: the bug laid 10.15″ of
+      // that 17.24″, and 90% catches that with room to spare.
+      for (const R of [56.7, 120, 600]) {
+        const c = docToGraph(withSpur(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, arcAt(R));
+        expect(c.refused, `R=${R}`).toBeNull();
+        expect(laidLength(c), `R=${R} laid rail`).toBeGreaterThan(want * 0.9);
       }
     });
 
