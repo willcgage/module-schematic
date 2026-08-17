@@ -7602,6 +7602,49 @@ describe("rebuilding a drawn module as pieces", () => {
       }
     });
 
+    // ⛔⛔ THE BUG THIS PINS (#304): the laid chain WALKED OFF THE DRAWING.
+    //
+    // A turnout body is rigid and ~6″ long, so on a curve it chords the arc: at
+    // R=600 its far end lands 0.030″ inside the line and pointing 0.57° off the
+    // tangent. Every following piece was rotated to face that end, so the error
+    // was inherited, and since each body added another it compounded —
+    // measured 1.933″ at R600 and 4.751″ at R240 across a 96″ module.
+    //
+    // ⛔ INVISIBLE IN THE DERIVED DOC. The chain is internally consistent, so
+    // the module still reported length 96 with its turnouts at 13/19/73/85 and
+    // nothing unreachable. It shows ONLY against the line the owner drew, which
+    // is why this measures against the placer rather than against the document.
+    it("does not walk off the line it is laying", () => {
+      for (const R of [600, 240]) {
+        const place = arcAt(R);
+        const c = docToGraph(blairstown(), { turnoutPartId: SW }, BUILT_IN_TRACK_PARTS, place);
+        expect(c.refused).toBeNull();
+        /** Perpendicular distance from the "main" line, by scan. */
+        const offLine = (p: { x: number; y: number }) => {
+          let best = Infinity;
+          for (let s = 0; s <= 96; s += 0.05) {
+            const q = place("main", s)!;
+            best = Math.min(best, Math.hypot(q.x - p.x, q.y - p.y));
+          }
+          return best;
+        };
+        let worst = 0;
+        for (const piece of c.graph!.pieces) {
+          if (!/^(f-main|t-sw)/.test(piece.id)) continue;
+          for (const j of placedJoints([piece], BUILT_IN_TRACK_PARTS)) {
+            // A diverging leg is MEANT to leave the line.
+            if (j.role === "diverge") continue;
+            worst = Math.max(worst, offLine(j));
+          }
+        }
+        // ⭐ What remains is the rigid body's own chord across the arc —
+        // 600·(1−cos(6/600)) = 0.030″ at R600 — which is real and irreducible.
+        // What must never come back is it ACCUMULATING: at R240 the old lay was
+        // 4.751″ out, i.e. 30× this bound.
+        expect(worst, `R=${R}`).toBeLessThan(0.25);
+      }
+    });
+
     it("keeps a straight run straight instead of describing it as a vast arc", () => {
       // A hair of turn is float noise, and 1e-3° over 30″ is a 1.7-million-inch
       // radius — a straight piece described in the most alarming way possible.

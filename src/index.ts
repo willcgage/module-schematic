@@ -9062,7 +9062,30 @@ export function docToGraph(
    * ⭐ The caller knows which route it is walking; distance does not. Excluding
    * the diverging leg here is that knowledge, not a tolerance.
    */
-  const weldTo = (prev: TrackPiece, cur: TrackPiece) => {
+  const weldTo = (
+    prev: TrackPiece,
+    cur: TrackPiece,
+    /**
+     * ⭐⭐ KEEP `cur`'s OWN HEADING and move it into place by TRANSLATION alone.
+     *
+     * ⛔ THE DRIFT THIS STOPS (#304). A turnout body is RIGID and ~6″ long, so on
+     * a curve it chords across the arc: at R=600 its far end lands 0.030″ inside
+     * the line AND POINTING 0.57° OFF THE TANGENT. Rotating the next piece to
+     * face that end inherits the error, the piece after inherits it again, and
+     * since every body adds another the run walks off the owner's drawing
+     * QUADRATICALLY — 1.93″ at R600 and 4.75″ at R240 on a 96″ module.
+     *
+     * A body already knows where it belongs: it was placed from its own sample
+     * of the line. Taking only its POSITION from the weld keeps the joint exact
+     * — {@link buildTrackGraph} matches joints by position, not heading — and
+     * leaves the sub-degree kink where it physically is, at the rigid part.
+     *
+     * ⚠️ That kink is REAL. Butt rigid turnouts end-to-end along a curve and the
+     * rail genuinely does not stay tangent; a builder eases the flex around it.
+     * Pretending otherwise is what moved the whole run off the drawing.
+     */
+    keepHeading = false,
+  ) => {
     // A run passes through a turnout; it never leaves down the diverging leg.
     // Fails OPEN: if a piece somehow has nothing else, keep its full set rather
     // than refuse to weld at all.
@@ -9081,9 +9104,12 @@ export function docToGraph(
         if (!best || d < best.d) best = { pj, cj, d };
       }
     if (!best) return;
-    // Face back the way we came: two joined ends point at each other.
-    const delta = norm180(norm180(best.pj.headingDeg + 180) - best.cj.headingDeg);
-    cur.rotationDeg = norm180(cur.rotationDeg + delta);
+    // Face back the way we came: two joined ends point at each other — unless
+    // this piece knows its own heading and should keep it (see `keepHeading`).
+    if (!keepHeading) {
+      const delta = norm180(norm180(best.pj.headingDeg + 180) - best.cj.headingDeg);
+      cur.rotationDeg = norm180(cur.rotationDeg + delta);
+    }
     const moved = jointAt(cur, best.cj.joint);
     if (!moved) return;
     cur.x = r3(cur.x + (best.pj.x - moved.x));
@@ -9091,9 +9117,12 @@ export function docToGraph(
   };
 
   /** Weld a whole run, in the order its elements sit along the module. */
-  const chainRun = (ordered: { at: number; piece: TrackPiece }[]) => {
+  const chainRun = (
+    ordered: { at: number; piece: TrackPiece; keepHeading?: boolean }[],
+  ) => {
     const seq = [...ordered].sort((a, b) => a.at - b.at);
-    for (let i = 1; i < seq.length; i += 1) weldTo(seq[i - 1].piece, seq[i].piece);
+    for (let i = 1; i < seq.length; i += 1)
+      weldTo(seq[i - 1].piece, seq[i].piece, seq[i].keepHeading === true);
   };
 
   /** Lay the plain track of one straight run at `hostY`, between two positions,
@@ -9181,9 +9210,20 @@ export function docToGraph(
       const piece: TrackPiece = {
         ...flat,
         ...shape,
-        ...(continues && prevEnd
-          ? { x: r3(prevEnd.x), y: r3(prevEnd.y), rotationDeg: prevEnd.headingDeg }
-          : {}),
+        // ⭐⭐ POSITION FROM THE JOINT, HEADING FROM THE LINE (#304).
+        //
+        // Taking the heading from the previous joint too is what carried a
+        // rigid body's chord error into everything after it: a 6″ turnout on an
+        // R600 arc ends 0.57° off tangent, the next flex set off at that angle,
+        // and 30″ later it was 0.30″ further off the drawing — compounding to
+        // 1.93″ (R600) and 4.75″ (R240) across a 96″ module.
+        //
+        // ⭐ On a run with no drift the two answers are the SAME — the sampled
+        // heading at a cut's start IS where the previous piece's arc ends — so
+        // this changes nothing that was already right, and stops carrying what
+        // was wrong. The joint stays exact because it is the POSITION that makes
+        // a joint, not the angle two rails meet at.
+        ...(continues && prevEnd ? { x: r3(prevEnd.x), y: r3(prevEnd.y) } : {}),
       };
       placed.push(piece);
       flatAt.set(piece.id, f.fromPos);
@@ -9473,8 +9513,9 @@ export function docToGraph(
     // bodies to the flex either side of them.
     if (placeAt)
       chainRun([
-        ...on.map((l) => ({ at: l.span.fromPos, piece: l.piece })),
-        ...laidFlex.map((f) => ({ at: flatAt.get(f.id) ?? 0, piece: f })),
+        // A BODY keeps the heading its own sample gave it (#304).
+        ...on.map((l) => ({ at: l.span.fromPos, piece: l.piece, keepHeading: true })),
+        ...laidFlex.map((f) => ({ at: flatAt.get(f.id) ?? 0, piece: f, keepHeading: true })),
       ]);
     /**
      * ⚠️⚠️ **THE PINCH.** A #6 assembly is 1.09″ wide while the mains run
@@ -9694,8 +9735,8 @@ export function docToGraph(
       const laidBranch = layFlex(branch.id, branchY, start.x, endX, on.map((l) => l.span), branch.flexCuts, branch.id, on.map((l) => ({ span: l.span, piece: l.piece })));
       if (placeAt)
         chainRun([
-          ...on.map((l) => ({ at: l.span.fromPos, piece: l.piece })),
-          ...laidBranch.map((f) => ({ at: flatAt.get(f.id) ?? 0, piece: f })),
+          ...on.map((l) => ({ at: l.span.fromPos, piece: l.piece, keepHeading: true })),
+          ...laidBranch.map((f) => ({ at: flatAt.get(f.id) ?? 0, piece: f, keepHeading: true })),
         ]);
     }
   }
