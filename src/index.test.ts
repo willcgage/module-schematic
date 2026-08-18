@@ -7497,6 +7497,50 @@ describe("rebuilding a drawn module as pieces", () => {
     expect(c.graph!.pieces.some((p) => p.id === "t-sw1")).toBe(true);
   });
 
+  // ⛔⛔ WHAT IS REPORTED AS NOT LAID IS NOT EMITTED (#306). The bail-out above
+  // ran AFTER both transition curves had been pushed, so a track the conversion
+  // had just refused came out in the graph anyway — and `graphToDoc` then read
+  // the two loose curves as two SPURS: FMN-0003's 18″ siding `sid` became a 9″
+  // spur, joined by a `sid-far` that is in no document anywhere.
+  //
+  // ⭐ THE REPORT IS THE CONSENT SURFACE. The rebuild offer runs `docToGraph` to
+  // show the owner what pressing the button will do, so the two disagreeing
+  // means being shown one module and given another. Mirror of the 2026-07-28
+  // bug, where the derivation's warnings went nowhere.
+  it("⛔ does not emit a track it has just reported as not laid", () => {
+    // FMN-0003 "Multnomah Curve": a siding reached by two turnouts, 6″ → 24″.
+    // The opening and closing curves together already overrun the 18″ between
+    // them, which is exactly what the bail-out is for.
+    const doc: ModuleSchematicDoc = {
+      version: 1, lengthInches: 48,
+      endplates: [{ id: "A", label: "West" }, { id: "B", label: "East" }],
+      tracks: [
+        { id: "main", role: "main", lane: 0 },
+        { id: "sid", role: "siding", lane: 1, fromPos: 6, toPos: 24 },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 6, onTrack: "main", divergeTrack: "sid" },
+        { id: "sw2", pos: 24, onTrack: "main", divergeTrack: "sid" },
+      ],
+    };
+    const { conv, out } = derived(doc);
+    expect(conv.notLaid.map((n) => n.id)).toEqual(["sid"]);
+    expect(conv.notLaid[0].why).toMatch(/no room for this track/);
+
+    // ⭐ NOTHING BEARING ITS ID — which has to include the derived companion.
+    // Asserting only `id === "sid"` would have passed while `sid-far` shipped.
+    expect(conv.graph!.pieces.filter((p) => p.id.startsWith("sid"))).toEqual([]);
+    expect(out.doc.tracks.filter((t) => t.id.startsWith("sid"))).toEqual([]);
+    expect(out.doc.tracks.map((t) => t.id)).toEqual(["main"]);
+
+    // ⭐ A PARTIAL REBUILD IS STILL REPORTED, NOT ABANDONED. Both turnouts are
+    // real and stay laid; the derivation says plainly what that costs, rather
+    // than inventing a track for them to point at.
+    expect(conv.graph!.pieces.some((p) => p.id === "t-sw1")).toBe(true);
+    expect(conv.graph!.pieces.some((p) => p.id === "t-sw2")).toBe(true);
+    expect(conv.warnings.filter((w) => /diverging route goes nowhere/.test(w))).toHaveLength(2);
+  });
+
   it("takes one answer for the whole module, and an override for the odd one out", () => {
     const doc = blairstown();
     const c = docToGraph(doc, { turnoutPartId: SW, overrides: { sw4: "atlas-c55-n-10" } });
