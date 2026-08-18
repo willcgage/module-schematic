@@ -19,6 +19,27 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      # A release cut while its version-bump PR is still unmerged tags a commit
+      # that predates the bump: `gh release create --target main` resolves to
+      # whatever main is at that moment, so the tag can name a version the code
+      # under it has never claimed. Nothing below catches it — `npm ci`,
+      # typecheck, test and build all pass, because that commit is perfectly
+      # valid, it is simply not the one the tag advertises. The only objection
+      # comes from `npm publish` at the very end, as a 403 about a version
+      # nobody was trying to publish, and only when the numbers happen to
+      # collide: cut v0.134.0 against a main already at 0.135.0 and it would
+      # publish successfully under the wrong number, with nothing to catch it.
+      # Either way a tag survives naming changes it does not contain.
+      - name: The tag must name the version being published
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Release tag v$TAG does not match package.json ($PKG) — this release was cut against the wrong commit. Merge the version bump first, then re-cut the release against the merged commit."
+            exit 1
+          fi
+          echo "Tag v$TAG matches package.json."
+
       # Trusted publishing needs npm >= 11.5.1 — Node 24's bundled npm already
       # satisfies this. (Do NOT `npm i -g npm@latest`: a recent npm breaks
       # provenance with "Cannot find module 'sigstore'".)
