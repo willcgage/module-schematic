@@ -9802,6 +9802,19 @@ export function docToGraph(
         continue;
       }
 
+      // ⛔⛔ EVERY PIECE FROM HERE ON IS PROVISIONAL. The run below can still
+      // turn out to have no room (see the bail-out further down), and the two
+      // transition curves are pushed BEFORE that is known. Left in place they
+      // became a module: a track reported in `notLaid` was emitted anyway —
+      // FMN-0003's `sid` came out as a 9″ SPUR, plus a `sid-far` the document
+      // has never contained. Remember the high-water mark so the bail-out can
+      // put `pieces` back exactly as it found it.
+      //
+      // ⭐ The REPORT IS THE CONSENT SURFACE. The rebuild offer runs this very
+      // function to show the owner what they will get, so `notLaid` and the
+      // emitted graph disagreeing means they are shown one thing and given
+      // another. Same shape as the 2026-07-28 bug, from the other side.
+      const laidFrom = pieces.length;
       const branchY = laneOffsetAt(branch.lane ?? 0, 0);
       const curve = transition(
         branch.id,
@@ -9860,6 +9873,10 @@ export function docToGraph(
       // notice — it draws a spur at its lane the instant the turnout appears.
       // Say so rather than lay a run of negative length.
       if (endX - start.x <= 1e-6) {
+        // ⛔ Un-lay the transition curves pushed above. Reporting this track as
+        // not laid while leaving its opening and closing curves in the graph is
+        // what emitted a track the conversion had just refused.
+        pieces.length = laidFrom;
         notLaid.push({
           id: branch.id,
           why: `the turnout and the curve bringing this track parallel already reach ${start.x.toFixed(1)}″, past where it has to end at ${endX.toFixed(1)}″ — with the turnout chosen there is no room for this track where the document places it`,
