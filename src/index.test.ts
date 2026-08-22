@@ -3441,6 +3441,37 @@ describe("turnout self-heals when it diverges into the track it sits on (#172)",
     expect(isTransitionTurnout(t)).toBe(true);
   });
 
+  it("⛔ does NOT invent a Main 2 that the module does not have (#325)", () => {
+    // ⭐⭐ THE HEAL USED TO REPOINT MAIN → MAIN2 UNCONDITIONALLY, so a
+    // single-track module came back DOUBLE-track: the turnout named a track
+    // nobody authored and the derivation materialised it. Repairing a document
+    // must not mean authoring one.
+    const singleMain = {
+      version: 1,
+      module: "M",
+      lengthInches: 96,
+      tracks: [{ id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" }],
+      endplates: [],
+      turnouts: [
+        { id: "sw1", name: "", pos: 40, onTrack: MAIN_TRACK_ID, divergeTrack: MAIN_TRACK_ID, kind: "left" },
+      ],
+    };
+    const st = docToState(singleMain, 96);
+    // Left exactly as the document had it — wrong, but the document's own
+    // wrongness, for the app to flag rather than paper over.
+    expect(st.turnouts[0].divergeTrack).toBe(MAIN_TRACK_ID);
+    // …and no second main has appeared anywhere.
+    const back = stateToDoc(st, "M");
+    expect(back.tracks.map((t) => t.id)).not.toContain(MAIN2_TRACK_ID);
+  });
+
+  it("still repoints when the other main IS there — the #172 repair is intact", () => {
+    // The guard must not switch the original fix off: with both mains present
+    // the heal behaves exactly as it always did.
+    const t = loadTurnout(MAIN_TRACK_ID, MAIN_TRACK_ID);
+    expect(t.divergeTrack).toBe(MAIN2_TRACK_ID);
+  });
+
   it("leaves a valid transition untouched", () => {
     const t = loadTurnout(MAIN_TRACK_ID, MAIN2_TRACK_ID);
     expect(t.onTrack).toBe(MAIN_TRACK_ID);
