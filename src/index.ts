@@ -8751,14 +8751,29 @@ export function moduleConversionReport(
   // ⚠️ BLOCKERS ARE NOT QUESTIONS. A question has an answer the owner can give;
   // these are shapes the piece model cannot express at all yet, so the offer is
   // withheld rather than made and then abandoned half way.
-  // ⏳ A CROSSING IS NOW HALF A QUESTION, AND STILL LISTED HERE. The piece model
-  // CAN express a diamond ({@link partGeometry}, {@link genericCrossingPart}),
-  // so the old reason — "not modelled yet" — stopped being true. What is missing
-  // is the ANGLE: a 1-D `crossings` entry records the two tracks and a position
-  // and never says how steeply they cross, and by the rule above that is an
-  // answer an owner could give. Until the questionnaire asks it, converting
-  // would have to pick an angle on their behalf, so the offer is still withheld
-  // — but for the honest reason.
+  // ⏳ A CROSSING IS STILL LISTED HERE, AND TWO THINGS ARE MISSING, NOT ONE.
+  //
+  // The drawing code can express a diamond — `partGeometry` handles
+  // `kind: "crossing"` and `crossingAngleDeg` reads its angle — so the oldest
+  // reason, "not modelled yet", stopped being true.
+  //
+  // 1. THE ANGLE. A 1-D `crossings` entry records the two tracks and a position
+  //    and never says how steeply they cross. By the rule above that IS an
+  //    answer an owner could give, so it is half a question.
+  // 2. ⛔ A PART TO PLACE. There is no crossing in the library, and no generic
+  //    one: a placeholder was built and DELETED on purpose, because a turnout
+  //    placeholder interpolates from turnouts we have MEASURED and there is no
+  //    measured crossing to interpolate from. Deriving its arm length gave a #6
+  //    a 13.7" body where the real part is ~2.5" — real shallow crossings end
+  //    while their ties still interlace, so no clearance rule reproduces one.
+  //    The library's own rule settles it: "Angle is geometry; everything else is
+  //    a tooling decision. MEASURE THE PART. DO NOT MODEL IT."
+  //
+  // ⚠️ SO ASKING THE ANGLE IS NOT ENOUGH ON ITS OWN — an earlier version of this
+  // comment implied it was, and cited a `genericCrossingPart` that does not
+  // exist. Both are needed: the question in the questionnaire, and one measured
+  // product (angle or frog number, end-to-end length ALONG ONE ROUTE tie-to-tie,
+  // manufacturer + part number, and whether it is asymmetric).
   for (const c of doc.crossings ?? [])
     blockers.push({
       kind: "crossing",
