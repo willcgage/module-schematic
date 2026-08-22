@@ -1083,6 +1083,91 @@ export function trackExtentFromPath(
   return { fromPos, toPos };
 }
 
+/**
+ * The track's OWN rail as a polyline — its drawn path where it has one, else the
+ * module centre-line offset to its lane.
+ *
+ * A positional track has no path of its own; its rail IS the centre-line offset
+ * by {@link laneOffsetAt}, which is also what the renderer draws, so a pinch is
+ * honoured here for free.
+ */
+function trackRailPolyline(
+  t: Pick<SchematicTrack, "path" | "lane">,
+  centerline: BenchworkPoint[] | null | undefined,
+  pinches?: LanePinch[] | null,
+): { x: number; y: number }[] | null {
+  const drawn = trackPath(t.path);
+  if (drawn) return samplePath(drawn);
+  const cen = trackPath(centerline) ? samplePath(centerline!) : null;
+  if (!cen || cen.length < 2) return null;
+  const norms = centerlineNormals(cen);
+  let acc = 0;
+  return cen.map((p, i) => {
+    if (i) acc += Math.hypot(p.x - cen[i - 1].x, p.y - cen[i - 1].y);
+    const off = laneOffsetAt(t.lane ?? 0, acc, pinches);
+    return { x: p.x + norms[i].x * off, y: p.y + norms[i].y * off };
+  });
+}
+
+/**
+ * ⭐⭐ HOW MUCH RAIL a track actually has between two module positions (#310).
+ *
+ * `toPos - fromPos` is a distance along the MODULE, and on a curve that is not
+ * the rail. A lane on the INSIDE of a bend has less rail than the span it
+ * covers and one on the outside has more — at lane 1 on a 90° board, 16.000″ of
+ * module is **15.104″** of rail, and it scales with lane offset and curvature.
+ * Reporting the module span as though it were rail overstates what fits on the
+ * inside of every curve and understates it on the outside.
+ *
+ * ⚠️ Positions stay along-module — that is deliberate and unchanged (#253).
+ * This answers a different question: given that span, how long is the rail?
+ *
+ * Returns null when there is nothing to measure against (no centre-line and no
+ * drawn path), rather than falling back to the module span — a silent fallback
+ * is exactly how the axis figure came to be read as rail in the first place.
+ */
+export function railLengthBetween(
+  t: Pick<SchematicTrack, "path" | "lane">,
+  fromPos: number,
+  toPos: number,
+  centerline: BenchworkPoint[] | null | undefined,
+  pinches?: LanePinch[] | null,
+): number | null {
+  if (!Number.isFinite(fromPos) || !Number.isFinite(toPos)) return null;
+  const rail = trackRailPolyline(t, centerline, pinches);
+  if (!rail || rail.length < 2) return null;
+  const cen = trackPath(centerline) ? samplePath(centerline!) : null;
+  if (!cen || cen.length < 2) return null;
+
+  const lo = Math.min(fromPos, toPos);
+  const hi = Math.max(fromPos, toPos);
+  if (hi - lo < 1e-9) return 0;
+
+  // ⛔ MEASURED BY WHERE THE RAIL CROSSES lo AND hi, not by clipping each segment
+  // to its own module span. Clipping drops rail that runs PERPENDICULAR to the
+  // module axis — a leg heading straight across the board projects to a single
+  // position, so its inches would vanish — and that rail is exactly the rail a
+  // car occupies. Walk the rail to the arc at which it first reaches each end
+  // and take what lies between.
+  const posOf = rail.map((p) => posAlongCenterline(cen, p) ?? 0);
+  const arcAtPos = (target: number): number => {
+    if (posOf[0] >= target) return 0;
+    let acc = 0;
+    for (let i = 1; i < rail.length; i++) {
+      const segLen = Math.hypot(rail[i].x - rail[i - 1].x, rail[i].y - rail[i - 1].y);
+      const a = posOf[i - 1];
+      const b = posOf[i];
+      if ((a < target && b >= target) || (a > target && b <= target)) {
+        const t = Math.abs(b - a) < 1e-9 ? 0 : (target - a) / (b - a);
+        return acc + segLen * Math.max(0, Math.min(1, t));
+      }
+      acc += segLen;
+    }
+    return acc;
+  };
+  return Math.abs(arcAtPos(hi) - arcAtPos(lo));
+}
+
 /** Normalise an authored track path from a doc, or null if it isn't a real path
  * (needs ≥ 2 valid points). Keeps per-vertex bulge. */
 export function trackPath(
