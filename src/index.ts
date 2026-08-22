@@ -280,6 +280,32 @@ export interface SchematicTrack {
   to?: string;
   fromPos?: number | null;
   toPos?: number | null;
+  /**
+   * ⛔⛔ A STORED FIGURE HERE MAY BE ONE THE APP MADE UP. DO NOT TRUST IT.
+   *
+   * Nothing writes this any more (modulerepo#310): a track has no car capacity,
+   * which belongs to the rail assigned to an INDUSTRY, and an owner's stored
+   * number is deliberately left exactly as they left it.
+   *
+   * But for years two different code paths DID write it — `stateToDoc`
+   * recomputed it on every save from the span between clearance points, and
+   * MR's save path filled a missing one from `inchesToScaleFeet(toPos−fromPos)`.
+   * Both measured along the MODULE, which on a curve is not the rail. So the
+   * figures sitting in owners' documents today are a mix of numbers they typed
+   * and numbers the app invented, **and they cannot be told apart**: the
+   * arithmetic is wrong in both directions (a value matching a formula may
+   * still be one they chose, and FMN-0040's matches no formula yet was
+   * app-written by an older one).
+   *
+   * ⚠️ THEY WERE LEFT IN PLACE ON PURPOSE (Will, 2026-08-22, modulerepo#319):
+   * clearing them would delete real owners' figures to remove fabricated ones.
+   * Nothing displays this field, so today it is inert.
+   *
+   * ⇒ **If you are about to read this field for a new feature, it stops being
+   * inert.** Flag it as unverified rather than presenting it as fact — that is
+   * the house rule (flag it, don't correct it), and reopening modulerepo#319 is
+   * the right move before shipping anything that depends on it.
+   */
   capacityFeet?: number | null;
   industryRef?: number | null;
   /** The module_tracks row this track is (single source of truth); null = new. */
