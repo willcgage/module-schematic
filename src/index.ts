@@ -2495,14 +2495,43 @@ export function carCapacity(
  * healing, so untouched docs keep referential identity. */
 function healSelfDivergingTurnouts(
   turnouts: SchematicTurnout[] | undefined,
+  /**
+   * ⛔⛔ THE DOC'S TRACKS — because a heal must not INVENT one (modulerepo#325).
+   *
+   * This used to repoint MAIN → MAIN2 unconditionally. On a module that has no
+   * Main 2 that is not a repair, it is a fabrication: the turnout then names a
+   * track nobody authored and the derivation materialises it, so a SINGLE-track
+   * module comes back double-track. Measured on a one-main document, feeding it
+   * exactly what MR's "+ Turnout" wrote: `tracks: ["main"]` → `["main","main2"]`.
+   *
+   * The function's own last line already had the right instinct for the
+   * non-main case — "nothing sensible to repoint it at". A main that does not
+   * exist is equally nothing sensible.
+   */
+  tracks: SchematicTrack[] | undefined,
 ): SchematicTurnout[] | undefined {
   if (!turnouts?.some((t) => t.onTrack === t.divergeTrack)) return turnouts;
-  return turnouts.map((t) => {
+  const exists = (id: string) => (tracks ?? []).some((t) => t?.id === id);
+  let changed = false;
+  const out = turnouts.map((t) => {
     if (t.onTrack !== t.divergeTrack) return t;
-    if (t.onTrack === MAIN_TRACK_ID) return { ...t, divergeTrack: MAIN2_TRACK_ID };
-    if (t.onTrack === MAIN2_TRACK_ID) return { ...t, divergeTrack: MAIN_TRACK_ID };
-    return t; // not a main — nothing sensible to repoint it at
+    // Only onto a main that is REALLY THERE. Otherwise leave the turnout as it
+    // is: a self-diverging turnout is wrong, but it is the document's own
+    // wrongness, and saying so is the caller's job — inventing a second main to
+    // hide it is the app authoring a fact nobody asked for.
+    if (t.onTrack === MAIN_TRACK_ID && exists(MAIN2_TRACK_ID)) {
+      changed = true;
+      return { ...t, divergeTrack: MAIN2_TRACK_ID };
+    }
+    if (t.onTrack === MAIN2_TRACK_ID && exists(MAIN_TRACK_ID)) {
+      changed = true;
+      return { ...t, divergeTrack: MAIN_TRACK_ID };
+    }
+    return t; // nothing that exists to repoint it at
   });
+  // Keep the referential identity this function has always promised: an
+  // untouched doc must come back as the very same array.
+  return changed ? out : turnouts;
 }
 
 /** Parse a jsonb value into a schematic doc, or null if it isn't one.
@@ -2514,7 +2543,7 @@ export function asModuleSchematic(x: unknown): ModuleSchematicDoc | null {
   if (typeof d.version !== "number") return null;
   if (!Array.isArray(d.endplates) || !Array.isArray(d.tracks)) return null;
   const doc = d as unknown as ModuleSchematicDoc;
-  const healed = healSelfDivergingTurnouts(doc.turnouts);
+  const healed = healSelfDivergingTurnouts(doc.turnouts, doc.tracks);
   return healed === doc.turnouts ? doc : { ...doc, turnouts: healed };
 }
 
@@ -3526,7 +3555,7 @@ export function docToState(
     extraTracks,
     // Heal a turnout that diverges into the track it sits on (#172) with the
     // same helper the read path uses, so the editor and every renderer agree.
-    turnouts: (healSelfDivergingTurnouts(d!.turnouts) ?? []).map((t) => ({
+    turnouts: (healSelfDivergingTurnouts(d!.turnouts, d!.tracks) ?? []).map((t) => ({
       id: t.id,
       name: t.name ?? "",
       pos: sc(t.pos),
