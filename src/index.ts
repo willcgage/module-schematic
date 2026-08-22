@@ -486,6 +486,16 @@ export interface IndustrySpot {
   track: string;
   fromPos: number;
   toPos: number;
+  /**
+   * How many cars the industry supports ON THIS TRACK — the OWNER'S figure.
+   *
+   * ⭐ Will, 2026-08-22: "the owner should put the number of cars that the
+   * industry supports per track." Not derived from the span: a dock with three
+   * doors holds three cars whether or not the rail beside it could take five,
+   * and the app has no way to know that. Absent = not recorded, which is a
+   * different statement from zero.
+   */
+  cars?: number | null;
   side?: SignalSide;
   /** Hold this spot by the piece it is beside (ADR 0001). See {@link GraphAnchor}. */
   anchor?: GraphAnchor | null;
@@ -502,6 +512,12 @@ export interface SchematicIndustry {
   /** The primary car-spot span along `track`, inches from endplate A. */
   fromPos: number;
   toPos: number;
+  /**
+   * How many cars the industry supports on its PRIMARY track — the owner's
+   * figure. See {@link IndustrySpot.cars}; each spot carries its own, because
+   * the question is per track.
+   */
+  cars?: number | null;
   /** Hold this span by the piece it is beside (ADR 0001). See {@link GraphAnchor}.
    * The span's LENGTH stays authored — a dock face is as long as it is built;
    * only where it begins is read off the track. */
@@ -2596,6 +2612,9 @@ export interface EditorIndustry {
   toPos: number;
   /** Extra car-spot spans on other tracks (house-track spots, #54). */
   spots: IndustrySpot[];
+  /** Cars the industry supports on its PRIMARY track — the owner's figure.
+   * See {@link SchematicIndustry.cars}. Each spot carries its own. */
+  cars?: number | null;
   side: SignalSide;
   labelMode: IndustryLabelMode;
   carTypes: string[];
@@ -3216,6 +3235,7 @@ export function stateToDoc(
             // 0001); dropping it here would quietly convert an anchored
             // industry back into a typed number the next time anyone saved.
             ...(ind.anchor ? { anchor: ind.anchor } : {}),
+            ...(ind.cars != null ? { cars: ind.cars } : {}),
             ...(ind.spots?.length ? { spots: ind.spots } : {}),
             side: ind.side,
             ...(ind.labelMode && ind.labelMode !== "none"
@@ -3526,10 +3546,17 @@ export function docToState(
       track: ind.track,
       fromPos: sc(ind.fromPos ?? 0),
       toPos: ind.toPos != null ? sc(ind.toPos) : len,
+      // ⚠️ `cars` IS A COUNT, NOT A LENGTH — it must NOT go through `sc()`.
+      // Rescaling a module would otherwise change how many cars an industry
+      // holds, which is a fact about the industry, not about the board.
+      ...(ind.cars != null ? { cars: ind.cars } : {}),
       spots: (ind.spots ?? []).map((s) => ({
         track: s.track,
         fromPos: sc(s.fromPos ?? 0),
         toPos: s.toPos != null ? sc(s.toPos) : len,
+        // Carried explicitly: this mapping REBUILDS each spot field by field,
+        // so anything not named here is dropped on load.
+        ...(s.cars != null ? { cars: s.cars } : {}),
         ...(s.side ? { side: s.side as SignalSide } : {}),
         ...(s.anchor ? { anchor: s.anchor } : {}),
       })),
@@ -3825,8 +3852,18 @@ export interface DrawIndustry {
   lane: number;
   side: SignalSide;
   labelMode: IndustryLabelMode;
-  /** Cars that spot here, derived from the drawn span length. */
-  cars: number;
+  /**
+   * Cars that spot here — the OWNER'S figure, or null when they have not said.
+   *
+   * ⛔ NO LONGER DERIVED FROM THE SPAN. It used to be `carCapacity(from, to)`,
+   * which measured along the MODULE — and on a curve that is not the rail, so
+   * it over-counted on the inside of every bend and under-counted on the
+   * outside (#310). More fundamentally it was answering the wrong question:
+   * how much rail is there, rather than how many cars the industry can take.
+   * ⚠️ NULL IS "NOT RECORDED", NOT ZERO. Renderers must not print "0 cars" for
+   * an industry nobody has counted yet.
+   */
+  cars: number | null;
   carTypes: string[];
 }
 export interface ModuleFeatures {
@@ -10611,7 +10648,11 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     // Each spot (the primary track + any house-track spots) draws beside its
     // own track; they share the industry's name, type and car types (#54).
     const spots = [
-      { track: ind.track, fromPos: ind.fromPos, toPos: ind.toPos, side: ind.side },
+      // ⚠️ THE PRIMARY SPOT IS BUILT FIELD BY FIELD HERE, so `cars` has to be
+      // named or the owner's figure is silently lost between the doc and the
+      // drawing — the third place today where a rebuild dropped a field it did
+      // not mention (see docToState's spot mapping).
+      { track: ind.track, fromPos: ind.fromPos, toPos: ind.toPos, side: ind.side, cars: ind.cars },
       ...(ind.spots ?? []),
     ];
     return spots.map((sp, i) => {
@@ -10626,7 +10667,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         lane: trackLane.get(sp.track) ?? 0,
         side: (sp.side as SignalSide) ?? "above",
         labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
-        cars: carCapacity(from, to),
+        cars: sp.cars ?? null,
         carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
       };
     });

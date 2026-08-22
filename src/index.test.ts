@@ -2563,10 +2563,54 @@ describe("industries (#industries)", () => {
       lane: 1, // sits on spur sp1's lane
       side: "below",
       labelMode: "cars",
-      cars: 10,
+      // ⭐ NULL, NOT 10. This used to derive 10 from the 33″ span. Will,
+      // 2026-08-22: "the owner should put the number of cars that the industry
+      // supports per track" — so an industry nobody has counted reports NOT
+      // RECORDED, and renderers must not print "0 cars" for it.
+      cars: null,
     });
     expect(f.industries[0].fromFrac).toBeCloseTo(20 / 96, 5);
     expect(f.industries[0].toFrac).toBeCloseTo(53 / 96, 5);
+  });
+
+  it("uses the OWNER'S car count, per track, and does not derive one (#310)", () => {
+    const st = withIndustry();
+    // A dock with three doors holds three cars whether or not the rail beside
+    // it could take ten — which is the whole reason this is authored.
+    st.industries[0].cars = 3;
+    st.extraTracks.push({
+      id: "sp2", role: "spur", lane: 2, fromPos: 15, toPos: 55,
+      moduleTrackId: 8, trackName: "House Track 2",
+    });
+    st.industries[0].spots = [{ track: "sp2", fromPos: 30, toPos: 40, cars: 7 }];
+
+    const f = moduleFeatures(stateToDoc(st, "M"));
+    expect(f.industries.map((i) => i.cars)).toEqual([3, 7]);
+
+    // …and neither figure is what the span would have given, so this
+    // discriminates rather than agreeing by coincidence.
+    expect(carCapacity(20, 53)).not.toBe(3);
+    expect(carCapacity(30, 40)).not.toBe(7);
+  });
+
+  it("the owner's car count survives a save, per track (#310)", () => {
+    const st = withIndustry();
+    st.industries[0].cars = 3;
+    st.industries[0].spots = [{ track: "sp1", fromPos: 30, toPos: 40, cars: 7 }];
+    // ⛔ docToState REBUILDS each spot field by field, so a spot's count is
+    // dropped unless it is carried explicitly — the same trap `capacityFeet`
+    // had on the track side.
+    const back = docToState(stateToDoc(st, "M"), 96);
+    expect(back.industries[0].cars).toBe(3);
+    expect(back.industries[0].spots[0].cars).toBe(7);
+  });
+
+  it("a car count is NOT rescaled with the module — it is a count", () => {
+    const st = withIndustry();
+    st.industries[0].cars = 4;
+    // Halving the module halves every POSITION; the industry still holds 4.
+    const back = docToState(stateToDoc(st, "M"), 48);
+    expect(back.industries[0].cars).toBe(4);
   });
 
   it("emits one DrawIndustry per spot for a multi-track (house-track) industry", () => {
