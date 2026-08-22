@@ -2525,6 +2525,16 @@ export interface EditorTrack {
   alongOwnPath?: boolean;
   /** Measured usable length, real inches (#20). Absent = derived (#19). */
   measuredUsableInches?: number;
+  /**
+   * The AUTHORED capacity figure, carried through untouched (#310).
+   *
+   * ⛔ NOT derived here, and deliberately not recomputed on save. Will's call,
+   * 2026-08-22: capacity belongs to INDUSTRY-assigned rail, so a track's stored
+   * number is no longer something this app computes — and the house rule is
+   * flag it, don't correct it, so an owner's figure is left exactly as they
+   * left it rather than being silently rewritten.
+   */
+  capacityFeet?: number | null;
   /** `role: "crossover"` only — the crossover product this connector was built
    * from. Drives the spacing the pair is DRAWN at (see
    * {@link SchematicTrack.crossoverPartId}). */
@@ -3120,16 +3130,26 @@ export function stateToDoc(
         toPos: ext.toPos,
         moduleTrackId: t.moduleTrackId,
         trackName: t.trackName || undefined,
-        // ⚠️ USABLE capacity, measured from the governing turnouts' CLEARANCE
-        // POINTS (#19) — not the drawn rail-to-rail length, which counts track
-        // a car can't stand on without fouling the route it diverged from.
-        // FMN-0040's 70″ siding is 21 cars drawn and 17 usable.
-        capacityFeet: usableCapacity({
-          fromPos: ext.fromPos,
-          toPos: ext.toPos,
-          governing: state.turnouts.filter((sw) => sw.divergeTrack === t.id),
-          measuredUsableInches: t.measuredUsableInches,
-        }).scaleFeet,
+        /**
+         * ⛔⛔ THE OWNER'S FIGURE, CARRIED THROUGH UNTOUCHED (#310).
+         *
+         * This used to RECOMPUTE the figure on every save, from the span
+         * between the governing turnouts' clearance points (#19). Two problems
+         * with that, and Will settled both on 2026-08-22:
+         *
+         * 1. **The span is along the MODULE, and on a curve that is not the
+         *    rail** — inside of a bend it overstates what fits, outside it
+         *    understates, ±12 scale ft per lane of offset. Capacity now belongs
+         *    to INDUSTRY-assigned rail, measured with {@link railLengthBetween};
+         *    a plain track's car count is not this app's to compute.
+         * 2. **Recomputing it REWROTE owners' documents on open.** A save is not
+         *    a licence to restate a number nobody edited — the same shape as
+         *    #220/#222 — and it made `stateToDoc(docToState(doc))` differ from
+         *    `doc` whenever the stored and derived figures disagreed.
+         *
+         * Left exactly as authored: flag it, don't correct it.
+         */
+        capacityFeet: t.capacityFeet ?? null,
         ...(typeof t.measuredUsableInches === "number" && t.measuredUsableInches >= 0
           ? { measuredUsableInches: t.measuredUsableInches }
           : {}),
@@ -3290,6 +3310,10 @@ export function docToState(
         toPos: t.toPos != null ? sc(t.toPos) : len,
         moduleTrackId,
         trackName: t.trackName ?? nameOf(moduleTrackId),
+        // Read so the authored figure survives the round trip untouched (#310).
+        // Without this the save path has nothing to write back and the owner's
+        // number would be DELETED on their next save rather than left alone.
+        capacityFeet: t.capacityFeet ?? null,
         ...(t.inLoop ? { inLoop: true } : {}),
         // The crossover product this connector was built from — what makes the
         // physical view draw the pair at the spacing it was really built to.

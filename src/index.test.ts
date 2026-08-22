@@ -5068,14 +5068,19 @@ describe("a drawn run's positions come from the line that was drawn (#253)", () 
       expect(t.toPos).toBe(1);
     });
 
-    it("re-measures capacity from the corrected ends", () => {
-      // Capacity is measured from where the run starts and stops, so a run that
-      // turns out to be 1.78″ shorter holds correspondingly fewer cars. Leaving
-      // it behind would be the "two computations of one quantity" this issue is
-      // about, one line from the value that had just been fixed.
-      const before = trackOf(stateToDoc(base, "M")).capacityFeet!;
-      const after = trackOf(stateToDoc(base, "M", { centerline: straight })).capacityFeet!;
-      expect(after).toBeLessThan(before);
+    it("does NOT re-measure capacity from the corrected ends (#310)", () => {
+      // ⭐ THIS TEST USED TO ASSERT THE OPPOSITE, and was right to at the time:
+      // while a track's capacity was derived here, leaving it stale beside a
+      // just-corrected extent would have been the "two computations of one
+      // quantity" #253 is about.
+      //
+      // Will's call (2026-08-22) removed the premise: capacity belongs to
+      // INDUSTRY-assigned rail, so a plain track's figure is not this app's to
+      // compute — and recomputing it rewrote owners' documents on open. The
+      // authored number now survives the correction untouched.
+      const before = trackOf(stateToDoc(base, "M")).capacityFeet;
+      const after = trackOf(stateToDoc(base, "M", { centerline: straight })).capacityFeet;
+      expect(after).toBe(before);
     });
 
     it("leaves a run measured along its OWN path alone", () => {
@@ -5289,18 +5294,69 @@ describe("usable capacity (#19/#20)", () => {
     const doc = stateToDoc(st, "M");
     const sid = doc.tracks.find((t) => t.id === "sid1")!;
     const spur = doc.tracks.find((t) => t.id === "sp1")!;
-    // The siding stores USABLE feet, not the 933 its drawn 70″ would give.
-    expect(sid.capacityFeet).toBe(
-      usableCapacity({ fromPos: 33, toPos: 103, governing: [{ pos: 33, size: 7 }, { pos: 103, size: 7 }] }).scaleFeet,
-    );
-    expect(sid.capacityFeet).toBeLessThan(Math.round(inchesToScaleFeet(70)));
+    // ⭐ THE CLEARANCE-POINT MATHS IS UNCHANGED — a 70″ siding on two #7s is
+    // still worth less than its drawn length, and `usableCapacity` still says
+    // so. What changed (#310) is that `stateToDoc` no longer WRITES that figure
+    // onto the track: capacity belongs to industry-assigned rail now, and an
+    // owner's stored number is left exactly as they left it.
+    const derived = usableCapacity({
+      fromPos: 33,
+      toPos: 103,
+      governing: [{ pos: 33, size: 7 }, { pos: 103, size: 7 }],
+    });
+    expect(derived.scaleFeet).toBeLessThan(Math.round(inchesToScaleFeet(70)));
+    // Nothing was authored on these tracks, so nothing is invented for them.
+    expect(sid.capacityFeet).toBeNull();
+    expect(spur.capacityFeet).toBeNull();
     expect(sid.measuredUsableInches).toBeUndefined(); // nothing measured ⇒ not written
-    // The spur's measured override is stored and comes back.
+    // The spur's measured override is still stored and still comes back.
     expect(spur.measuredUsableInches).toBe(22);
-    expect(spur.capacityFeet).toBe(Math.round(inchesToScaleFeet(22)));
     expect(docToState(doc, 120).extraTracks.find((t) => t.id === "sp1")!.measuredUsableInches).toBe(22);
     // …and rescales with the module, like every other real-world length.
     expect(docToState(doc, 60).extraTracks.find((t) => t.id === "sp1")!.measuredUsableInches).toBe(11);
+  });
+
+  it("⛔ an owner's stored capacityFeet survives a save UNTOUCHED (#310)", () => {
+    // The whole point of Will's call: leave the number alone, stop displaying
+    // it. A save is not a licence to restate a figure nobody edited — the same
+    // shape as #220/#222, where the editor wrote to modules no one had touched.
+    const s0 = emptyEditorState(120);
+    const authored = 999; // deliberately NOT what any derivation would produce
+    const doc0 = {
+      module: "M",
+      version: 1 as const,
+      lengthInches: 120,
+      tracks: [
+        { id: MAIN_TRACK_ID, role: "main" as const, lane: 0, from: "A", to: "B" },
+        {
+          id: "sid1",
+          role: "siding" as const,
+          lane: -1,
+          fromPos: 33,
+          toPos: 103,
+          capacityFeet: authored,
+        },
+      ],
+      turnouts: [
+        { id: "sw1", pos: 33, kind: "right" as const, onTrack: MAIN_TRACK_ID, divergeTrack: "sid1" },
+        { id: "sw2", pos: 103, kind: "right" as const, onTrack: MAIN_TRACK_ID, divergeTrack: "sid1" },
+      ],
+      endplates: [{ id: "A" }, { id: "B" }],
+    } as unknown as ModuleSchematicDoc;
+
+    const back = stateToDoc(docToState(doc0, 120), "M");
+    const sid = back.tracks.find((t) => t.id === "sid1")!;
+    expect(sid.capacityFeet).toBe(authored);
+
+    // …and it is genuinely not what the old derivation would have written, so
+    // this test discriminates rather than agreeing by coincidence.
+    const derived = usableCapacity({
+      fromPos: 33,
+      toPos: 103,
+      governing: [{ pos: 33 }, { pos: 103 }],
+    }).scaleFeet;
+    expect(derived).not.toBe(authored);
+    void s0;
   });
 
   it("with no governing turnout, usable IS the drawn length", () => {
