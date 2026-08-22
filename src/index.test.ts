@@ -43,6 +43,7 @@ import {
   pathLengthInches,
   measuredAlongPath,
   posAlongCenterline,
+  railLengthBetween,
   trackExtentFromPath,
   turnoutDivergingLeg,
   RAIL_GAUGE_INCHES,
@@ -4933,6 +4934,63 @@ describe("a drawn run's positions come from the line that was drawn (#253)", () 
     trackName: "",
     path: [{ x: 40.22, y: 1.5 }, { x: 20, y: 6 }, { x: 0.39, y: 6 }],
   };
+
+  describe("railLengthBetween (#310)", () => {
+    // A quarter circle, R=20, curving LEFT: the left normal points at the centre
+    // of curvature, so lane +1 is the INSIDE of the bend and lane -1 the outside.
+    const R = 20;
+    const quarter = Array.from({ length: 201 }, (_, i) => {
+      const a = (Math.PI / 2) * (i / 200);
+      return { x: R * Math.sin(a), y: R - R * Math.cos(a) };
+    });
+    const arc = quarter.reduce(
+      (acc, p, i) => (i ? acc + Math.hypot(p.x - quarter[i - 1].x, p.y - quarter[i - 1].y) : 0),
+      0,
+    );
+
+    it("on a straight module the rail IS the module span", () => {
+      // The invariant that let the bug hide: every straight module in the
+      // catalogue agrees, which is why reading the span as rail looked correct.
+      const straightCen = [{ x: 0, y: 0 }, { x: 96, y: 0 }];
+      expect(railLengthBetween({ lane: 1 }, 10, 50, straightCen)).toBeCloseTo(40, 6);
+      expect(railLengthBetween({ lane: -3 }, 10, 50, straightCen)).toBeCloseTo(40, 6);
+    });
+
+    it("an INSIDE lane has LESS rail than the module span it covers", () => {
+      // (R - 1.125)/R of the arc. This is the whole defect: the module span says
+      // 31.4″ while the rail an owner can actually spot cars on is 29.6″.
+      const rail = railLengthBetween({ lane: 1 }, 0, arc, quarter)!;
+      expect(rail).toBeCloseTo(((R - FREEMO_TRACK_SPACING_INCHES) / R) * arc, 1);
+      expect(rail).toBeLessThan(arc - 1.7);
+    });
+
+    it("an OUTSIDE lane has MORE — the error has a SIGN", () => {
+      const rail = railLengthBetween({ lane: -1 }, 0, arc, quarter)!;
+      expect(rail).toBeCloseTo(((R + FREEMO_TRACK_SPACING_INCHES) / R) * arc, 1);
+      expect(rail).toBeGreaterThan(arc + 1.7);
+    });
+
+    it("measures a SUB-span, so an industry's assigned rail can be asked for", () => {
+      const whole = railLengthBetween({ lane: 1 }, 0, arc, quarter)!;
+      const half = railLengthBetween({ lane: 1 }, 0, arc / 2, quarter)!;
+      expect(half).toBeCloseTo(whole / 2, 2);
+    });
+
+    it("uses the track's OWN drawn path when it has one", () => {
+      // A drawn track's rail is the line that was drawn, not the centre-line.
+      const drawn = { lane: 0, path: [{ x: 0, y: 0 }, { x: 0, y: 10 }, { x: 10, y: 10 }] };
+      const straightCen = [{ x: 0, y: 0 }, { x: 96, y: 0 }];
+      // Its path runs 20″ of rail while spanning only 10″ of module.
+      expect(railLengthBetween(drawn, 0, 10, straightCen)).toBeGreaterThan(10);
+    });
+
+    it("returns null rather than falling back to the module span", () => {
+      // ⛔ A silent fallback is exactly how the axis figure came to be read as
+      // rail. No frame to measure in ⇒ no answer, not a plausible wrong one.
+      expect(railLengthBetween({ lane: 1 }, 0, 10, null)).toBeNull();
+      expect(railLengthBetween({ lane: 1 }, 0, 10, [{ x: 0, y: 0 }])).toBeNull();
+    });
+  });
 
   describe("posAlongCenterline", () => {
     it("measures ARC LENGTH, not x — a corner is longer than its chord", () => {
