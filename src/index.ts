@@ -707,6 +707,34 @@ export interface SectionFootprint {
   derived: boolean;
 }
 
+/**
+ * ⭐⭐ A SECTION JOINT IS NOT AN ENDPLATE, AND MUST NEVER BE VALIDATED AS ONE (#96).
+ *
+ * The Free-moN standard (v20230206, Definitions) is explicit, and this is the
+ * whole rule in one sentence:
+ *
+ *   "Except where otherwise noted, standards for module end interfaces do not
+ *    apply to inter-section interfaces, as these are considered to be internal
+ *    to the module."
+ *
+ * A **module's ends** are bound by hard standards — track crosses square,
+ * straight and level for 4″, ≥4″ clear of either fascia, 1.125″ spacing on a
+ * double end. An **internal joint between two sections is bound by none of
+ * them**: a builder splitting a long module for transport puts the seam where
+ * construction dictates, and track may cross it **at any angle, curved, and at
+ * any position**.
+ *
+ * ⛔ SO DO NOT REACH FOR `checkEndplateWidth` — OR ANY §1.1/§2.0 RULE — HERE.
+ * Nothing does today, and that is deliberate rather than an oversight waiting
+ * to be corrected. A joint that gets "validated" would report a perfectly
+ * conforming module as non-conforming, and the owner would be right and the app
+ * wrong. If a future check needs to know about joints, it is to DRAW them
+ * differently, not to hold them to an interface standard.
+ *
+ * ⚠️ The mirror of this is [[mid-module-spacing-not-governed]]: §2.0 binds
+ * 1.125″ AT THE ENDPLATE only, so a mid-module pinch is not a violation either.
+ * Same shape, same trap — a rule about the ENDS being applied to the MIDDLE.
+ */
 export interface SchematicSection {
   id: string;
   /** What the owner calls this board — "west transition", "double #3". */
