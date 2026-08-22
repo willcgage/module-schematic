@@ -11227,6 +11227,70 @@ export interface ModuleGeometryInput {
  *
  * Returns null when the edge is missing, curved, or degenerate — never a guess.
  */
+/**
+ * ⭐⭐ THE SPAN A PLATE OCCUPIES WHEN THE OWNER SAYS WHERE IT STARTS (#275).
+ *
+ * The sibling {@link endplateSpanOnEdge} centres the span on wherever the plate
+ * already sits, which is right when BINDING one — it keeps the plate where it
+ * is and only stops it swallowing the edge. It is not enough for authoring:
+ * Will, 2026-08-01, *"This should be allowed to be set for where it starts on
+ * the edge and where it ends."* Centre-on-current-position cannot express that.
+ *
+ * `startInches` is measured from the edge's FIRST vertex (`outline[index]`),
+ * which is what a modeller reads off the board with a tape.
+ *
+ * ⛔ CLAMPED, NEVER SILENTLY RESIZED. A start that would push the plate past
+ * the end of the edge slides it back so the whole face stays ON the edge, and
+ * the WIDTH is preserved — a plate is a physical object and does not shrink
+ * because it was placed badly. When the edge is too short for the width at all,
+ * this returns null rather than a plate that does not fit
+ * ([[flagged-never-corrected]]: say so, don't quietly resize).
+ *
+ * Returns null for a missing, curved or degenerate edge — same refusals as its
+ * sibling, for the same reason (§2.0: an endplate face is straight).
+ */
+export function endplateSpanFromStart(
+  outline: BenchworkPoint[] | null | undefined,
+  index: number,
+  startInches: number,
+  widthInches: number,
+): { fromT: number; toT: number } | null {
+  if (!outline || outline.length < 3 || !(widthInches > 0)) return null;
+  if (!Number.isFinite(startInches)) return null;
+  const n = outline.length;
+  const i = Math.trunc(index);
+  if (!Number.isFinite(i) || i < 0 || i >= n) return null;
+  const a = outline[i];
+  const b = outline[(i + 1) % n];
+  if (a.bulge) return null; // a curved fascia is not an endplate face (§2.0)
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!(len > 0)) return null;
+  // The edge cannot hold this plate at all — a fact worth reporting, not one to
+  // paper over by returning a narrower plate than the owner authored.
+  if (widthInches > len) return null;
+  const maxStart = len - widthInches;
+  const start = Math.max(0, Math.min(maxStart, startInches));
+  return { fromT: start / len, toT: (start + widthInches) / len };
+}
+
+/** The length of one benchwork edge, inches — what the owner is measuring
+ * against when they say where a plate starts. Null for a missing, curved or
+ * degenerate edge, matching the span helpers' refusals. */
+export function benchworkEdgeLength(
+  outline: BenchworkPoint[] | null | undefined,
+  index: number,
+): number | null {
+  if (!outline || outline.length < 3) return null;
+  const n = outline.length;
+  const i = Math.trunc(index);
+  if (!Number.isFinite(i) || i < 0 || i >= n) return null;
+  const a = outline[i];
+  const b = outline[(i + 1) % n];
+  if (a.bulge) return null;
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  return len > 0 ? len : null;
+}
+
 export function endplateSpanOnEdge(
   outline: BenchworkPoint[] | null | undefined,
   index: number,

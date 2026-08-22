@@ -61,6 +61,8 @@ import {
   deriveEndplatePoses,
   benchworkLengthInches,
   endplateSpanOnEdge,
+  endplateSpanFromStart,
+  benchworkEdgeLength,
   poseNeedsManual,
   hasNoFarEndplate,
   poseOverridesFromDoc,
@@ -595,6 +597,61 @@ describe("moduleFootprint (physical single-module geometry)", () => {
 // ⭐⭐ modulerepo#275. Will: "The whole edge is the endplate regardless of what
 // endplate number or letter it is … The Endplate can be the same or smaller size
 // than the edge." No special case by letter — a plate occupies a SPAN.
+describe("endplateSpanFromStart (#275)", () => {
+  // Edge 0 runs (0,-12)->(0,12): 24in long, and t grows with +y.
+  const rect = [
+    { x: 0, y: -12 },
+    { x: 0, y: 12 },
+    { x: 48, y: 12 },
+    { x: 48, y: -12 },
+  ];
+
+  it("places the plate where the owner says it starts, measured from the edge's first vertex", () => {
+    // ⭐ THE POINT OF THIS FUNCTION. Its sibling centres the span on wherever
+    // the plate already sits, which cannot express "it starts 6in along".
+    // ⛔ NOT start=6: on this 24in edge a 12in plate starting at 6 lands at
+    // fromT 0.25 — which is EXACTLY what centring gives, so it would prove
+    // nothing. Pick a start the two functions disagree about.
+    const s = endplateSpanFromStart(rect, 0, 3, 12)!;
+    expect(s.fromT).toBeCloseTo(3 / 24);
+    expect(s.toT).toBeCloseTo(15 / 24);
+    expect((s.toT - s.fromT) * 24).toBeCloseTo(12); // still 12in of plate
+    // …and it is NOT the centred answer, so this test discriminates.
+    expect(s.fromT).not.toBeCloseTo(endplateSpanOnEdge(rect, 0, { x: 0, y: 0 }, 12)!.fromT);
+  });
+
+  it("starts at the vertex when told 0", () => {
+    const s = endplateSpanFromStart(rect, 0, 0, 12)!;
+    expect(s.fromT).toBeCloseTo(0);
+    expect(s.toT).toBeCloseTo(0.5);
+  });
+
+  it("⛔ slides a plate back onto the edge rather than shrinking it", () => {
+    // A physical object does not get narrower because it was placed badly.
+    const s = endplateSpanFromStart(rect, 0, 20, 12)!; // 20 + 12 = 32 > 24
+    expect((s.toT - s.fromT) * 24).toBeCloseTo(12); // width PRESERVED
+    expect(s.toT).toBeCloseTo(1); // flush with the far end
+    expect(s.fromT).toBeCloseTo(0.5);
+  });
+
+  it("⛔ refuses when the edge cannot hold the plate at all", () => {
+    // Reporting nothing is honest; returning a narrower plate would silently
+    // resize what the owner authored.
+    expect(endplateSpanFromStart(rect, 0, 0, 30)).toBeNull();
+  });
+
+  it("refuses a curved fascia, like its sibling (§2.0)", () => {
+    const bulged = [{ x: 0, y: -12, bulge: 0.4 }, { x: 0, y: 12 }, { x: 48, y: 12 }, { x: 48, y: -12 }];
+    expect(endplateSpanFromStart(bulged, 0, 0, 12)).toBeNull();
+  });
+
+  it("benchworkEdgeLength reports what the owner is measuring against", () => {
+    expect(benchworkEdgeLength(rect, 0)).toBeCloseTo(24);
+    expect(benchworkEdgeLength(rect, 1)).toBeCloseTo(48);
+    expect(benchworkEdgeLength(null, 0)).toBeNull();
+  });
+});
+
 describe("endplateSpanOnEdge", () => {
   // Edge 0 runs (0,-12)->(0,12): 24in long, and t grows with +y.
   const rect = [
