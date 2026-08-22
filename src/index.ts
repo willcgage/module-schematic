@@ -11308,13 +11308,27 @@ export function endplateSpanOnEdge(
   const dy = b.y - a.y;
   const len = Math.hypot(dx, dy);
   if (!(len > 0)) return null;
-  // Where the plate sits along the edge, clamped so a plate off the end still
-  // yields a span ON the edge rather than one hanging past it.
+  // Where the plate's CENTRE sits along the edge.
   const t = Math.max(0, Math.min(1, ((at.x - a.x) * dx + (at.y - a.y) * dy) / (len * len)));
-  const half = widthInches / 2 / len;
-  const fromT = Math.max(0, Math.min(1, t - half));
-  const toT = Math.max(0, Math.min(1, t + half));
-  return toT > fromT ? { fromT, toT } : null;
+  /**
+   * ⭐⭐ DELEGATED, SO THE TWO HELPERS CANNOT DISAGREE (modulerepo#321).
+   *
+   * This used to clamp `t ± half` into 0…1 itself, which SHRINKS a plate that
+   * overhangs an end — a 24″ plate near a corner came back as 18″, silently,
+   * and the panel then validated a width the board was not building. Its
+   * sibling had always done the opposite: slide the plate back on with its
+   * width intact, and refuse outright when the edge cannot hold it.
+   *
+   * Two answers to one question is the drift this file's own comment warns
+   * about ("computing this in both places is precisely the drift this codebase
+   * keeps paying for"). So the position is turned into a START and handed to
+   * {@link endplateSpanFromStart}: one definition, one behaviour.
+   *
+   * ⛔ A PLATE IS A PHYSICAL OBJECT. It does not get narrower because of where
+   * it was dropped, so an overhang moves it; only an edge that genuinely cannot
+   * hold the width is refused, and that refusal is the caller's to report.
+   */
+  return endplateSpanFromStart(outline, index, t * len - widthInches / 2, widthInches);
 }
 
 /**
