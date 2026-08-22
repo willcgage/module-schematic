@@ -678,10 +678,36 @@ describe("endplateSpanOnEdge", () => {
   // ⚠️ A plate wider than its edge cannot hang off the board — it clamps to the
   // edge. The DISAGREEMENT is the caller's to report (flag, don't clamp lives
   // one level up); this function's job is to return a span that exists.
-  it("clamps to the edge rather than returning a span hanging off the board", () => {
-    const s = endplateSpanOnEdge(rect, 0, { x: 0, y: 0 }, 60)!;
-    expect(s.fromT).toBeCloseTo(0);
-    expect(s.toT).toBeCloseTo(1);
+  it("⛔ REFUSES an edge that cannot hold the plate, rather than shrinking it (#321)", () => {
+    // ⭐ THIS TEST USED TO ASSERT THE OPPOSITE — a 60″ plate on a 24″ edge came
+    // back as the whole edge, i.e. SILENTLY RESIZED to 24″. That is how a plate
+    // the board was not building came to be validated as though it were: the
+    // panel checked the authored 60 while the drawing had 24.
+    //
+    // A plate is a physical object. It does not shrink to fit; the caller is
+    // told it does not fit and reports that (flag it, don't correct it).
+    expect(endplateSpanOnEdge(rect, 0, { x: 0, y: 0 }, 60)).toBeNull();
+  });
+
+  it("slides an overhanging plate back ON, at its full width (#321)", () => {
+    // Dropped at the very end of a 24″ edge, a 12″ plate used to come back as
+    // 6″ — half of it clamped away. It now moves instead.
+    const s = endplateSpanOnEdge(rect, 0, { x: 0, y: 12 }, 12)!;
+    expect((s.toT - s.fromT) * 24).toBeCloseTo(12); // width PRESERVED
+    expect(s.toT).toBeCloseTo(1); // flush with the end it was dropped at
+  });
+
+  it("⭐ agrees with endplateSpanFromStart — one behaviour, two entry points", () => {
+    // The whole point of #321: two helpers answering the same question
+    // differently is the drift this file's own comment warns about.
+    for (const [at, w] of [[0, 12], [6, 12], [12, 12], [-12, 24]] as const) {
+      const viaPoint = endplateSpanOnEdge(rect, 0, { x: 0, y: at }, w);
+      // the same placement expressed as a start: centre − half width, measured
+      // from the edge's first vertex at y = −12.
+      const start = (at + 12) - w / 2;
+      const viaStart = endplateSpanFromStart(rect, 0, start, w);
+      expect(viaPoint).toEqual(viaStart);
+    }
   });
 
   it("follows where the plate sits, not just the middle", () => {
