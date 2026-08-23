@@ -2025,6 +2025,47 @@ describe("endplate poses (#175)", () => {
     expect(b.trackConfig).toBe("double");
   });
 
+  /**
+   * ⛔⛔ THE DEFAULT, WHICH NOTHING IN THIS SUITE EVER EXERCISED (#329).
+   *
+   * Every other test of this function hands `trackHalfSpacingInches` over —
+   * 0.5625 above, 1 below — so the suite tested the PARAMETER and never the
+   * fallback. No caller passes it: grepped MR's `web/src`, FD's `lib`/`app`/
+   * `components`, and this package. So the number every real double plate
+   * actually got was the one nothing checked.
+   *
+   * A double plate's two tracks are `FREEMO_TRACK_SPACING_INCHES` apart, and
+   * every other reader here says so directly — `endplateCentreOffsetInches`,
+   * `checkEndplateWidth`, `CLEARANCE_SPACING_INCHES`. This was the one outlier.
+   */
+  it("defaults to Free-moN's spacing when the caller says nothing (#329)", () => {
+    const [, b] = deriveEndplatePoses({
+      lengthInches: 96,
+      endplateConfigs: ["single", "double"],
+    });
+    expect(b.trackOffsets).toEqual([-0.5625, 0.5625]);
+    // ⭐ Stated as the gap, not the two offsets — that is the quantity §2.0
+    // binds, and it is what was wrong: 2″ where the standard says 1.125″.
+    expect(b.trackOffsets![1] - b.trackOffsets![0]).toBeCloseTo(FREEMO_TRACK_SPACING_INCHES, 10);
+  });
+
+  it("a branch endplate takes the same default (#329)", () => {
+    const poses = deriveEndplatePoses({
+      lengthInches: 120,
+      branches: [{ id: "C", atPos: 60, side: "up", config: "double" }],
+    });
+    expect(poses.find((p) => p.id === "C")!.trackOffsets).toEqual([-0.5625, 0.5625]);
+  });
+
+  it("an explicit spacing still wins — Free-mo HO is 1″ (#329)", () => {
+    const [, b] = deriveEndplatePoses({
+      lengthInches: 96,
+      endplateConfigs: ["single", "double"],
+      trackHalfSpacingInches: 1,
+    });
+    expect(b.trackOffsets).toEqual([-1, 1]);
+  });
+
   it("branch endplates sit along the axis facing out their side", () => {
     const poses = deriveEndplatePoses({
       lengthInches: 120,
