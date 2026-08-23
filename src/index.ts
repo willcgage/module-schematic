@@ -11294,8 +11294,11 @@ export interface ModuleGeometryInput {
    * Needed to place a branch endplate on the benchwork edge rather than on the
    * centre line; absent ends use the recommended default. */
   endplateWidths?: Record<string, number>;
-  /** Half the spacing between the two tracks of a double endplate (Free-mo ≈ 1",
-   * Free-moN ≈ 9/16"). */
+  /** Half the spacing between the two tracks of a double endplate. Omitted =
+   * Free-moN's {@link FREEMO_TRACK_SPACING_INCHES} / 2 = 0.5625″, which is what
+   * both apps want and what the rest of this package already uses. Pass 1 for
+   * Free-mo HO. ⛔ This used to default to 1 and no caller passed it, so every
+   * double plate came out 2″ across (#329). */
   trackHalfSpacingInches?: number;
   /** The module's sections. When present they define the module's real shape,
    * so endplate B lands at the end of the CHAINED boards rather than where a
@@ -11505,7 +11508,28 @@ function offsetsFor(
  */
 export function deriveEndplatePoses(geo: ModuleGeometryInput): EndplatePose[] {
   const L = geo.lengthInches > 0 ? geo.lengthInches : 24;
-  const half = geo.trackHalfSpacingInches ?? 1;
+  /**
+   * ⛔⛔ THE DEFAULT WAS FREE-MO HO'S 1″, AND NOTHING EVER PASSED THE PARAMETER
+   * (#329) — so every double endplate in both apps derived its two tracks **2″
+   * apart** where Free-moN §2.0 puts them {@link FREEMO_TRACK_SPACING_INCHES} =
+   * 1.125″ apart. Grepped when this was found: zero call sites in MR's
+   * `web/src`, in Free-Dispatcher's `lib`/`app`/`components`, or in this
+   * package.
+   *
+   * ⭐ This was the ONE outlier in the file. Every other reader of the spacing
+   * names the constant outright — `endplateCentreOffsetInches`,
+   * `checkEndplateWidth`, `CLEARANCE_SPACING_INCHES` — so the package already
+   * answered this question everywhere else and only here disagreed with itself.
+   *
+   * ⭐⭐ WHY THE SUITE DID NOT CATCH IT: every existing test of this function
+   * HANDS THE VALUE OVER (0.5625 in one, 1 in another). The parameter was
+   * covered; the fallback that every real caller actually took was not. A
+   * fixture that supplies the input under test cannot fail the way production
+   * does.
+   *
+   * The parameter stays — a caller in another scale has a real answer to give.
+   */
+  const half = geo.trackHalfSpacingInches ?? FREEMO_TRACK_SPACING_INCHES / 2;
   const cfg = (i: number): "single" | "double" =>
     geo.endplateConfigs?.[i] === "double" ? "double" : "single";
   /**
