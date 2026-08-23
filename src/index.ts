@@ -2864,6 +2864,37 @@ export function isTransitionTurnout(t: {
  * at the turnout, or both mains draw endplate-to-endplate and the single-track
  * end shows two tracks reaching it.
  */
+/**
+ * ⭐ A MAIN'S FAR END, said in whatever way the module can actually back up (#330).
+ *
+ * Normally that is endplate B: `to: "B"` names a node the document contains and
+ * `extentOf` can resolve it. On a module with **no far endplate** — an end of
+ * the line, a pocket (`configB: "none"`, #184) — there is no B, and naming it
+ * anyway wrote a reference to a node the document hasn't got. FMN-0035 has
+ * carried exactly that for months, and a module built fresh on 2026-08-23 still
+ * did.
+ *
+ * ⚠️ **This changed no behaviour when it landed, and that was checked rather
+ * than assumed.** `posOf` — the only thing that resolves a `from`/`to` — is
+ * called from one place, `extentOf`; `extentOf` has exactly two callers and
+ * BOTH skip `role === "main"` (`resolveLane` returns early, the `extraTracks`
+ * loop `continue`s); and only mains ever carried the dangling ref. Confirmed on
+ * a populated single-ended fixture — two extra tracks, two turnouts, an
+ * industry — where `moduleFeatures` came back byte-identical either way. So
+ * this is tidiness, and shipped as tidiness.
+ *
+ * ⭐ The replacement is not "drop `to` and leave the main unresolvable": it is
+ * the module's own extent, which is how the LOOP case in `stateToDoc` has
+ * always expressed a main with no far plate. Same statement, same shape.
+ * ⭐ `graphToDoc` already guarded this (`...(epB ? { to: epB.id } : {})`) — the
+ * two doc builders had drifted, and this is them agreeing again.
+ */
+function mainFarEnd(state: EditorState): { to: string } | { fromPos: number; toPos: number } {
+  return state.configB === "none"
+    ? { fromPos: 0, toPos: state.lengthInches }
+    : { to: "B" };
+}
+
 function main1Track(state: EditorState): SchematicTrack {
   // Main 1 is the through mainline: always the full module, always on the
   // centre line. The swap moves MAIN 2 to the other side; Main 1 never moves
@@ -2875,7 +2906,7 @@ function main1Track(state: EditorState): SchematicTrack {
   const isDouble = state.configA === "double" || state.configB === "double";
   const bothDouble = state.configA === "double" && state.configB === "double";
   if (!isDouble || bothDouble || !legacyThroughMain2) {
-    return { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", to: "B" };
+    return { id: MAIN_TRACK_ID, role: "main", lane: 0, from: "A", ...mainFarEnd(state) };
   }
   return state.configA === "double"
     ? { id: MAIN_TRACK_ID, role: "main", lane: 0, fromPos: 0, toPos: sw!.pos }
@@ -2901,7 +2932,7 @@ function main2Track(state: EditorState): SchematicTrack {
   // A bent Main 2 draws along its authored path instead of a lane offset (#131).
   const authored = state.main2Path.length >= 2 ? { path: state.main2Path } : {};
   if (bothDouble || !sws.length) {
-    return { id: MAIN2_TRACK_ID, role: "main", lane, from: "A", to: "B", ...authored };
+    return { id: MAIN2_TRACK_ID, role: "main", lane, from: "A", ...mainFarEnd(state), ...authored };
   }
   const track = (fromPos: number, toPos: number): SchematicTrack => ({
     id: MAIN2_TRACK_ID,

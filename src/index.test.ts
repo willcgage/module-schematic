@@ -2888,6 +2888,64 @@ describe("checkEndplateWidth reads the offset as MAIN 1's position", () => {
   });
 });
 
+describe("a main never names an endplate the module hasn't got (#330)", () => {
+  const oneEnded = (over = {}) => ({
+    ...emptyEditorState(48),
+    configA: "single" as const,
+    configB: "none" as const,
+    ...over,
+  });
+
+  it("expresses its far end as a POSITION, not as endplate B", () => {
+    const doc = stateToDoc(oneEnded(), "M");
+    expect(doc.endplates.map((e) => e.id)).toEqual(["A"]);
+    const main = doc.tracks.find((t) => t.id === "main")!;
+    expect(main.to).toBeUndefined();
+    expect([main.fromPos, main.toPos]).toEqual([0, 48]);
+    // ⭐ The property that matters, stated as itself: every endplate a track
+    // names must be one the document actually contains.
+    const ids = new Set(doc.endplates.map((e) => e.id));
+    for (const t of doc.tracks) {
+      if (t.from) expect(ids.has(t.from)).toBe(true);
+      if (t.to) expect(ids.has(t.to)).toBe(true);
+    }
+  });
+
+  it("MAIN 2 gets the same treatment — a double A end with no far plate", () => {
+    const doc = stateToDoc(oneEnded({ configA: "double" as const }), "M");
+    expect(doc.endplates.map((e) => e.id)).toEqual(["A"]);
+    const main2 = doc.tracks.find((t) => t.id === "main2")!;
+    expect(main2.to).toBeUndefined();
+    expect([main2.fromPos, main2.toPos]).toEqual([0, 48]);
+  });
+
+  it("an ordinary two-ended module is untouched — still A → B", () => {
+    const doc = stateToDoc({ ...emptyEditorState(48), configA: "double", configB: "double" }, "M");
+    expect(doc.tracks.find((t) => t.id === "main")).toMatchObject({ from: "A", to: "B" });
+    expect(doc.tracks.find((t) => t.id === "main2")).toMatchObject({ from: "A", to: "B" });
+  });
+
+  it("⭐ changes nothing that reads the document — `extentOf` never sees a main", () => {
+    // The FAITHFUL fixture: populated, so a track extent is actually resolved.
+    // A bare module (FMN-0035) proves nothing either way.
+    const populated = oneEnded({
+      extraTracks: [
+        { id: "sid", role: "siding", lane: 1, fromPos: 8, toPos: 30 },
+        { id: "spur", role: "spur", lane: -1, fromPos: 20, toPos: 40 },
+      ],
+      turnouts: [
+        { id: "sw1", name: "West", pos: 8, onTrack: "main", divergeTrack: "sid", kind: "right" },
+      ],
+    } as Partial<EditorState>);
+    const doc = stateToDoc(populated as EditorState, "M");
+    const withDangling = { ...doc, tracks: doc.tracks.map((t) =>
+      t.id === "main" ? { id: "main", role: "main" as const, lane: 0, from: "A", to: "B" } : t) };
+    // Both extra tracks resolve, so extentOf really ran.
+    expect(moduleFeatures(doc).extraTracks).toHaveLength(2);
+    expect(moduleFeatures(doc)).toEqual(moduleFeatures(withDangling));
+  });
+});
+
 describe("sections as objects (#96 phase 2)", () => {
   const peninsula = [
     { x: 60, y: 12 },
