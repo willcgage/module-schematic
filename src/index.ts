@@ -1196,6 +1196,94 @@ function trackRailPolyline(
  * drawn path), rather than falling back to the module span — a silent fallback
  * is exactly how the axis figure came to be read as rail in the first place.
  */
+/**
+ * ⭐⭐ THE MAP BETWEEN MODULE POSITIONS AND RAIL ARC LENGTH — one construction,
+ * used by {@link railLengthBetween}, {@link posAtRailDistance} and the flex
+ * solver, because all three need the same walk and computing it three ways is
+ * how they would drift.
+ *
+ * `arcAt(pos)` — how much RAIL lies between the run's start and that module
+ * position. `posAt(arc)` — the inverse: which module position sits that far
+ * along the rail. Together they let a caller do its arithmetic in whichever
+ * frame the quantity actually belongs to: **positions are along the module,
+ * lengths are along the rail** (#335, #340).
+ *
+ * Returns null when there is nothing to measure against, and every caller
+ * treats that as "fall back to the module axis" — which is what they all did
+ * before any of this existed.
+ */
+function railArcMap(
+  t: Pick<SchematicTrack, "path" | "lane">,
+  centerline: BenchworkPoint[] | null | undefined,
+  pinches?: LanePinch[] | null,
+): { arcAt: (pos: number) => number; posAt: (arc: number) => number } | null {
+  const rail = trackRailPolyline(t, centerline, pinches);
+  if (!rail || rail.length < 2) return null;
+  const cen = trackPath(centerline) ? samplePath(centerline!) : null;
+  if (!cen || cen.length < 2) return null;
+
+  const posOf = rail.map((p) => posAlongCenterline(cen, p) ?? 0);
+  const segLen = (i: number) =>
+    Math.hypot(rail[i].x - rail[i - 1].x, rail[i].y - rail[i - 1].y);
+
+  const arcAt = (target: number): number => {
+    if (posOf[0] >= target) return 0;
+    let acc = 0;
+    for (let i = 1; i < rail.length; i++) {
+      const a = posOf[i - 1];
+      const b = posOf[i];
+      if ((a < target && b >= target) || (a > target && b <= target)) {
+        const f = Math.abs(b - a) < 1e-9 ? 0 : (target - a) / (b - a);
+        return acc + segLen(i) * Math.max(0, Math.min(1, f));
+      }
+      acc += segLen(i);
+    }
+    return acc;
+  };
+
+  // The inverse walk: accumulate rail until `arc` is reached, then read the
+  // module position off the same interpolation.
+  const posAt = (arc: number): number => {
+    if (!(arc > 0)) return posOf[0];
+    let acc = 0;
+    for (let i = 1; i < rail.length; i++) {
+      const l = segLen(i);
+      if (acc + l >= arc) {
+        const f = l < 1e-9 ? 0 : (arc - acc) / l;
+        return posOf[i - 1] + (posOf[i] - posOf[i - 1]) * f;
+      }
+      acc += l;
+    }
+    return posOf[posOf.length - 1];
+  };
+
+  return { arcAt, posAt };
+}
+
+/**
+ * The module position that lies `railInches` of RAIL beyond `fromPos` (#340).
+ *
+ * The inverse of {@link railLengthBetween}, and the piece the flex solver was
+ * missing: to put a rail joint every 30″ of flex you must step 30″ **of rail**
+ * and then ask where that lands on the module — stepping 30″ of module puts the
+ * joint somewhere else entirely on a curve.
+ *
+ * Null when there is no centre-line to measure against; callers fall back to
+ * treating the two frames as the same, which on a straight run they are.
+ */
+export function posAtRailDistance(
+  t: Pick<SchematicTrack, "path" | "lane">,
+  fromPos: number,
+  railInches: number,
+  centerline: BenchworkPoint[] | null | undefined,
+  pinches?: LanePinch[] | null,
+): number | null {
+  if (!Number.isFinite(fromPos) || !Number.isFinite(railInches)) return null;
+  const map = railArcMap(t, centerline, pinches);
+  if (!map) return null;
+  return map.posAt(map.arcAt(fromPos) + railInches);
+}
+
 export function railLengthBetween(
   t: Pick<SchematicTrack, "path" | "lane">,
   fromPos: number,
@@ -1204,10 +1292,8 @@ export function railLengthBetween(
   pinches?: LanePinch[] | null,
 ): number | null {
   if (!Number.isFinite(fromPos) || !Number.isFinite(toPos)) return null;
-  const rail = trackRailPolyline(t, centerline, pinches);
-  if (!rail || rail.length < 2) return null;
-  const cen = trackPath(centerline) ? samplePath(centerline!) : null;
-  if (!cen || cen.length < 2) return null;
+  const map = railArcMap(t, centerline, pinches);
+  if (!map) return null;
 
   const lo = Math.min(fromPos, toPos);
   const hi = Math.max(fromPos, toPos);
@@ -1219,23 +1305,7 @@ export function railLengthBetween(
   // position, so its inches would vanish — and that rail is exactly the rail a
   // car occupies. Walk the rail to the arc at which it first reaches each end
   // and take what lies between.
-  const posOf = rail.map((p) => posAlongCenterline(cen, p) ?? 0);
-  const arcAtPos = (target: number): number => {
-    if (posOf[0] >= target) return 0;
-    let acc = 0;
-    for (let i = 1; i < rail.length; i++) {
-      const segLen = Math.hypot(rail[i].x - rail[i - 1].x, rail[i].y - rail[i - 1].y);
-      const a = posOf[i - 1];
-      const b = posOf[i];
-      if ((a < target && b >= target) || (a > target && b <= target)) {
-        const t = Math.abs(b - a) < 1e-9 ? 0 : (target - a) / (b - a);
-        return acc + segLen * Math.max(0, Math.min(1, t));
-      }
-      acc += segLen;
-    }
-    return acc;
-  };
-  return Math.abs(arcAtPos(hi) - arcAtPos(lo));
+  return Math.abs(map.arcAt(hi) - map.arcAt(lo));
 }
 
 /** Normalise an authored track path from a doc, or null if it isn't a real path
@@ -5190,11 +5260,43 @@ export function flexPieces(input: {
   occupied?: OccupiedSpan[] | null;
   /** Authored joint positions, inches along the run. Absent = derive. */
   cuts?: number[] | null;
+  /**
+   * The track as drawn, plus the module's centre-line, so pieces are counted and
+   * cut by RAIL length rather than by the stretch of module they cover (#340).
+   * Omit them and every number below is what it was before — which on a straight
+   * run, or a run on the centre line, is the same thing.
+   */
+  track?: Pick<SchematicTrack, "path" | "lane"> | null;
+  centerline?: BenchworkPoint[] | null;
+  pinches?: LanePinch[] | null;
 }): FlexPiece[] {
   const lo = Math.min(input.fromPos, input.toPos);
   const hi = Math.max(input.fromPos, input.toPos);
   if (!(hi - lo > FLEX_EPS)) return [];
   const max = input.maxPieceInches > FLEX_EPS ? input.maxPieceInches : Infinity;
+
+  /**
+   * ⭐⭐ POSITIONS ARE ALONG THE MODULE; LENGTHS ARE ALONG THE RAIL (#335, #340).
+   *
+   * Everything below still reasons in POSITIONS — cuts, occupied bodies and the
+   * piece bounds all have to stay in the coordinate turnouts and industries use.
+   * What changes is that the *stepping* and the *lengths* go through the rail:
+   * a 30″ piece of flex is 30″ of rail, and on a curve that is not 30″ of module.
+   *
+   * ⛔ THIS IS WHY IT MATTERED. FMN-0085's lane-2 siding covers 30.5″ of module
+   * but only 27.6″ of rail. Stepping in module inches made it 2 pieces of Atlas
+   * 30″ flex with a joint mid-curve; it fits in ONE. The app was giving a
+   * cutting instruction about physical track that was wrong by the lane's offset.
+   *
+   * Without a centre-line both maps are the identity, so this is exactly the old
+   * arithmetic — which is what a straight run wants anyway.
+   */
+  const map = input.track && input.centerline
+    ? railArcMap(input.track, input.centerline, input.pinches)
+    : null;
+  const arcAt = (pos: number) => (map ? map.arcAt(pos) : pos);
+  const posAt = (arc: number) => (map ? map.posAt(arc) : arc);
+  const railBetween = (a: number, b: number) => Math.abs(arcAt(b) - arcAt(a));
 
   // The run minus the parts sitting in it. Overlapping bodies are merged first
   // so a crossover's two turnouts don't carve the same inch twice.
@@ -5232,16 +5334,21 @@ export function flexPieces(input: {
         .filter((c) => c > g.from + FLEX_EPS && c < g.to - FLEX_EPS)
         .sort((a, b) => a - b);
     } else {
-      inner = [];
-      for (let at = g.from + max; at < g.to - FLEX_EPS; at += max) inner.push(at);
+      // ⭐ Stepped in RAIL inches, then converted back to positions — a full
+      // length of flex is a full length of rail wherever the run bends.
+      const a0 = arcAt(g.from);
+      const a1 = arcAt(g.to);
+      const arcs: number[] = [];
+      for (let a = a0 + max; a < a1 - FLEX_EPS; a += max) arcs.push(a);
       // A sliver at the end isn't a piece. Split the last two evenly instead —
       // both stay under the maximum, because together they're at most one full
-      // length plus a sliver.
-      const tail = g.to - (inner[inner.length - 1] ?? g.from);
-      if (inner.length && tail < FLEX_MIN_PIECE_INCHES) {
-        const start = inner.length >= 2 ? inner[inner.length - 2] : g.from;
-        inner[inner.length - 1] = start + (g.to - start) / 2;
+      // length plus a sliver. (Evenly IN RAIL, so both really are under it.)
+      const tail = a1 - (arcs[arcs.length - 1] ?? a0);
+      if (arcs.length && tail < FLEX_MIN_PIECE_INCHES) {
+        const start = arcs.length >= 2 ? arcs[arcs.length - 2] : a0;
+        arcs[arcs.length - 1] = start + (a1 - start) / 2;
       }
+      inner = arcs.map(posAt);
     }
     const bounds = [g.from, ...inner, g.to];
     for (let i = 0; i < bounds.length - 1; i++) {
@@ -5251,8 +5358,8 @@ export function flexPieces(input: {
         index: out.length,
         fromPos: from,
         toPos: to,
-        lengthInches: to - from,
-        overlong: to - from > max + FLEX_EPS,
+        lengthInches: railBetween(from, to),
+        overlong: railBetween(from, to) > max + FLEX_EPS,
         // The run's own ends are runEnd; anything else is a part body, except
         // where a cut put a neighbouring piece there.
         fromEnd: i > 0 ? "piece" : from <= lo + FLEX_EPS ? "runEnd" : "part",

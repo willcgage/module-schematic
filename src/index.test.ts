@@ -97,6 +97,7 @@ import {
   type ReturnLoopShape,
   type ModuleSchematicDoc,
   flexPieces,
+  posAtRailDistance,
   flexUsage,
   spanOverhang,
   carCapacity,
@@ -2885,6 +2886,82 @@ describe("checkEndplateWidth reads the offset as MAIN 1's position", () => {
       trackOffsetInches: 3,
     });
     expect(tight.find((i) => i.code === "clearance")?.requiredInches).toBeCloseTo(14);
+  });
+});
+
+describe("flex is counted and cut by rail length, not module span (#340)", () => {
+  // FMN-0085's U again: five 24″ boards, straight · curve 90° · straight ·
+  // curve 90° · straight. Lane 2 runs the INSIDE of the east bend.
+  const uSections = [
+    { id: "sec1", lengthInches: 24, geometryType: "straight" },
+    { id: "sec2", lengthInches: 24, geometryType: "curve", geometryDegrees: 90 },
+    { id: "sec3", lengthInches: 24 },
+    { id: "sec4", lengthInches: 24, geometryType: "curve", geometryDegrees: 90 },
+    { id: "sec5", lengthInches: 24 },
+  ];
+  const centerline = sectionedCenterline({ sections: uSections });
+  const ATLAS_FLEX = 30; // Atlas Code 55 comes in 30″ lengths.
+
+  it("⭐ 27.6″ of rail fits ONE 30″ length; 30.5″ of module wrongly needs two", () => {
+    const axis = flexPieces({ fromPos: 60, toPos: 90.5, maxPieceInches: ATLAS_FLEX });
+    const rail = flexPieces({
+      fromPos: 60, toPos: 90.5, maxPieceInches: ATLAS_FLEX,
+      track: { lane: 2 }, centerline,
+    });
+    // The bug, stated as the thing an owner would actually do differently:
+    expect(axis).toHaveLength(2);
+    expect(rail).toHaveLength(1);
+    // …and the one piece is the rail length, not the module span.
+    expect(rail[0].lengthInches).toBeCloseTo(27.648, 2);
+    expect(rail[0].lengthInches).toBeLessThan(ATLAS_FLEX);
+    expect(rail[0].overlong).toBe(false);
+  });
+
+  it("the total cut equals the rail, and each piece is within the product length", () => {
+    const pieces = flexPieces({
+      fromPos: 10, toPos: 110, maxPieceInches: ATLAS_FLEX,
+      track: { lane: 2 }, centerline,
+    });
+    const total = pieces.reduce((n, p) => n + p.lengthInches, 0);
+    expect(total).toBeCloseTo(railLengthBetween({ lane: 2 }, 10, 110, centerline)!, 3);
+    for (const p of pieces) expect(p.lengthInches).toBeLessThanOrEqual(ATLAS_FLEX + 1e-6);
+  });
+
+  it("⭐ the OUTSIDE of the bend needs MORE flex, not less — the error is signed", () => {
+    const inside = flexPieces({
+      fromPos: 10, toPos: 110, maxPieceInches: ATLAS_FLEX, track: { lane: 2 }, centerline,
+    }).reduce((n, p) => n + p.lengthInches, 0);
+    const outside = flexPieces({
+      fromPos: 10, toPos: 110, maxPieceInches: ATLAS_FLEX, track: { lane: -1 }, centerline,
+    }).reduce((n, p) => n + p.lengthInches, 0);
+    expect(outside).toBeGreaterThan(inside);
+  });
+
+  it("the cut POSITIONS stay in module inches, inside the run", () => {
+    // ⭐ The distinction the whole fix rests on: lengths moved to rail, the
+    // coordinate turnouts and industries share did NOT.
+    const pieces = flexPieces({
+      fromPos: 10, toPos: 110, maxPieceInches: ATLAS_FLEX, track: { lane: 2 }, centerline,
+    });
+    expect(pieces[0].fromPos).toBeCloseTo(10, 6);
+    expect(pieces[pieces.length - 1].toPos).toBeCloseTo(110, 6);
+    for (const p of pieces) {
+      expect(p.fromPos).toBeGreaterThanOrEqual(10 - 1e-6);
+      expect(p.toPos).toBeLessThanOrEqual(110 + 1e-6);
+      expect(p.toPos).toBeGreaterThan(p.fromPos);
+    }
+  });
+
+  it("no centreline is exactly the old behaviour", () => {
+    const before = flexPieces({ fromPos: 0, toPos: 75, maxPieceInches: ATLAS_FLEX });
+    expect(before).toHaveLength(3);
+    expect(before.reduce((n, p) => n + p.lengthInches, 0)).toBeCloseTo(75, 6);
+  });
+
+  it("posAtRailDistance is the inverse of railLengthBetween", () => {
+    const at = posAtRailDistance({ lane: 2 }, 60, 27.648, centerline)!;
+    expect(at).toBeCloseTo(90.5, 1);
+    expect(railLengthBetween({ lane: 2 }, 60, at, centerline)!).toBeCloseTo(27.648, 3);
   });
 });
 
