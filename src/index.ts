@@ -2309,9 +2309,18 @@ export interface UsableCapacity {
   /** The stretch a car can actually stand on, inches along the run. */
   fromPos: number;
   toPos: number;
-  /** Its length — what capacity is computed from. */
+  /**
+   * Its length — what capacity is computed from.
+   *
+   * ⭐ MEASURED ALONG THE RAIL when a `centerline` is supplied (#335), not along
+   * the module axis. Those differ on a curve by the lane's offset: on FMN-0085's
+   * east bend a lane-2 siding spanning 60→90.5 is **30.5″ of module but 27.6″ of
+   * rail** — the inside of a curve overstates, the outside understates, and a
+   * track on the centre line is exact. Without a centreline this falls back to
+   * the axis span, which is what every caller got before.
+   */
   usableInches: number;
-  /** The run's full drawn length, for comparison. */
+  /** The run's full drawn length, for comparison — same rail measure as above. */
   drawnInches: number;
   /** How much each end gives up to its governing turnout's clearance point. */
   givenUpInches: number;
@@ -2333,6 +2342,18 @@ export interface UsableCapacity {
  * know — a bumper post short of the drawn end, a structure fouling the track.
  * Given, it wins outright and the clearance points aren't applied to it: they
  * measured the usable length itself.
+ *
+ * ⭐⭐ THE POSITIONS ARE ALONG THE MODULE; THE LENGTHS ARE ALONG THE RAIL (#335).
+ * `fromPos`/`toPos` and the clearance-point arithmetic stay in module inches —
+ * #310 established those are correct and every consumer reads them that way. The
+ * fix is only in what gets REPORTED: pass `centerline` (and the track, for its
+ * lane/path) and the two lengths are measured along the rail between those
+ * positions instead of subtracted from them.
+ *
+ * ⛔ It mattered because the app said two things about one siding. The track
+ * panel read *"Drawn 30.5″ · Usable 21.2″"* while the industry over-capacity flag
+ * — which has always used {@link railLengthBetween} — said *"27.6″ of rail"* for
+ * the very same span. Both were internally right; only one was the rail.
  */
 export function usableCapacity(input: {
   fromPos: number;
@@ -2343,10 +2364,27 @@ export function usableCapacity(input: {
   measuredUsableInches?: number | null;
   library?: TrackPart[];
   carLengthInches?: number;
+  /**
+   * The track as drawn — its lane, and its authored path if it has one — so the
+   * lengths can be measured along the RAIL (#335). Omit it and nothing changes.
+   */
+  track?: Pick<SchematicTrack, "path" | "lane"> | null;
+  /** The module's centre-line, which the rail is offset from. Omit → axis span. */
+  centerline?: BenchworkPoint[] | null;
+  /** Lane pinches, so an offset rail follows the same line the renderer draws. */
+  pinches?: LanePinch[] | null;
 }): UsableCapacity {
   const lo = Math.min(input.fromPos, input.toPos);
   const hi = Math.max(input.fromPos, input.toPos);
-  const drawn = hi - lo;
+  /**
+   * ⭐ ONE MEASURING STICK, USED FOR BOTH LENGTHS. Along the rail when we have a
+   * centre-line, along the module axis when we don't — which is exactly what
+   * every caller got before this, so passing nothing is unchanged behaviour.
+   */
+  const span = (a: number, b: number): number =>
+    railLengthBetween(input.track ?? { lane: 0 }, a, b, input.centerline, input.pinches) ??
+    Math.abs(b - a);
+  const drawn = span(lo, hi);
   const carLen = input.carLengthInches ?? N_CAR_LENGTH_INCHES;
 
   if (typeof input.measuredUsableInches === "number" && input.measuredUsableInches >= 0) {
@@ -2372,7 +2410,8 @@ export function usableCapacity(input: {
     if (Math.abs(sw.pos - lo) <= Math.abs(sw.pos - hi)) a = Math.max(a, lo + c);
     else b = Math.min(b, hi - c);
   }
-  const usable = Math.max(0, b - a);
+  // The ends moved in module inches (above); the LENGTH between them is rail.
+  const usable = b > a ? span(a, b) : 0;
   return {
     fromPos: a,
     toPos: Math.max(a, b),
