@@ -2888,6 +2888,86 @@ describe("checkEndplateWidth reads the offset as MAIN 1's position", () => {
   });
 });
 
+describe("usable capacity is measured along the rail, not the module axis (#335)", () => {
+  /**
+   * FMN-0085's geometry — the U: five 24″ boards, straight · curve 90° ·
+   * straight · curve 90° · straight. A siding on lane 2 spanning 60→90.5 sits on
+   * the INSIDE of the east bend, so its rail is shorter than its module span.
+   */
+  const uSections = [
+    { id: "sec1", lengthInches: 24, geometryType: "straight" },
+    { id: "sec2", lengthInches: 24, geometryType: "curve", geometryDegrees: 90 },
+    { id: "sec3", lengthInches: 24 },
+    { id: "sec4", lengthInches: 24, geometryType: "curve", geometryDegrees: 90 },
+    { id: "sec5", lengthInches: 24 },
+  ];
+  const centerline = sectionedCenterline({ sections: uSections });
+
+  it("reports the rail, and agrees with railLengthBetween to the digit", () => {
+    const axis = usableCapacity({ fromPos: 60, toPos: 90.5 });
+    const rail = usableCapacity({
+      fromPos: 60, toPos: 90.5, track: { lane: 2 }, centerline,
+    });
+    // What the app used to say vs what the rail actually is.
+    expect(axis.drawnInches).toBeCloseTo(30.5, 6);
+    expect(rail.drawnInches).toBeCloseTo(
+      railLengthBetween({ lane: 2 }, 60, 90.5, centerline)!,
+      6,
+    );
+    // The number the industry flag has always shown for this span.
+    expect(rail.drawnInches).toBeCloseTo(27.648, 2);
+    expect(rail.drawnInches).toBeLessThan(axis.drawnInches);
+  });
+
+  it("the OUTSIDE of the same bend is longer than the module span, not shorter", () => {
+    // ⭐ The sign is the point: a single "it differs" test would pass on a bug
+    // that always shortened. Lane −1 runs the outside and must come out LONGER.
+    const outside = usableCapacity({
+      fromPos: 60, toPos: 90.5, track: { lane: -1 }, centerline,
+    });
+    expect(outside.drawnInches).toBeGreaterThan(30.5);
+  });
+
+  it("a track on the centre line still measures its module span", () => {
+    const onAxis = usableCapacity({
+      fromPos: 60, toPos: 90.5, track: { lane: 0 }, centerline,
+    });
+    /**
+     * ⚠️ NOT bit-exact, and that is inherent: the rail is walked as a SAMPLED
+     * polyline, so a curve accumulates a little discretisation even where the
+     * lane offset is zero. Measured here: 30.50003837 against an exact 30.5 —
+     * **4/100,000 of an inch**, about a thousandth of a scale foot. Asserted to
+     * a thousandth because that is the scale at which anyone cares; asserting
+     * more would be pinning noise.
+     */
+    expect(onAxis.drawnInches).toBeCloseTo(30.5, 3);
+  });
+
+  it("passing no centreline is exactly the old behaviour", () => {
+    const before = usableCapacity({ fromPos: 10, toPos: 40, governing: [{ pos: 10, size: 7 }] });
+    expect(before.drawnInches).toBe(30);
+    expect(before.usableInches).toBeLessThan(30); // clearance point still applies
+    expect(before.usableInches).toBeGreaterThan(0);
+  });
+
+  it("the clearance point still comes off, and the remainder is rail", () => {
+    const cap = usableCapacity({
+      fromPos: 60, toPos: 90.5, governing: [{ pos: 60, size: 7 }],
+      track: { lane: 2 }, centerline,
+    });
+    // ⭐ Asserted against an INDEPENDENT measurement of the rail between the
+    // clamped ends, not just "smaller than before" — a looser test here passes
+    // on the axis arithmetic too, and would never have failed (#329's lesson).
+    const railBetweenEnds = railLengthBetween({ lane: 2 }, cap.fromPos, cap.toPos, centerline)!;
+    expect(cap.usableInches).toBeCloseTo(railBetweenEnds, 6);
+    // The ends themselves are still MODULE positions — #310 settled that.
+    expect(cap.fromPos).toBeGreaterThan(60);
+    expect(cap.toPos).toBeCloseTo(90.5, 6);
+    expect(cap.givenUpInches).toBeGreaterThan(0);
+    expect(cap.cars).toBe(carCapacity(0, cap.usableInches));
+  });
+});
+
 describe("a main never names an endplate the module hasn't got (#330)", () => {
   const oneEnded = (over = {}) => ({
     ...emptyEditorState(48),
