@@ -663,6 +663,28 @@ export interface ModuleSchematicDoc {
 export interface BenchworkPoint {
   x: number;
   y: number;
+  /**
+   * ⭐⭐ THE TANGENT AT THIS VERTEX, IN DEGREES — set wherever the geometry is
+   * KNOWN rather than inferred (modulerepo#348).
+   *
+   * A curve leaves here sampled into 12 chords, and **a chord is the tangent at
+   * its own middle** — at either end it is out by half the turn, 3.75° on a 90°
+   * board. Anything that recovers a direction by looking at the chords is
+   * therefore guessing, and the guess cannot be right everywhere: mid-arc the
+   * answer is the bisector of the two chords, but at a straight→curve junction
+   * it is the straight's own direction, and **a bare polyline cannot tell those
+   * two apart.** Measured in MR: a rule that fixed the curves to 0.06° pushed
+   * the section joints from 0° to 1.875°.
+   *
+   * So the producer says. `sectionCenterlineLocal` knows each board's turn and
+   * `sectionedCenterline` knows the running heading, so the exact tangent is
+   * free at the point the spine is built — and consumers stop keeping their own
+   * copy of a derivation they cannot complete.
+   *
+   * ⚠️ OPTIONAL, and absent is meaningful: a spine that came from a DRAWN path
+   * has no analytic form, so consumers must fall back rather than assume 0.
+   */
+  tangentDeg?: number;
   bulge?: number;
   /**
    * A SECOND bend on the same edge, at its far end — which turns one edge from a
@@ -1501,18 +1523,29 @@ export function moduleCenterline(input: ModuleFootprintInput): BenchworkPoint[] 
   if (!input.geometryType && !input.hasPlacedTrack) return [];
   const L = input.lengthInches > 0 ? input.lengthInches : 24;
   const gt = input.geometryType;
-  if (gt === "dead_end") return [{ x: 0, y: 0 }];
-  if (gt === "offset") return [{ x: 0, y: 0 }, { x: L, y: input.geometryOffsetInches ?? 0 }];
+  if (gt === "dead_end") return [{ x: 0, y: 0, tangentDeg: 0 }];
+  if (gt === "offset") {
+    const dy = input.geometryOffsetInches ?? 0;
+    const jog = (Math.atan2(dy, L) * 180) / Math.PI;
+    return [
+      { x: 0, y: 0, tangentDeg: jog },
+      { x: L, y: dy, tangentDeg: jog },
+    ];
+  }
   const turn =
     gt === "corner_45" ? 45 : gt === "corner_90" ? 90 : gt === "curve" ? (input.geometryDegrees ?? 0) : 0;
-  if (turn === 0) return [{ x: 0, y: 0 }, { x: L, y: 0 }];
+  if (turn === 0)
+    return [
+      { x: 0, y: 0, tangentDeg: 0 },
+      { x: L, y: 0, tangentDeg: 0 },
+    ];
   const t = turn * DEG_FP;
   const r = L / t;
   const steps = 12;
   const pts: BenchworkPoint[] = [];
   for (let i = 0; i <= steps; i++) {
     const a = (t * i) / steps;
-    pts.push({ x: r * Math.sin(a), y: r * (1 - Math.cos(a)) });
+    pts.push({ x: r * Math.sin(a), y: r * (1 - Math.cos(a)), tangentDeg: (turn * i) / steps });
   }
   return pts;
 }
@@ -1532,18 +1565,39 @@ function sectionCenterlineLocal(sec: SchematicSection): {
   if (gt === "offset") {
     const dy = sec.geometryOffsetInches ?? 0;
     // A jog returns to the original heading, so the next board carries on square.
-    return { points: [{ x: 0, y: 0 }, { x: L, y: dy }], endX: L, endY: dy, endHeadingDeg: 0 };
+    // Its two vertices sit on the jog itself, so the tangent there IS the chord.
+    const jog = (Math.atan2(dy, L) * 180) / Math.PI;
+    return {
+      points: [
+        { x: 0, y: 0, tangentDeg: jog },
+        { x: L, y: dy, tangentDeg: jog },
+      ],
+      endX: L,
+      endY: dy,
+      endHeadingDeg: 0,
+    };
   }
   const turn =
     gt === "corner_45" ? 45 : gt === "corner_90" ? 90 : gt === "curve" ? (sec.geometryDegrees ?? 0) : 0;
-  if (turn === 0) return { points: [{ x: 0, y: 0 }, { x: L, y: 0 }], endX: L, endY: 0, endHeadingDeg: 0 };
+  if (turn === 0)
+    return {
+      points: [
+        { x: 0, y: 0, tangentDeg: 0 },
+        { x: L, y: 0, tangentDeg: 0 },
+      ],
+      endX: L,
+      endY: 0,
+      endHeadingDeg: 0,
+    };
   const t = turn * DEG_FP;
   const r = L / t; // constant-radius arc of arc-length L
   const steps = 12;
   const points: BenchworkPoint[] = [];
   for (let i = 0; i <= steps; i++) {
     const a = (t * i) / steps;
-    points.push({ x: r * Math.sin(a), y: r * (1 - Math.cos(a)) });
+    // ⭐ The tangent at the i-th sample is exactly how far the arc has turned by
+    // then — known here, unrecoverable from the chords afterwards (#348).
+    points.push({ x: r * Math.sin(a), y: r * (1 - Math.cos(a)), tangentDeg: (turn * i) / steps });
   }
   const last = points[points.length - 1];
   return { points, endX: last.x, endY: last.y, endHeadingDeg: turn };
@@ -1721,7 +1775,12 @@ export function sectionedCenterline(
       // board's end point — skip it so the spine has no duplicate vertices.
       if (i === 0 && out.length) continue;
       const p = local.points[i];
-      out.push({ x: ox + p.x * c - p.y * sn, y: oy + p.x * sn + p.y * c });
+      out.push({
+        x: ox + p.x * c - p.y * sn,
+        y: oy + p.x * sn + p.y * c,
+        // A board's local tangent plus where that board starts pointing (#348).
+        ...(p.tangentDeg === undefined ? {} : { tangentDeg: heading + p.tangentDeg }),
+      });
     }
     ox += local.endX * c - local.endY * sn;
     oy += local.endX * sn + local.endY * c;
