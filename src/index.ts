@@ -1731,17 +1731,66 @@ export function sectionedCenterline(
 }
 
 /** Unit left normal of the local direction at each centre-line vertex. */
-function centerlineNormals(center: BenchworkPoint[]): BenchworkPoint[] {
+/**
+ * ⭐⭐ AT AN END, THE CHORD IS NOT THE TANGENT (FMN-0082).
+ *
+ * A curve is sampled as 12 chords, and every chord is the tangent rotated by
+ * HALF A STEP — 3.75° on a 90° board. So a chord direction is a tangent
+ * estimate for the MIDDLE of that chord, and each point has to reconcile the
+ * two chords that meet there.
+ *
+ * ⛔ THE OLD RULE — one central difference per point — got interior points of a
+ * uniform arc right by luck (the two half-step errors cancel) and got two
+ * things wrong: the ENDS, which had a single chord and so came out half a step
+ * off, and any point where the spacing is UNEVEN, where a difference over
+ * unequal chords is biased toward the longer one. A board's end face inherited
+ * that directly.
+ *
+ * THE RULE HERE: correct each chord to a tangent AT THE POINT — rotate it by
+ * half the turn it makes with its neighbour — and average the two estimates
+ * that meet. On a uniformly-sampled arc that is exact. At an arc→straight
+ * junction it is exact from both sides (the arc chord corrects up to the
+ * junction tangent; the straight is already it). At the polyline's two true
+ * ends there is only one chord, so its correction stands alone.
+ */
+function centerlineTangents(center: BenchworkPoint[]): { x: number; y: number }[] {
+  const n = center.length;
+  if (n < 2) return center.map(() => ({ x: 1, y: 0 }));
+  const dirs: { x: number; y: number }[] = [];
+  for (let i = 0; i + 1 < n; i++) {
+    const dx = center[i + 1].x - center[i].x;
+    const dy = center[i + 1].y - center[i].y;
+    const len = Math.hypot(dx, dy);
+    // A repeated point carries no direction; borrow the previous chord's.
+    dirs.push(len < 1e-9 ? (dirs[i - 1] ?? { x: 1, y: 0 }) : { x: dx / len, y: dy / len });
+  }
+  const ang = (d: { x: number; y: number }) => Math.atan2(d.y, d.x);
+  const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+  /** Chord `i` corrected to the tangent at the point on the given side of it. */
+  const estimate = (i: number, at: "start" | "end") => {
+    const a = ang(dirs[i]);
+    if (at === "end") {
+      // Turning INTO this chord from the one before it.
+      const half = i > 0 ? wrap(a - ang(dirs[i - 1])) / 2 : 0;
+      return a + half;
+    }
+    // Turning OUT of this chord into the one after it.
+    const half = i + 1 < dirs.length ? wrap(ang(dirs[i + 1]) - a) / 2 : 0;
+    return a - half;
+  };
   return center.map((_, i) => {
-    const a = center[Math.max(0, i - 1)];
-    const b = center[Math.min(center.length - 1, i + 1)];
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    dx /= len;
-    dy /= len;
-    return { x: -dy, y: dx };
+    const before = i > 0 ? estimate(i - 1, "end") : null;
+    const after = i < dirs.length ? estimate(i, "start") : null;
+    let a: number;
+    if (before === null) a = after!;
+    else if (after === null) a = before;
+    else a = before + wrap(after - before) / 2; // mean of the two, the short way
+    return { x: Math.cos(a), y: Math.sin(a) };
   });
+}
+
+function centerlineNormals(center: BenchworkPoint[]): BenchworkPoint[] {
+  return centerlineTangents(center).map((t) => ({ x: -t.y, y: t.x }));
 }
 
 /** Fraction 0→1 along the centre-line by arc length (A end = 0, B end = 1). */
@@ -1815,6 +1864,47 @@ export function sliceCenterline(
   return out;
 }
 
+/**
+ * The centre-line's normal at an arbitrary point ON it — the normal field of the
+ * whole spine, read at a position rather than recomputed from a fragment.
+ * Between two spine points the two normals are blended, so a cut anywhere along
+ * a board still gets a face square to the board.
+ */
+function centerlineNormalSampler(
+  center: BenchworkPoint[],
+): (p: { x: number; y: number }) => { x: number; y: number } {
+  const normals = centerlineNormals(center);
+  if (center.length < 2) return () => normals[0] ?? { x: 0, y: 1 };
+  return (p) => {
+    // Which segment is this point on, and how far along it?
+    let best = 0;
+    let bestD = Infinity;
+    let bestT = 0;
+    for (let i = 1; i < center.length; i++) {
+      const ax = center[i - 1].x;
+      const ay = center[i - 1].y;
+      const bx = center[i].x - ax;
+      const by = center[i].y - ay;
+      const len2 = bx * bx + by * by;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - ax) * bx + (p.y - ay) * by) / len2)) : 0;
+      const dx = ax + bx * t - p.x;
+      const dy = ay + by * t - p.y;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+        bestT = t;
+      }
+    }
+    const n0 = normals[best - 1];
+    const n1 = normals[best];
+    const x = n0.x + (n1.x - n0.x) * bestT;
+    const y = n0.y + (n1.y - n0.y) * bestT;
+    const len = Math.hypot(x, y) || 1;
+    return { x: x / len, y: y / len };
+  };
+}
+
 /** One section's bench-work as a band over its own stretch of centre-line —
  * the per-section equivalent of `benchworkBand` (#96 phase 2b). Width and
  * plate offset are interpolated from the module's ends exactly as the whole
@@ -1834,6 +1924,19 @@ export function sectionBand(
 ): BenchworkPoint[] {
   const slice = sliceCenterline(center, fromPos, toPos);
   if (slice.length < 2) return [];
+  /**
+   * ⭐⭐ THE FACE OF A BOARD IS SQUARE TO THE MODULE, NOT TO THE OFFCUT.
+   *
+   * Deriving normals from the SLICE made every cut look like the end of the
+   * world: the slice's last chord is whatever fragment the cut left behind, and
+   * a fragment of the straight AFTER a bend was being treated as the end of the
+   * bend. FMN-0085's middle boards came out tilted ~1.9° that way, and a tilted
+   * face misses its neighbour — which is the whole bug (#346).
+   *
+   * The spine knows the answer at every point along it, cut or no cut, so ask
+   * IT and interpolate at the two cut ends.
+   */
+  const normalAt = centerlineNormalSampler(center);
   // Fractions must be taken along the WHOLE module, not the slice, or every
   // section would taper from widthA to widthB over its own short length.
   let total = 0;
@@ -1848,7 +1951,7 @@ export function sectionBand(
     fr.push(acc);
   }
   const f = fr.map((d) => Math.max(0, Math.min(1, (lo + d) / total)));
-  const n = centerlineNormals(slice);
+  const n = slice.map((p) => normalAt(p));
   const half = (i: number) => (widthA * (1 - f[i]) + widthB * f[i]) / 2;
   const off = (i: number) => offsetA * (1 - f[i]) + offsetB * f[i];
   const left = slice.map((p, i) => ({
