@@ -3498,6 +3498,34 @@ describe("section adjacency from shared edges (#96 phase 2c)", () => {
     expect(Math.abs(between - 90)).toBeLessThan(0.05);
   });
 
+  it("a U of five boards is ONE piece, joined at every seam (FMN-0085)", () => {
+    // ⭐⭐ THE CASE THAT CAUGHT MY FIRST FIX. Correcting only the polyline's own
+    // ENDS fixed FMN-0082 and left this one in two pieces, because a MID-module
+    // cut lands on the straight just past a bend: the slice's last chord is a
+    // fragment of the straight, and treating that fragment as the end of the
+    // bend tilted the face ~1.9°. The face has to be square to the SPINE, which
+    // knows the answer at the cut, not to the offcut the slice left behind.
+    const sections = [
+      { id: "sec1", lengthInches: 36, geometryType: "straight" },
+      { id: "sec2", lengthInches: 36, geometryType: "curve", geometryDegrees: 90 },
+      { id: "sec3", lengthInches: 36 },
+      { id: "sec4", lengthInches: 36, geometryType: "curve", geometryDegrees: 90 },
+      { id: "sec5", lengthInches: 36 },
+    ];
+    const fp = moduleFootprint({
+      lengthInches: 180,
+      geometryType: "straight",
+      endplateConfigs: ["double", "double"],
+      sections,
+    });
+    const adj = sectionAdjacency(fp.sectionOutlines);
+    expect(adj).toHaveLength(4);
+    // Every seam is the FULL width of the board — not a sliver, and not more
+    // than the board is wide (0.149.0 reported one seam as 24.796").
+    for (const a of adj) expect(a.lengthInches).toBeCloseTo(24, 1);
+    expect(sectionComponents(sections.map((x) => x.id), adj)).toHaveLength(1);
+  });
+
   it("reads adjacency off a real derived module", () => {
     const fp = moduleFootprint({
       lengthInches: 96,
