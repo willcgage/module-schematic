@@ -3427,6 +3427,77 @@ describe("section adjacency from shared edges (#96 phase 2c)", () => {
     expect(sectionComponents(["a", "c"], split)).toHaveLength(2);
   });
 
+  it("a CURVED board still meets the straight one beside it (FMN-0082)", () => {
+    // ⛔ THE FIXTURE ABOVE COULD NOT CATCH THIS: both its boards are straight.
+    // FMN-0082 is 24" straight + 24" of 90° curve, and the app told its owner
+    // "Doesn't touch the rest of the module" — for two boards that share a cut.
+    const fp = moduleFootprint({
+      lengthInches: 48,
+      geometryType: "straight",
+      endplateWidths: { A: 24, B: 24 },
+      sections: [
+        { id: "sec1", lengthInches: 24, geometryType: "straight" },
+        { id: "sec2", lengthInches: 24, geometryType: "curve", geometryDegrees: 90 },
+      ],
+    });
+    const adj = sectionAdjacency(fp.sectionOutlines);
+    expect(adj).toHaveLength(1);
+    // A full-width butt joint across a 24" board.
+    expect(adj[0].lengthInches).toBeCloseTo(24, 1);
+    expect(sectionComponents(["sec1", "sec2"], adj)).toEqual([["sec1", "sec2"]]);
+  });
+
+  it("the curved board's joint face is SQUARE to the spine, not tilted by half a step", () => {
+    // The root cause: an arc is sampled as 12 chords, and the end normal was
+    // taken from the first CHORD — which is the tangent rotated by half a step
+    // (3.75° here). The cap came out the right length and the right centre, and
+    // 3.75° off square, so it missed its neighbour by up to 0.79".
+    const fp = moduleFootprint({
+      lengthInches: 48,
+      geometryType: "straight",
+      endplateWidths: { A: 24, B: 24 },
+      sections: [
+        { id: "sec1", lengthInches: 24, geometryType: "straight" },
+        { id: "sec2", lengthInches: 24, geometryType: "curve", geometryDegrees: 90 },
+      ],
+    });
+    const ring = fp.sectionOutlines.find((s) => s.id === "sec2")!.outline;
+    const cap: [{ x: number; y: number }, { x: number; y: number }] = [
+      ring[ring.length - 1],
+      ring[0],
+    ];
+    // The joint is at pos 24, where the spine still heads +x — so the face is
+    // the vertical line x = 24, from -12 to +12.
+    expect(cap[0].x).toBeCloseTo(24, 3);
+    expect(cap[1].x).toBeCloseTo(24, 3);
+    expect(Math.abs(cap[0].y)).toBeCloseTo(12, 3);
+    expect(Math.abs(cap[1].y)).toBeCloseTo(12, 3);
+  });
+
+  it("an endplate at the end of a curve is square to its own pose", () => {
+    // The same half-step tilt reached the drawn endplate face. `deriveEndplatePoses`
+    // is analytic and always said heading 90 for this module; the FACE disagreed
+    // with it by 3.75°, and an endplate that is not square to its own heading is
+    // exactly what the standard is about.
+    const input = {
+      lengthInches: 48,
+      geometryType: "straight",
+      endplateWidths: { A: 24, B: 24 },
+      endplateConfigs: ["single", "single"] as const,
+      sections: [
+        { id: "sec1", lengthInches: 24, geometryType: "straight" },
+        { id: "sec2", lengthInches: 24, geometryType: "curve", geometryDegrees: 90 },
+      ],
+    };
+    const fp = moduleFootprint(input);
+    const poseB = deriveEndplatePoses(input).find((p) => p.id === "B")!;
+    const faceB = fp.endplateFaces[1];
+    const faceDeg = (Math.atan2(faceB.p2.y - faceB.p1.y, faceB.p2.x - faceB.p1.x) * 180) / Math.PI;
+    // The face is perpendicular to the plate's heading, either way round.
+    const between = ((((faceDeg - poseB.heading) % 180) + 180) % 180);
+    expect(Math.abs(between - 90)).toBeLessThan(0.05);
+  });
+
   it("reads adjacency off a real derived module", () => {
     const fp = moduleFootprint({
       lengthInches: 96,

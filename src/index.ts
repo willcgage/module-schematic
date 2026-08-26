@@ -1732,15 +1732,62 @@ export function sectionedCenterline(
 
 /** Unit left normal of the local direction at each centre-line vertex. */
 function centerlineNormals(center: BenchworkPoint[]): BenchworkPoint[] {
-  return center.map((_, i) => {
-    const a = center[Math.max(0, i - 1)];
-    const b = center[Math.min(center.length - 1, i + 1)];
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
+  /**
+   * ⭐⭐ AT AN END, THE CHORD IS NOT THE TANGENT (FMN-0082).
+   *
+   * A curve is sampled as 12 chords, and each chord is the tangent rotated by
+   * HALF A STEP — 3.75° on a 90° board. Interior points cancel that out (the
+   * central difference averages the chord before with the chord after), but the
+   * two ENDS had only one chord to go on, so a curved board's end face came out
+   * the right length, centred in the right place, and **3.75° off square**.
+   *
+   * ⛔ THE COST WAS NOT COSMETIC. `sectionAdjacency` asks whether two boards
+   * share an edge within 0.5″ and 3° — a tilted cap misses its neighbour by up
+   * to 0.79″ and by 3.75°, so it fails BOTH tests. FMN-0082 is a 24″ straight
+   * board butted to a 24″ 90° board, sharing one cut, and the app told its owner
+   * *"Doesn't touch the rest of the module."* The same tilt reached the drawn
+   * endplate face, which then disagreed by 3.75° with the analytic pose
+   * `deriveEndplatePoses` computes for the very same plate.
+   *
+   * ⭐ THE FIX IS EXACT, NOT A TOLERANCE: rotate the end chord BACK by half the
+   * turn to the chord beside it. On a uniformly-sampled arc that recovers the
+   * true tangent exactly; on a straight run the turn is 0 and nothing moves.
+   * Every centre-line this vocabulary produces is arcs and straights — a corner
+   * is an arc too (`corner_45`/`corner_90` sample the same way) — so there is no
+   * sharp vertex for the half-turn to overshoot.
+   */
+  const n = center.length;
+  const dirs: { x: number; y: number }[] = [];
+  for (let i = 0; i + 1 < n; i++) {
+    const dx = center[i + 1].x - center[i].x;
+    const dy = center[i + 1].y - center[i].y;
     const len = Math.hypot(dx, dy) || 1;
-    dx /= len;
-    dy /= len;
-    return { x: -dy, y: dx };
+    dirs.push({ x: dx / len, y: dy / len });
+  }
+  if (dirs.length === 0) return center.map(() => ({ x: 0, y: 1 }));
+  const angleOf = (d: { x: number; y: number }) => Math.atan2(d.y, d.x);
+  /** Signed turn from one chord to the next, wrapped to ±π. */
+  const turn = (from: number, to: number) =>
+    Math.atan2(Math.sin(angleOf(dirs[to]) - angleOf(dirs[from])), Math.cos(angleOf(dirs[to]) - angleOf(dirs[from])));
+  const tangent = (i: number): { x: number; y: number } => {
+    if (i > 0 && i < n - 1) {
+      // Interior: the central difference, exactly as before.
+      const dx = center[i + 1].x - center[i - 1].x;
+      const dy = center[i + 1].y - center[i - 1].y;
+      const len = Math.hypot(dx, dy) || 1;
+      return { x: dx / len, y: dy / len };
+    }
+    if (dirs.length < 2) return dirs[0];
+    // An end: back off half the turn into the run, so the face is square to the
+    // curve rather than to its first chord.
+    const [chord, half] =
+      i === 0 ? [dirs[0], -turn(0, 1) / 2] : [dirs[dirs.length - 1], turn(dirs.length - 2, dirs.length - 1) / 2];
+    const a = angleOf(chord) + half;
+    return { x: Math.cos(a), y: Math.sin(a) };
+  };
+  return center.map((_, i) => {
+    const t = tangent(i);
+    return { x: -t.y, y: t.x };
   });
 }
 
