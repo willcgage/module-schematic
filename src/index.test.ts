@@ -484,7 +484,10 @@ describe("moduleFootprint (physical single-module geometry)", () => {
     });
     // The track goes where it was drawn; the board does NOT follow it.
     expect(drawn.centerline).not.toEqual(drawn.spine);
-    expect(drawn.spine).toEqual([{ x: 0, y: 0 }, { x: 96, y: 0 }]);
+    expect(drawn.spine).toEqual([
+      { x: 0, y: 0, tangentDeg: 0 },
+      { x: 96, y: 0, tangentDeg: 0 },
+    ]);
     expect(drawn.centerline.some((p) => p.y > 1)).toBe(true);
     // And the band really is built from the spine, not the drawn main.
     expect(Math.max(...drawn.band.map((p) => p.y))).toBeLessThan(18);
@@ -492,7 +495,10 @@ describe("moduleFootprint (physical single-module geometry)", () => {
 
   it("straight module: centre-line A→B, rectangular band, faces at width, no outline", () => {
     const fp = moduleFootprint({ lengthInches: 96, geometryType: "straight", endplateWidths: { A: 24, B: 24 } });
-    expect(fp.centerline).toEqual([{ x: 0, y: 0 }, { x: 96, y: 0 }]);
+    expect(fp.centerline).toEqual([
+      { x: 0, y: 0, tangentDeg: 0 },
+      { x: 96, y: 0, tangentDeg: 0 },
+    ]);
     // band ±12 around y=0, spanning x 0..96
     const ys = fp.band.map((p) => p.y).sort((a, b) => a - b);
     expect(ys[0]).toBeCloseTo(-12);
@@ -2831,7 +2837,10 @@ describe("authored track paths (#2d-track)", () => {
 
   it("moduleCenterline still derives when no mainPath is authored", () => {
     const c = moduleCenterline({ lengthInches: 48, geometryType: "straight" });
-    expect(c).toEqual([{ x: 0, y: 0 }, { x: 48, y: 0 }]);
+    expect(c).toEqual([
+      { x: 0, y: 0, tangentDeg: 0 },
+      { x: 48, y: 0, tangentDeg: 0 },
+    ]);
   });
 
   it("moduleCenterline is empty with no mainPath and no geometry (fresh module)", () => {
@@ -3229,7 +3238,7 @@ describe("sections-first geometry (#108)", () => {
   it("chains sections into one centre-line, turning where the boards turn", () => {
     const c = sectionedCenterline(oneMile);
     expect(c.length).toBeGreaterThan(2);
-    expect(c[0]).toEqual({ x: 0, y: 0 });
+    expect(c[0]).toEqual({ x: 0, y: 0, tangentDeg: 0 });
     // 45° + 45° of curve means the far end runs due +y, having turned 90°.
     const n = c.length;
     const dx = c[n - 1].x - c[n - 2].x;
@@ -3250,7 +3259,7 @@ describe("sections-first geometry (#108)", () => {
         { id: "b", lengthInches: 24 },
       ],
     });
-    expect(c[c.length - 1]).toEqual({ x: 48, y: 0 });
+    expect(c[c.length - 1]).toEqual({ x: 48, y: 0, tangentDeg: 0 });
     expect(c.every((p) => p.y === 0)).toBe(true);
   });
 
@@ -3260,15 +3269,68 @@ describe("sections-first geometry (#108)", () => {
       geometryType: "straight",
       sections: oneMile.sections,
     });
-    expect(c[0]).toEqual({ x: 0, y: 0 });
+    expect(c[0]).toEqual({ x: 0, y: 0, tangentDeg: 0 });
     expect(c[c.length - 1].y).toBeGreaterThan(0); // it curved
+  });
+
+  it("every spine vertex carries the tangent there, so nobody has to guess it (#348)", () => {
+    // FMN-0085's shape: straight, 90° bend, straight, 90° bend, straight.
+    const c = moduleCenterline({
+      lengthInches: 180,
+      geometryType: "straight",
+      sections: [
+        { id: "sec1", geometryType: "straight", lengthInches: 36 },
+        { id: "sec2", geometryType: "curve", lengthInches: 36, geometryDegrees: 90 },
+        { id: "sec3", lengthInches: 36 },
+        { id: "sec4", geometryType: "curve", lengthInches: 36, geometryDegrees: 90 },
+        { id: "sec5", lengthInches: 36 },
+      ],
+    });
+    // The straight starts and ends pointing +x; the bend leaves at 90°; the
+    // board after it runs at 90°; the second bend leaves at 180°.
+    expect(c[0].tangentDeg).toBeCloseTo(0, 9);
+    expect(c[c.length - 1].tangentDeg).toBeCloseTo(180, 9);
+    // Every vertex is monotonic in heading and lands on a multiple of the step.
+    const headings = c.map((p) => p.tangentDeg!);
+    for (let i = 1; i < headings.length; i++) expect(headings[i]).toBeGreaterThanOrEqual(headings[i - 1]);
+    // ⭐ THE JUNCTION IS THE POINT. Where the straight meets the bend the
+    // tangent is the STRAIGHT's 0° — not the first chord's 3.75°, which is what
+    // a consumer reading the polyline would have got (modulerepo#348).
+    const junction = c.find((p) => Math.abs(p.x - 36) < 1e-9 && Math.abs(p.y) < 1e-9);
+    expect(junction?.tangentDeg).toBeCloseTo(0, 9);
+  });
+
+  it("mid-arc, the tangent is how far the arc has turned — not the chord (#348)", () => {
+    const c = moduleCenterline({ lengthInches: 36, geometryType: "curve", geometryDegrees: 90 });
+    expect(c).toHaveLength(13);
+    // 12 chords, so the i-th vertex has turned i × 7.5°.
+    c.forEach((p, i) => expect(p.tangentDeg).toBeCloseTo((90 * i) / 12, 9));
+    // …and the chord between two vertices is the tangent at its MIDDLE, half a
+    // step off each end. That gap is the whole bug, so assert its size.
+    const chord = (Math.atan2(c[1].y - c[0].y, c[1].x - c[0].x) * 180) / Math.PI;
+    expect(chord - c[0].tangentDeg!).toBeCloseTo(3.75, 6);
+  });
+
+  it("a spine with no analytic form carries NO tangent, so consumers fall back (#348)", () => {
+    // A drawn main is a path somebody dragged; there is no arc underneath it.
+    const c = moduleCenterline({
+      lengthInches: 48,
+      geometryType: "straight",
+      mainPath: [
+        { x: 0, y: 0 },
+        { x: 24, y: 3 },
+        { x: 48, y: 0 },
+      ],
+    });
+    expect(c.length).toBeGreaterThan(1);
+    expect(c.every((p) => p.tangentDeg === undefined)).toBe(true);
   });
 
   it("still uses the module geometry when there are no sections", () => {
     const c = moduleCenterline({ lengthInches: 96, geometryType: "straight" });
     expect(c).toEqual([
-      { x: 0, y: 0 },
-      { x: 96, y: 0 },
+      { x: 0, y: 0, tangentDeg: 0 },
+      { x: 96, y: 0, tangentDeg: 0 },
     ]);
   });
 
