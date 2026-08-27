@@ -808,6 +808,50 @@ export interface SectionEnd {
   /** Main 1's signed distance from the face centre — the standard's own
    * framing, same as an endplate's (see {@link endplateTrackOffsetInches}). */
   trackOffsetInches?: number | null;
+  /**
+   * ⭐⭐ HOW THIS SEAM IS CUT, in degrees away from square (modulerepo#354).
+   *
+   * Absent or 0 = square across the board, which is what every joint has always
+   * been derived as. Positive skews the cut so the LEFT side of the board (the
+   * +normal side) runs further east than the right.
+   *
+   * An angled internal seam is entirely legal — §2.0's end-interface rules bind
+   * the ENDPLATE, and the standard exempts internal boundaries (#96) — and it is
+   * a real construction choice: it can put the cut where the framing allows,
+   * keep it clear of a turnout, or let a board come apart along a scenic edge.
+   * Until now an owner had no way to record one, and no way to correct a seam
+   * the app had drawn crooked.
+   *
+   * ⛔ **ONE OWNER PER JOINT.** A seam is shared by two boards, so if both ends
+   * carried an angle they could disagree. The WEST board's `endB` owns it and
+   * the east board's `endA` is derived — see {@link sectionJointSkewDeg}. Two
+   * answers to "how is this cut?" would be one too many.
+   *
+   * ⚠️ NOT for an endplate. The standard is a hard S there: *"All track crossing
+   * the endplate shall be perpendicular"*. This is only ever read between boards.
+   */
+  skewDeg?: number | null;
+}
+
+/**
+ * The angle of the seam BETWEEN board `i` and board `i + 1`, in degrees away
+ * from square (modulerepo#354). 0 when nothing is authored, which is how every
+ * joint has always been derived.
+ *
+ * ⭐ Reads ONLY the west board's `endB`, so a shared seam has exactly one owner
+ * and the two boards cannot disagree about how they were cut.
+ *
+ * ⚠️ Returns 0 for anything that is not an internal joint — the far end of the
+ * last board is an ENDPLATE, and the standard requires that square.
+ */
+export function sectionJointSkewDeg(
+  sections: SchematicSection[] | null | undefined,
+  i: number,
+): number {
+  const secs = sections ?? [];
+  if (i < 0 || i >= secs.length - 1) return 0; // not a seam between two boards
+  const v = secs[i]?.endB?.skewDeg;
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
 /** The authored benchwork outline, or null when a module hasn't drawn one
@@ -869,11 +913,17 @@ function sectionEnd(end: SectionEnd | null | undefined): SectionEnd | null {
       : null;
   const w = end.widthInches;
   const o = end.trackOffsetInches;
+  const k = end.skewDeg;
   const out: SectionEnd = {
     ...(config ? { config } : {}),
     ...(typeof w === "number" && Number.isFinite(w) && w > 0 ? { widthInches: w } : {}),
     // Signed, and 0 is meaningful ("explicitly centred", #93) — keep any finite.
     ...(typeof o === "number" && Number.isFinite(o) ? { trackOffsetInches: o } : {}),
+    // ⛔ THE FIELD HAS TO BE LET THROUGH HERE TOO (#354). `skewDeg` was added to
+    // the type and read by `sectionJointSkewDeg`, and this normaliser silently
+    // dropped it — so a seam authored at 20° drew square and the test caught it.
+    // Signed, and 0 is meaningful ("explicitly square"), so keep any finite.
+    ...(typeof k === "number" && Number.isFinite(k) ? { skewDeg: k } : {}),
   };
   return Object.keys(out).length ? out : null;
 }
@@ -907,6 +957,10 @@ export function sectionFootprints(
         return { id: sec.id, ...name, outline: sampleBenchworkOutline(sec.outline), derived: false };
       const sp = spanOf.get(sec.id);
       if (!sp || !derive) return null;
+      // Each board's two seams: its west one belongs to the board BEFORE it,
+      // its east one to itself — one owner per joint (#354).
+      const all = moduleSections(doc);
+      const idx = all.findIndex((x) => x.id === sec.id);
       const band = sectionBand(
         derive.centerline,
         sp.fromPos,
@@ -915,6 +969,8 @@ export function sectionFootprints(
         derive.widthB,
         derive.offsetA,
         derive.offsetB,
+        sectionJointSkewDeg(all, idx - 1),
+        sectionJointSkewDeg(all, idx),
       );
       return band.length >= 3 ? { id: sec.id, ...name, outline: band, derived: true } : null;
     })
@@ -1980,6 +2036,10 @@ export function sectionBand(
   widthB = FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
   offsetA = 0,
   offsetB = 0,
+  /** Degrees away from square at this board's west seam (modulerepo#354). */
+  skewFromDeg = 0,
+  /** Degrees away from square at its east seam. */
+  skewToDeg = 0,
 ): BenchworkPoint[] {
   const slice = sliceCenterline(center, fromPos, toPos);
   if (slice.length < 2) return [];
@@ -2021,7 +2081,76 @@ export function sectionBand(
     x: p.x + n[i].x * (off(i) - half(i)),
     y: p.y + n[i].y * (off(i) - half(i)),
   }));
+
+  /**
+   * ⭐⭐ A SKEWED SEAM MOVES ALONG THE SPINE, IT DOES NOT ROTATE THE BOARD
+   * (modulerepo#354).
+   *
+   * A cut at `skew` degrees off square, crossing the board at lateral offset
+   * `u`, meets the spine's own station at `pos + u·tan(skew)`. That one formula
+   * is the whole geometry, and it is why the two boards either side of a seam
+   * still share an EDGE: they use the same angle and the same `u` for the same
+   * corner, so `sectionAdjacency` keeps finding the joint.
+   *
+   * ⚠️ A drawing fallback, NOT a correction: at ±90° the cut folds back on
+   * itself and `tan` runs away, so a non-finite corner is drawn square rather
+   * than as a spike across the layout. The stored number is left exactly as the
+   * owner typed it — saying an angle is unbuildable is the app's job, changing
+   * it is not.
+   */
+  const skewed = (pos: number, u: number, deg: number): BenchworkPoint | null => {
+    // ⛔ At ±90° there is no cut line at all — it lies ALONG the spine — and
+    // JS's tan(90°) is a finite 1.6e16 rather than Infinity, so a bare
+    // finiteness check does not catch it: the corner clamps to the far end of
+    // the module and the board draws as a wedge across its neighbour.
+    if (!deg || Math.abs(deg) >= 90) return null;
+    const shifted = pos + u * Math.tan(deg * DEG_FP);
+    if (!Number.isFinite(shifted)) return null;
+    const q = pointOnCenterline(center, shifted);
+    return { x: q.x + q.nx * u, y: q.y + q.ny * u };
+  };
+  const last = slice.length - 1;
+  const w0 = skewed(lo, off(0) + half(0), skewFromDeg);
+  const w1 = skewed(lo, off(0) - half(0), skewFromDeg);
+  const e0 = skewed(lo + fr[last], off(last) + half(last), skewToDeg);
+  const e1 = skewed(lo + fr[last], off(last) - half(last), skewToDeg);
+  if (w0) left[0] = w0;
+  if (w1) right[0] = w1;
+  if (e0) left[last] = e0;
+  if (e1) right[last] = e1;
   return [...left, ...right.reverse()];
+}
+
+/** A point on the centre-line at `pos` inches, with the LEFT normal there.
+ * Uses the same tangent field as {@link centerlineNormals}, so a face derived
+ * through it is square to the SPINE and not to a chord (modulerepo#348). */
+function pointOnCenterline(
+  center: BenchworkPoint[],
+  pos: number,
+): { x: number; y: number; nx: number; ny: number } {
+  if (center.length === 0) return { x: 0, y: 0, nx: 0, ny: 1 };
+  const norms = centerlineNormals(center);
+  if (center.length === 1) return { x: center[0].x, y: center[0].y, nx: norms[0].x, ny: norms[0].y };
+  const cum = [0];
+  for (let i = 1; i < center.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(center[i].x - center[i - 1].x, center[i].y - center[i - 1].y));
+  const total = cum[cum.length - 1] || 1;
+  const d = Math.max(0, Math.min(total, pos));
+  let i = 1;
+  while (i < cum.length - 1 && cum[i] < d) i++;
+  const segLen = cum[i] - cum[i - 1] || 1;
+  const t = (d - cum[i - 1]) / segLen;
+  const a = center[i - 1];
+  const b = center[i];
+  const nx = norms[i - 1].x + (norms[i].x - norms[i - 1].x) * t;
+  const ny = norms[i - 1].y + (norms[i].y - norms[i - 1].y) * t;
+  const len = Math.hypot(nx, ny) || 1;
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    nx: nx / len,
+    ny: ny / len,
+  };
 }
 
 /** Two sections that physically meet, and how much edge they share. */
