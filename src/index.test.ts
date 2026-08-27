@@ -19,6 +19,7 @@ import {
   remapPos,
   WHOLE_MODULE_SECTION_ID,
   sectionAdjacency,
+  sectionJointSkewDeg,
   sectionNeighbours,
   sectionComponents,
   sectionedEndPose,
@@ -3435,6 +3436,87 @@ describe("a section's outline belongs to the section (#96 phase 2b)", () => {
       { x: 0, y: 0 },
       { x: 100, y: 0 },
     ]);
+  });
+});
+
+describe("a section joint can be cut on the skew (modulerepo#354)", () => {
+  const mod = (skew?: number) => ({
+    lengthInches: 72,
+    geometryType: "straight",
+    endplateWidths: { A: 24, B: 24 },
+    sections: [
+      { id: "a", lengthInches: 36, ...(skew === undefined ? {} : { endB: { skewDeg: skew } }) },
+      { id: "b", lengthInches: 36 },
+    ],
+  });
+  const capOf = (fp: ReturnType<typeof moduleFootprint>, id: string) => {
+    const ring = fp.sectionOutlines.find((s) => s.id === id)!.outline;
+    return { ring, first: ring[0], last: ring[ring.length - 1] };
+  };
+
+  it("reads the seam from the WEST board only — one owner per joint", () => {
+    const secs = [
+      { id: "a", endB: { skewDeg: 12 } },
+      { id: "b", endA: { skewDeg: -40 } }, // must be ignored: it is the same seam
+      { id: "c" },
+    ];
+    expect(sectionJointSkewDeg(secs, 0)).toBeCloseTo(12, 9);
+    expect(sectionJointSkewDeg(secs, 1)).toBeCloseTo(0, 9);
+  });
+
+  it("is 0 at the module's own ends — an endplate must be square", () => {
+    // The standard is a hard S: "All track crossing the endplate shall be
+    // perpendicular." Only the seams BETWEEN boards can be skewed.
+    const secs = [{ id: "a", endB: { skewDeg: 15 } }, { id: "b", endB: { skewDeg: 15 } }];
+    expect(sectionJointSkewDeg(secs, -1)).toBe(0);
+    expect(sectionJointSkewDeg(secs, 1)).toBe(0); // the far end of the LAST board
+    expect(sectionJointSkewDeg(secs, 9)).toBe(0);
+  });
+
+  it("absent leaves the boards exactly as they were", () => {
+    const square = moduleFootprint(mod());
+    const zero = moduleFootprint(mod(0));
+    expect(capOf(zero, "a").ring).toEqual(capOf(square, "a").ring);
+    expect(capOf(zero, "b").ring).toEqual(capOf(square, "b").ring);
+  });
+
+  it("moves the seam ALONG the spine by u·tan(skew), not by rotating the board", () => {
+    const fp = moduleFootprint(mod(20));
+    // The seam is at 36″; the board is 24″ wide, so its corners sit ±12″ off the
+    // spine and the cut reaches 36 ± 12·tan20° = 36 ± 4.368.
+    const shift = 12 * Math.tan((20 * Math.PI) / 180);
+    expect(shift).toBeCloseTo(4.368, 3);
+    const a = capOf(fp, "a");
+    const xs = a.ring.map((p) => p.x).sort((m, n) => m - n);
+    expect(xs[xs.length - 1]).toBeCloseTo(36 + shift, 3);
+    // …and the board's WEST end is untouched: only the seam moved.
+    expect(xs[0]).toBeCloseTo(0, 6);
+  });
+
+  it("⭐ THE INVARIANT: the two boards still SHARE the seam, so they still meet", () => {
+    // This is the whole reason the cut is expressed as a displacement along the
+    // spine rather than a rotation: both boards use the same angle and the same
+    // lateral offset for the same corner, so the edge is common to both.
+    for (const skew of [0, 5, 20, -20, 35]) {
+      const fp = moduleFootprint(mod(skew));
+      const adj = sectionAdjacency(fp.sectionOutlines);
+      expect(adj, `skew ${skew}°`).toHaveLength(1);
+      expect(adj[0].lengthInches, `skew ${skew}°`).toBeGreaterThan(23);
+      expect(sectionComponents(["a", "b"], adj), `skew ${skew}°`).toEqual([["a", "b"]]);
+    }
+  });
+
+  it("a seam skewed to 90° is DRAWN square, and the stored number is left alone", () => {
+    // At ±90° the cut folds back on itself and tan runs away. Drawing a spike
+    // across the layout helps nobody, so the corner falls back to square — but
+    // nothing rewrites the owner's value. Saying an angle is unbuildable is the
+    // app's job; changing it is not.
+    const fp = moduleFootprint(mod(90));
+    const ring = capOf(fp, "a").ring;
+    expect(ring.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true);
+    expect(Math.max(...ring.map((p) => p.x))).toBeCloseTo(36, 6);
+    const doc = mod(90);
+    expect(doc.sections[0].endB!.skewDeg).toBe(90);
   });
 });
 
