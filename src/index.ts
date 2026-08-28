@@ -4391,9 +4391,11 @@ export interface UnreachedEndplate {
   posFrac: number;
   /** Which side of the module it faces. */
   side: "up" | "down";
-  /** Its own lane, signed by `side`, placed clear of every drawn lane exactly
-   * as a branch connector's is — and already folded into laneMin/laneMax, so a
-   * renderer sizes its canvas from those alone. */
+  /** Its own lane, signed by `side`: the first FREE lane beyond everything
+   * drawn — NOT a clear lane beyond that. The gap a branch connector leaves is
+   * there so a full-width route is not read as another main (#183), and a plate
+   * with no route cannot be. Already folded into laneMin/laneMax, so a renderer
+   * sizes its canvas from those alone. */
   lane: number;
   /** Why no route reaches it — `"no-track"` when the plate names no track at
    * all, `"missing-track"` when it names one the document does not contain.
@@ -11239,9 +11241,30 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   // lane is what stops a route that runs the full width of the strip reading as
   // just another main alongside (#183) — it is an END of the module, and it has
   // to look like one.
+  //
+  // ⭐⭐ THE CLEAR LANE IS FOR A ROUTE, NOT FOR A PLATE (#367). It exists because
+  // a branch route runs the FULL WIDTH of the strip and would otherwise read as
+  // one more parallel main. An UNREACHED plate is a short mark at a single
+  // position with no line attached — it cannot be mistaken for a main, because
+  // nothing runs anywhere — so it takes the first FREE lane instead, and a
+  // module stops paying two lanes a side for a face. FMN-0012's preview was 112
+  // units tall for two such plates where 88 says the same thing.
+  //
+  // Both kinds advance the SAME outermost-lane marks, so nothing ever collides.
   const LANE_GAP_FROM_OTHERS = 2;
-  let upLane = Math.max(...baseLanes, 0) + (LANE_GAP_FROM_OTHERS - 1);
-  let downLane = Math.min(...baseLanes, 0) - (LANE_GAP_FROM_OTHERS - 1);
+  /** The outermost lane in use on each side, as lanes are handed out. */
+  let upOuter = Math.max(...baseLanes, 0);
+  let downOuter = Math.min(...baseLanes, 0);
+  /** Routes placed per side: only the FIRST steps the clear lane; after that
+   * they stack adjacently, because the gap is from the MAINS, not each other. */
+  let upRoutes = 0;
+  let downRoutes = 0;
+  const routeLane = (side: "up" | "down") =>
+    side === "down"
+      ? (downOuter -= downRoutes++ === 0 ? LANE_GAP_FROM_OTHERS : 1)
+      : (upOuter += upRoutes++ === 0 ? LANE_GAP_FROM_OTHERS : 1);
+  const plateLane = (side: "up" | "down") =>
+    side === "down" ? --downOuter : ++upOuter;
   const branchConnectors: BranchConnector[] = doc.endplates
     .filter(
       (e) =>
@@ -11259,7 +11282,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       const sw = (doc.turnouts ?? []).find((t) => t.divergeTrack === e.trackId);
       const startPos = sw ? sw.pos : e.at!.pos;
       const side = e.at!.side === "down" ? "down" : "up";
-      const lane = side === "down" ? --downLane : ++upLane;
+      const lane = routeLane(side);
       // The run is the route's OWN length, straightened onto the strip. Its
       // projection on the module axis would be the "natural" span, but a square
       // 90° exit projects to zero — the very case that made branches invisible.
@@ -11321,7 +11344,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         // inventing the very fact that is missing.
         posFrac: clampFrac(e.at!.pos),
         side: side as "up" | "down",
-        lane: side === "down" ? --downLane : ++upLane,
+        lane: plateLane(side),
         reason: (e.trackId ? "missing-track" : "no-track") as
           | "no-track"
           | "missing-track",
