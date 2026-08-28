@@ -3439,6 +3439,59 @@ describe("a section's outline belongs to the section (#96 phase 2b)", () => {
   });
 });
 
+describe("the endplate face reads the tangent the spine carries (modulerepo#348)", () => {
+  const sectioned = {
+    lengthInches: 48,
+    geometryType: "straight",
+    endplateConfigs: ["single", "single"] as const,
+    sections: [
+      { id: "sec1", geometryType: "straight", lengthInches: 24 },
+      { id: "sec2", geometryType: "curve", lengthInches: 24, geometryDegrees: 90 },
+    ],
+  };
+
+  it("⛔ face A is SQUARE when the first board is straight and the second curves", () => {
+    // The regression this pins: the chord rule corrected the module's single
+    // leading chord by half the turn INTO the arc, but that chord is already the
+    // tangent there. Face A came out 1.875° off — measured on FMN-0082 as
+    // (0.3926, 11.9936) → (−0.3926, −11.9936) where square is (0, ±12).
+    const f = moduleFootprint(sectioned).endplateFaces[0];
+    expect(f.p1.x).toBeCloseTo(0, 9);
+    expect(f.p2.x).toBeCloseTo(0, 9);
+    expect(Math.abs(f.p1.y)).toBeCloseTo(12, 9);
+    expect(Math.abs(f.p2.y)).toBeCloseTo(12, 9);
+  });
+
+  it("and every face is square to its own plate's derived heading", () => {
+    // The analytic pose is the measuring stick: if the drawn face disagrees with
+    // the heading the app computed for that very plate, one of them is wrong.
+    const fp = moduleFootprint(sectioned);
+    const poses = deriveEndplatePoses(sectioned);
+    fp.endplateFaces.forEach((f, i) => {
+      const faceDeg = (Math.atan2(f.p2.y - f.p1.y, f.p2.x - f.p1.x) * 180) / Math.PI;
+      const between = ((((faceDeg - poses[i].heading) % 180) + 180) % 180);
+      expect(Math.abs(between - 90), `plate ${poses[i].id}`).toBeLessThan(0.001);
+    });
+  });
+
+  it("a spine with no carried tangent still falls back to the chords", () => {
+    // A drawn main has no analytic form, so the chord rule must still run —
+    // reading `undefined` as 0° would point every normal the same way.
+    const fp = moduleFootprint({
+      lengthInches: 48,
+      geometryType: "straight",
+      endplateConfigs: ["single", "single"] as const,
+      mainPath: [
+        { x: 0, y: 0 },
+        { x: 24, y: 6 },
+        { x: 48, y: 0 },
+      ],
+    });
+    expect(fp.band.length).toBeGreaterThan(2);
+    expect(fp.band.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true);
+  });
+});
+
 describe("a section joint can be cut on the skew (modulerepo#354)", () => {
   const mod = (skew?: number) => ({
     lengthInches: 72,
