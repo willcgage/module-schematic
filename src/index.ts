@@ -1869,8 +1869,37 @@ export function sectionedCenterline(
  * ends there is only one chord, so its correction stands alone.
  */
 function centerlineTangents(center: BenchworkPoint[]): { x: number; y: number }[] {
+  /**
+   * ⭐⭐ IF THE POINT CARRIES ITS TANGENT, USE IT — DO NOT GUESS AGAIN.
+   *
+   * ⛔ THIS WAS THE LAST CONSUMER STILL GUESSING, AND IT WAS WRONG IN
+   * PRODUCTION. The chord rule below is exact on a uniformly-sampled arc and on
+   * a straight run — but at the module's own START, when the FIRST board is
+   * straight and the SECOND curves, the single available chord gets corrected by
+   * half the turn into the arc. That chord IS already the tangent there, so the
+   * correction is spurious: **endplate A came out 1.875° off square on every
+   * such module** (FMN-0082's face A read (0.3926, 11.9936) → (−0.3926,
+   * −11.9936) where square is (0, ±12)).
+   *
+   * Found by diffing FD's own call sites over the real catalogue on a version
+   * bump — not by reading this function, which had looked right twice.
+   *
+   * 0.151.0 already put the exact answer on the point. Reading it is the fix,
+   * and it is the same shape as #346 and #348 once more: the producer knows, so
+   * the consumer must not re-derive.
+   *
+   * ⚠️ Per point, not all-or-nothing — a spine from a DRAWN main carries no
+   * tangent and still falls through to the chord rule.
+   */
+  const carried = center.map((p) =>
+    typeof p.tangentDeg === "number" && Number.isFinite(p.tangentDeg) ? p.tangentDeg : null,
+  );
   const n = center.length;
-  if (n < 2) return center.map(() => ({ x: 1, y: 0 }));
+  if (n < 2) return center.map((_, i) =>
+    carried[i] === null
+      ? { x: 1, y: 0 }
+      : { x: Math.cos(carried[i]! * DEG_FP), y: Math.sin(carried[i]! * DEG_FP) },
+  );
   const dirs: { x: number; y: number }[] = [];
   for (let i = 0; i + 1 < n; i++) {
     const dx = center[i + 1].x - center[i].x;
@@ -1894,6 +1923,12 @@ function centerlineTangents(center: BenchworkPoint[]): { x: number; y: number }[
     return a - half;
   };
   return center.map((_, i) => {
+    // ⭐ The carried answer wins outright — see the note at the top.
+    const given = carried[i];
+    if (given !== null) {
+      const g = given * DEG_FP;
+      return { x: Math.cos(g), y: Math.sin(g) };
+    }
     const before = i > 0 ? estimate(i - 1, "end") : null;
     const after = i < dirs.length ? estimate(i, "start") : null;
     let a: number;
