@@ -4357,6 +4357,51 @@ export interface DrawCrossover {
  * ("to Fillmore") depends on which module is physically attached at that
  * junction, so it stays Free-Dispatcher's to derive at runtime.
  */
+/**
+ * A third endplate that NO route on the module reaches (#367).
+ *
+ * ⭐⭐ THE PLATE IS IN THE DOCUMENT, SO IT IS IN THE FEATURES. `branchConnectors`
+ * only yields a plate when a track on the module leads to it, and dropping the
+ * rest meant a module could declare four endplates and draw two — FMN-0012
+ * says ENDPLATES 4 beside a picture showing A and B. A renderer cannot report
+ * what it was never handed, so the omission WAS the bug.
+ *
+ * ⛔ This is NOT an error the package resolves. Which route ought to reach the
+ * plate is the owner's to draw, and inventing one is exactly what this family
+ * does not do (flag it, don't correct it). The feature says only: a face is
+ * declared HERE, on THIS side, and nothing runs to it. What that means — an
+ * unfinished document, or a junction whose neighbour carries the track — is
+ * for the owner to say.
+ *
+ * ⚠️ There is deliberately no `endFrac`: a branch connector runs to the module
+ * EDGE because its route tells you which edge, and a plate with no route tells
+ * you nothing of the kind. It is drawn at its OWN `posFrac`, where the document
+ * puts it, which is the only position that is actually known.
+ */
+export interface UnreachedEndplate {
+  /** Endplate id — "C", "D", … */
+  id: string;
+  /** The owner's local name for the plate. NOT the destination (see
+   * {@link BranchConnector.label}). */
+  label: string;
+  /** Whether the plate was declared as a main or a branch. Drives drawn weight
+   * only — there is no route here to give it geometry. */
+  kind: "branch" | "main";
+  /** Where along the module the document puts the face. */
+  posFrac: number;
+  /** Which side of the module it faces. */
+  side: "up" | "down";
+  /** Its own lane, signed by `side`, placed clear of every drawn lane exactly
+   * as a branch connector's is — and already folded into laneMin/laneMax, so a
+   * renderer sizes its canvas from those alone. */
+  lane: number;
+  /** Why no route reaches it — `"no-track"` when the plate names no track at
+   * all, `"missing-track"` when it names one the document does not contain.
+   * The second is a document that has lost a track, and is worth saying
+   * differently. */
+  reason: "no-track" | "missing-track";
+}
+
 export interface BranchConnector {
   /** Endplate id — "C", "D", … */
   id: string;
@@ -4439,6 +4484,10 @@ export interface ModuleFeatures {
   crossovers: DrawCrossover[];
   /** Branch endplates — junction connectors off the module (#170). */
   branchConnectors: BranchConnector[];
+  /** Third endplates that NO route on the module reaches (#367). Declared in
+   * the document, drawn by nobody until now. Renderers must show the face — the
+   * module says it is there — and say that nothing runs to it. */
+  unreachedEndplates: UnreachedEndplate[];
   /** Rail-served industries — car-spot spans beside their track (#industries). */
   industries: DrawIndustry[];
   /** Main 2's extent when it doesn't run the full module — a single↔double
@@ -11244,6 +11293,41 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
       };
     });
 
+  // ⭐⭐ A THIRD ENDPLATE THAT NOTHING RUNS TO IS STILL AN ENDPLATE (#367).
+  // `branchConnectors` above needs a route to straighten onto the strip, so a
+  // plate naming no track — or naming one the document has lost — fell out of
+  // the features entirely and was drawn by nobody. FMN-0012 declares C and D
+  // and its page reported ENDPLATES 4 beside a picture of two.
+  //
+  // ⛔ NOT resolved here, only reported. Which route ought to reach the plate is
+  // the owner's to draw; the app does not invent one.
+  //
+  // These take their lanes from the SAME running counters the branch connectors
+  // use, so a module with both never puts two plates on one lane.
+  const unreachedEndplates: UnreachedEndplate[] = doc.endplates
+    .filter((e) => e.id !== "A" && e.id !== "B" && !!e.at)
+    .filter(
+      (e) => !e.trackId || !(doc.tracks ?? []).some((t) => t.id === e.trackId),
+    )
+    .map((e) => {
+      const side = e.at!.side === "down" ? "down" : "up";
+      return {
+        id: e.id,
+        label: e.label ?? e.id,
+        kind: (e.kind === "main" ? "main" : "branch") as "branch" | "main",
+        // Its OWN position — the one thing actually known about it. A branch
+        // connector runs to an edge because its route says which edge; with no
+        // route there is nothing to say that, so guessing an edge would be
+        // inventing the very fact that is missing.
+        posFrac: clampFrac(e.at!.pos),
+        side: side as "up" | "down",
+        lane: side === "down" ? --downLane : ++upLane,
+        reason: (e.trackId ? "missing-track" : "no-track") as
+          | "no-track"
+          | "missing-track",
+      };
+    });
+
   // Industries — car-spot spans beside the track they serve.
   const industries: DrawIndustry[] = (doc.industries ?? []).flatMap((ind) => {
     // Each spot (the primary track + any house-track spots) draws beside its
@@ -11277,7 +11361,12 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
   // Branch lanes are part of the drawn extent, so renderers size their canvas
   // from laneMin/laneMax alone — no "leave a lane spare if there's a branch"
   // headroom hack at either end (#181).
-  const allLanes = [...baseLanes, ...branchConnectors.map((b) => b.lane)];
+  const allLanes = [
+    ...baseLanes,
+    ...branchConnectors.map((b) => b.lane),
+    // An unreached plate is drawn, so its lane is part of the extent too (#367).
+    ...unreachedEndplates.map((u) => u.lane),
+  ];
   const loop = isLoopDoc(doc);
   // A positioned Main 2 = a transition module (partial second main).
   const main2 = doc.tracks.find((t) => t.id === MAIN2_TRACK_ID);
@@ -11327,6 +11416,7 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
     crossings,
     crossovers,
     branchConnectors,
+    unreachedEndplates,
     hasEndplateB: doc.endplates.some((e) => e.id === "B"),
     industries,
     laneMin: Math.min(...allLanes),
