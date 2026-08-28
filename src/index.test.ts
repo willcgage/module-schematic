@@ -1901,6 +1901,63 @@ describe("crossings and branch endplates (#170)", () => {
     expect(down.laneMin).toBeLessThanOrEqual(down.unreachedEndplates[0].lane);
   });
 
+  it("an unreached plate takes the FIRST free lane — the clear gap is a route's (#367)", () => {
+    // ⭐⭐ The clear lane exists so a branch ROUTE, which runs the full width of
+    // the strip, is not read as one more parallel main (#183). A plate with no
+    // route is a short mark at one position and cannot be read that way, so it
+    // must not cost a module two lanes a side. FMN-0012 was 112 units tall for
+    // two such plates where 88 says the same thing.
+    const doc = stateToDoc(
+      {
+        ...emptyEditorState(96),
+        branches: [
+          { label: "Up", pos: 40, side: "up", config: "single" },
+          { label: "Dn", pos: 60, side: "down", config: "single" },
+        ],
+      },
+      "M",
+    );
+    const f = moduleFeatures(doc);
+    const up = f.unreachedEndplates.find((u) => u.side === "up")!;
+    const dn = f.unreachedEndplates.find((u) => u.side === "down")!;
+    // Main 1 alone, so the outermost drawn lanes are 0 and 0.
+    expect(up.lane).toBe(1); // ← was 2 while it inherited the route's gap
+    expect(dn.lane).toBe(-1); // ← was −2
+    expect(f.laneMax).toBe(1);
+    expect(f.laneMin).toBe(-1);
+  });
+
+  it("a branch ROUTE still keeps its clear lane, and stacks after it (#183/#367)", () => {
+    const LANE_GAP = 2; // one empty lane, then the route
+    // The other half: dropping the gap for plates must not drop it for routes.
+    // Two routes on one side share ONE gap from the mains and then sit adjacent
+    // — the clear lane is from the MAINS, not from each other.
+    const doc = stateToDoc(
+      {
+        ...emptyEditorState(96),
+        branches: [
+          { label: "R1", pos: 30, side: "up", config: "single" },
+          { label: "R2", pos: 60, side: "up", config: "single" },
+        ],
+      },
+      "M",
+    );
+    doc.tracks.push(
+      { id: "br1", lane: 2, role: "branch", fromPos: 30, toPos: 30, path: [{ x: 30, y: 0 }, { x: 30, y: 12 }] },
+      { id: "br2", lane: 3, role: "branch", fromPos: 60, toPos: 60, path: [{ x: 60, y: 0 }, { x: 60, y: 12 }] },
+    );
+    doc.endplates.find((e) => e.id === "C")!.trackId = "br1";
+    doc.endplates.find((e) => e.id === "D")!.trackId = "br2";
+    const f = moduleFeatures(doc);
+    expect(f.unreachedEndplates).toEqual([]);
+    const lanes = f.branchConnectors.map((b) => b.lane).sort((a, b) => a - b);
+    // ⚠️ The branch TRACKS' own lanes are not drawn lanes — they are drawn as
+    // connectors, so they are excluded from the base extents. The outermost
+    // DRAWN lane here is Main 1 at 0, which is what the gap is measured from.
+    expect(lanes[0]).toBe(0 + LANE_GAP); // a clear lane from the mains
+    expect(lanes[1] - lanes[0]).toBe(1); // …and adjacent to each other
+  });
+
   it("a plate naming a track the document does not contain says so (#367)", () => {
     // Different from "no track named": this document has LOST a track, and an
     // owner should be told the difference.
