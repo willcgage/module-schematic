@@ -1851,6 +1851,103 @@ describe("crossings and branch endplates (#170)", () => {
     expect(moduleFeatures(doc).branchConnectors).toEqual([]);
   });
 
+  // ── #367 — a third endplate that nothing runs to is still an endplate ──────
+  // The test above is the OTHER half of this and still stands: no route is
+  // invented, so no connector arrow appears (#170). What was wrong was that the
+  // plate then appeared NOWHERE — FMN-0012 declares C and D and its page read
+  // "ENDPLATES 4" beside a picture of two.
+
+  it("a placed-but-unconnected branch endplate IS reported as unreached (#367)", () => {
+    const doc = stateToDoc(
+      { ...emptyEditorState(96), branches: [{ label: "Jct", pos: 40, side: "up", config: "single" }] },
+      "M",
+    );
+    const f = moduleFeatures(doc);
+    // Still no route — that half is #170's call and must not change.
+    expect(f.branchConnectors).toEqual([]);
+    // But the FACE is now reported, at its own position, with the reason.
+    expect(f.unreachedEndplates).toHaveLength(1);
+    const u = f.unreachedEndplates[0];
+    expect(u.id).toBe("C");
+    expect(u.label).toBe("Jct");
+    expect(u.side).toBe("up");
+    expect(u.reason).toBe("no-track");
+    // Its OWN position, not an edge — 40 of 96. A branch connector runs to an
+    // edge because its route says which; with no route, guessing one would be
+    // inventing the missing fact.
+    expect(u.posFrac).toBeCloseTo(40 / 96, 6);
+  });
+
+  it("an unreached plate's lane is inside laneMin/laneMax, so it can be drawn (#367)", () => {
+    // A renderer sizes its canvas from the extents alone. A plate reported at a
+    // lane outside them would be clipped — reported and still invisible, which
+    // is the bug wearing a different hat.
+    const up = moduleFeatures(
+      stateToDoc(
+        { ...emptyEditorState(96), branches: [{ label: "Up", pos: 40, side: "up", config: "single" }] },
+        "M",
+      ),
+    );
+    expect(up.unreachedEndplates[0].lane).toBeGreaterThan(0);
+    expect(up.laneMax).toBeGreaterThanOrEqual(up.unreachedEndplates[0].lane);
+
+    const down = moduleFeatures(
+      stateToDoc(
+        { ...emptyEditorState(96), branches: [{ label: "Dn", pos: 40, side: "down", config: "single" }] },
+        "M",
+      ),
+    );
+    expect(down.unreachedEndplates[0].lane).toBeLessThan(0);
+    expect(down.laneMin).toBeLessThanOrEqual(down.unreachedEndplates[0].lane);
+  });
+
+  it("a plate naming a track the document does not contain says so (#367)", () => {
+    // Different from "no track named": this document has LOST a track, and an
+    // owner should be told the difference.
+    const doc = stateToDoc(
+      { ...emptyEditorState(96), branches: [{ label: "Jct", pos: 40, side: "up", config: "single" }] },
+      "M",
+    );
+    const c = doc.endplates.find((e) => e.id === "C")!;
+    c.trackId = "a-track-that-is-not-here";
+    const f = moduleFeatures(doc);
+    expect(f.branchConnectors).toEqual([]);
+    expect(f.unreachedEndplates.map((u) => u.reason)).toEqual(["missing-track"]);
+  });
+
+  it("a plate a route DOES reach is a connector and is NOT also unreached (#367)", () => {
+    // The two lists partition the third endplates — a plate counted in both
+    // would be drawn twice, once with a route and once without.
+    let s0 = emptyEditorState(96);
+    s0 = { ...s0, branches: [{ label: "Jct", pos: 40, side: "up", config: "single" }] };
+    const doc = stateToDoc(s0, "M");
+    doc.tracks.push({ id: "branch1", lane: 2, role: "branch", fromPos: 40, toPos: 40, path: [{ x: 40, y: 0 }, { x: 40, y: 12 }] });
+    doc.endplates.find((e) => e.id === "C")!.trackId = "branch1";
+    const f = moduleFeatures(doc);
+    expect(f.branchConnectors.map((b) => b.id)).toEqual(["C"]);
+    expect(f.unreachedEndplates).toEqual([]);
+  });
+
+  it("a reached and an unreached plate on the same side do not share a lane (#367)", () => {
+    // Both draw from the same running counter; if they didn't, two plates would
+    // land on one lane and read as one.
+    let s0 = emptyEditorState(96);
+    s0 = {
+      ...s0,
+      branches: [
+        { label: "Reached", pos: 30, side: "up", config: "single" },
+        { label: "Unreached", pos: 60, side: "up", config: "single" },
+      ],
+    };
+    const doc = stateToDoc(s0, "M");
+    doc.tracks.push({ id: "branch1", lane: 2, role: "branch", fromPos: 30, toPos: 30, path: [{ x: 30, y: 0 }, { x: 30, y: 12 }] });
+    doc.endplates.find((e) => e.id === "C")!.trackId = "branch1";
+    const f = moduleFeatures(doc);
+    expect(f.branchConnectors).toHaveLength(1);
+    expect(f.unreachedEndplates).toHaveLength(1);
+    expect(f.unreachedEndplates[0].lane).not.toBe(f.branchConnectors[0].lane);
+  });
+
   it("docs without crossings or branches are unchanged", () => {
     const doc = stateToDoc(emptyEditorState(96), "M");
     expect(doc.crossings).toBeUndefined();
