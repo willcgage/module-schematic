@@ -35,6 +35,7 @@ import {
   buildTransition,
   buildCrossover,
   divergeSideForHand,
+  turnoutFacing,
   isTransitionTurnout,
   endplateWidthInches,
   FREEMO_ENDPLATE_WIDTH_RECOMMENDED_INCHES,
@@ -2012,6 +2013,49 @@ describe("crossings and branch endplates (#170)", () => {
     const f = moduleFeatures(doc);
     expect(f.crossings).toEqual([]);
     expect(f.branchConnectors).toEqual([]);
+  });
+});
+
+describe("turnoutFacing — the owner's orientation is absolute (#378)", () => {
+  // ⛔ THE BUG THIS PINS: facing used to be `flipped ? -geometric : geometric`,
+  // a negation of a baseline that MOVES. Dragging a turnout past the far end of
+  // the track it opens reversed `sign(far - pos)`, so the part re-oriented
+  // itself and the owner's rotation came to mean the opposite of their choice.
+  // Will, 2026-08-29: "I move it along the track towards the endplate, the
+  // turnout ignores the 180 degree rotate checkbox. It will also change Hand."
+
+  it("is FIXED once the owner states it, wherever the turnout is dragged", () => {
+    // The diverging track ends at 100. Drag the turnout from before it to past
+    // it: the geometry reverses, and the owner's answer must not.
+    for (const pos of [40, 80, 99, 101, 120, 160]) {
+      expect(turnoutFacing({ pos, divergeFarPos: 100, flipped: true })).toBe(-1);
+      // ⚠️  is NOT a statement — it means "never rotated", so it still
+      // derives. Callers across the codebase pass it that way.
+      expect(turnoutFacing({ pos, divergeFarPos: 100, flipped: false })).toBe(
+        pos < 100 ? 1 : -1,
+      );
+    }
+  });
+
+  it("still derives for a turnout nobody has oriented by hand", () => {
+    // Unstated is the ordinary case and keeps the old rule: a turnout faces the
+    // way its diverging route leaves, because that is where the frog is.
+    expect(turnoutFacing({ pos: 40, divergeFarPos: 100 })).toBe(1);
+    expect(turnoutFacing({ pos: 160, divergeFarPos: 100 })).toBe(-1);
+    // …and with nothing to measure, it faces forward rather than guessing.
+    expect(turnoutFacing({ pos: 40 })).toBe(1);
+    expect(turnoutFacing({ pos: 40, divergeFarPos: null })).toBe(1);
+    // A turnout exactly on its track's far end has no direction to read.
+    expect(turnoutFacing({ pos: 100, divergeFarPos: 100 })).toBe(1);
+  });
+
+  it("⛔ the OLD behaviour is gone: stated facing no longer tracks the geometry", () => {
+    // Before, these two differed — flipped negated whichever way the geometry
+    // happened to point, so the same checkbox gave opposite results either side
+    // of the track's far end. That is the defect, stated as a test.
+    const before = turnoutFacing({ pos: 40, divergeFarPos: 100, flipped: true });
+    const after = turnoutFacing({ pos: 160, divergeFarPos: 100, flipped: true });
+    expect(before).toBe(after);
   });
 });
 
