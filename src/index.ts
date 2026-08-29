@@ -5771,7 +5771,9 @@ export function turnoutFacing(input: {
   pos: number;
   /** Where the diverging track ends up, in the same coordinate as `pos`. */
   divergeFarPos?: number | null;
-  flipped?: boolean;
+  /** ⚠️ `null` is the DOCUMENT's way of saying absent and is treated as such —
+   * only a real `true`/`false` is the owner speaking (#379). */
+  flipped?: boolean | null;
 }): 1 | -1 {
   // ⭐⭐ THE OWNER'S STATEMENT IS ABSOLUTE (#378, Will: "Flipped and Hand are
   // absolute unless the owner changes it").
