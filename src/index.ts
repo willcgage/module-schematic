@@ -5771,7 +5771,9 @@ export function turnoutFacing(input: {
   pos: number;
   /** Where the diverging track ends up, in the same coordinate as `pos`. */
   divergeFarPos?: number | null;
-  flipped?: boolean;
+  /** ⚠️ `null` is the DOCUMENT's way of saying absent and is treated as such —
+   * only a real `true`/`false` is the owner speaking (#379). */
+  flipped?: boolean | null;
 }): 1 | -1 {
   // ⭐⭐ THE OWNER'S STATEMENT IS ABSOLUTE (#378, Will: "Flipped and Hand are
   // absolute unless the owner changes it").
@@ -5787,12 +5789,19 @@ export function turnoutFacing(input: {
   // Unstated → the geometric default, which is still the right guess for a
   // turnout nobody has oriented by hand: a turnout faces the way its diverging
   // route leaves, because that is where the frog is.
-  // ⚠️ ONLY `true` PINS. `false` and absent both mean "the owner has not
-  // rotated this", and callers throughout pass `flipped: false` for exactly
-  // that — reading it as an absolute +1 overrode the geometry and broke three
-  // existing tests (piece laying, walking a drawn line, a main that ends at a
-  // turnout). The suite was right: an unticked box is not a statement.
+  // ⚠️ THREE STATES, and the difference is the whole point (#379, Will: "once a
+  // turnout is placed, the Hand, Curved, and Rotate should not arbitrarily
+  // change without them being changed on the form"):
+  //   true    → the owner rotated it. Pinned.
+  //   false   → the owner left it forward. ALSO PINNED — an unticked box on a
+  //             placed turnout is a statement, not an absence.
+  //   absent  → nobody has ever said. Only then may geometry decide.
+  //
+  // ⛔ An earlier attempt made `false` absolute while two call sites still wrote
+  // `flipped: t.flipped ?? false` for "unset"; three tests failed at once. The
+  // coercion is gone, so `false` can now carry its own meaning.
   if (input.flipped === true) return -1;
+  if (input.flipped === false) return 1;
   const far = input.divergeFarPos;
   return typeof far === "number" && Number.isFinite(far)
     ? ((Math.sign(far - input.pos) as 1 | -1 | 0) || 1)
@@ -9833,7 +9842,9 @@ export function docToGraph(
     const facing = turnoutFacing({
       pos: t.pos,
       divergeFarPos,
-      flipped: t.flipped ?? false,
+      // ⚠️ NOT `?? false`: absent means "never stated, derive" while `false`
+      // now means "the owner says forward" (#379). Coercing lost that.
+      flipped: t.flipped,
     });
     const body = part.overallLength!.inches;
     const lead = part.lead?.inches ?? body / 2;

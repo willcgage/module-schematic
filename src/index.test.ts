@@ -2029,11 +2029,12 @@ describe("turnoutFacing — the owner's orientation is absolute (#378)", () => {
     // it: the geometry reverses, and the owner's answer must not.
     for (const pos of [40, 80, 99, 101, 120, 160]) {
       expect(turnoutFacing({ pos, divergeFarPos: 100, flipped: true })).toBe(-1);
-      // ⚠️  is NOT a statement — it means "never rotated", so it still
-      // derives. Callers across the codebase pass it that way.
-      expect(turnoutFacing({ pos, divergeFarPos: 100, flipped: false })).toBe(
-        pos < 100 ? 1 : -1,
-      );
+      // ⭐ `false` IS A STATEMENT TOO (#379) — an unticked box on a placed
+      // turnout says "forward", and is pinned exactly as `true` is. Only an
+      // ABSENT value is an absence, and only that may be derived.
+      expect(turnoutFacing({ pos, divergeFarPos: 100, flipped: false })).toBe(1);
+      // …and an untouched turnout still derives, which is the legacy path.
+      expect(turnoutFacing({ pos, divergeFarPos: 100 })).toBe(pos < 100 ? 1 : -1);
     }
   });
 
