@@ -5773,12 +5773,30 @@ export function turnoutFacing(input: {
   divergeFarPos?: number | null;
   flipped?: boolean;
 }): 1 | -1 {
+  // ⭐⭐ THE OWNER'S STATEMENT IS ABSOLUTE (#378, Will: "Flipped and Hand are
+  // absolute unless the owner changes it").
+  //
+  // ⛔ This used to read `flipped ? -geometric : geometric` — a NEGATION OF A
+  // BASELINE THAT MOVES. Drag a turnout past the far end of the track it opens
+  // and `sign(far - pos)` reverses, so the part silently re-orients itself and
+  // the owner's rotation now means the opposite of what they chose. Will hit it
+  // exactly that way: "I move it along the track towards the endplate, the
+  // turnout ignores the 180 degree rotate checkbox. It will also change Hand."
+  //
+  // Stated → fixed, in host coordinates, whatever the geometry later does.
+  // Unstated → the geometric default, which is still the right guess for a
+  // turnout nobody has oriented by hand: a turnout faces the way its diverging
+  // route leaves, because that is where the frog is.
+  // ⚠️ ONLY `true` PINS. `false` and absent both mean "the owner has not
+  // rotated this", and callers throughout pass `flipped: false` for exactly
+  // that — reading it as an absolute +1 overrode the geometry and broke three
+  // existing tests (piece laying, walking a drawn line, a main that ends at a
+  // turnout). The suite was right: an unticked box is not a statement.
+  if (input.flipped === true) return -1;
   const far = input.divergeFarPos;
-  const geometric =
-    typeof far === "number" && Number.isFinite(far)
-      ? (Math.sign(far - input.pos) as 1 | -1 | 0) || 1
-      : 1;
-  return (input.flipped ? -geometric : geometric) as 1 | -1;
+  return typeof far === "number" && Number.isFinite(far)
+    ? ((Math.sign(far - input.pos) as 1 | -1 | 0) || 1)
+    : 1;
 }
 
 /**
