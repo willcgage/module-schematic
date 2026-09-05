@@ -14,7 +14,53 @@
  */
 
 export type TrackConfig = "single" | "double";
-export type TrackRole = "main" | "siding" | "spur" | "yard" | "crossover" | "branch";
+/**
+ * What a track IS, which is not the same as what shape it happens to be.
+ *
+ * ⭐⭐ `house` ADDED 2026-09-03 (#417). Will: *"that is strange to call it a
+ * siding technically."* A **siding** is a PASSING track — both ends on the main,
+ * there so one train can clear another. A **spur** is a stub for setting cars
+ * out. A **house track** is the track alongside a freight house or depot that an
+ * industry loads from: it is not a passing track and it is not merely a stub,
+ * and owners were forced to call it one or the other.
+ *
+ * ⚠️ PURELY ADDITIVE. Nothing already stored changes meaning, no module is
+ * re-roled, and the package branches on `main` and `crossover` only — every
+ * other role is carried through as a label. The one place the distinction bites
+ * is how a track meets the main, and that now has ONE answer:
+ * {@link drawsFromOneEnd}.
+ */
+export type TrackRole =
+  | "main"
+  | "siding"
+  | "spur"
+  | "house"
+  | "yard"
+  | "crossover"
+  | "branch";
+
+/**
+ * Does this track meet the main at ONE end (a throat and a stub), rather than at
+ * both?
+ *
+ * ⭐⭐ ONE DEFINITION, THREE RENDERERS. This was `const isSpur = t.role === "spur"`
+ * written out separately in MR's `physical-track`, MR's `schematic-preview` and
+ * FD's `OperationsSchematic` — three copies of one fact, which is the exact
+ * shape of every drawing defect found in this codebase over the preceding week.
+ * Adding a role without collapsing them would have made all three disagree the
+ * moment someone used it.
+ *
+ * ⚠️ ROLE-BASED, DELIBERATELY, because that is what the three copies did and
+ * this must not silently redraw anything already stored. A spur with two
+ * turnouts still draws from one end, exactly as before; that oddity is
+ * pre-existing and is not made worse here.
+ *
+ * `throatFrac`/`stubFrac` are computed for every track regardless — only whether
+ * a renderer *uses* them is in question, which is what this answers.
+ */
+export function drawsFromOneEnd(role: TrackRole | string | null | undefined): boolean {
+  return role === "spur" || role === "house";
+}
 export type TurnoutKind = "left" | "right" | "wye";
 export type SignalFacing = "AtoB" | "BtoA";
 export type SignalSide = "above" | "below";
