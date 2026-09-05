@@ -793,11 +793,20 @@ export interface SectionFootprint {
  * any position**.
  *
  * ⛔ SO DO NOT REACH FOR `checkEndplateWidth` — OR ANY §1.1/§2.0 RULE — HERE.
- * Nothing does today, and that is deliberate rather than an oversight waiting
- * to be corrected. A joint that gets "validated" would report a perfectly
- * conforming module as non-conforming, and the owner would be right and the app
- * wrong. If a future check needs to know about joints, it is to DRAW them
- * differently, not to hold them to an interface standard.
+ * A joint that gets "validated" would report a perfectly conforming module as
+ * non-conforming, and the owner would be right and the app wrong. If a check
+ * needs to know about joints, it is to DRAW them differently, not to hold them
+ * to an interface standard.
+ *
+ * ⛔⛔ THIS SAID "NOTHING DOES TODAY" FOR MONTHS AND IT WAS NOT TRUE (2026-09-05).
+ * MR's endplate inspector offered EVERY edge of EVERY section as somewhere to
+ * bind a plate, so binding one to an internal seam ran `checkEndplateWidth` on
+ * that joint and printed "the standard requires at least 12″" in amber — the
+ * exact outcome this note forbids, reached through a path nobody thought of as
+ * validating a joint. Fixed in MR web v0.133.11 by NAMING seam edges
+ * ({@link sectionEdgeSeams}) and framing the figures as the condition for a
+ * section standing alone. ⭐ A prohibition written in a comment is not a
+ * mechanism: the offer list was the hole, and nothing here could see it.
  *
  * ⚠️ The mirror of this is [[mid-module-spacing-not-governed]]: §2.0 binds
  * 1.125″ AT THE ENDPLATE only, so a mid-module pinch is not a violation either.
@@ -2312,6 +2321,98 @@ export function sectionAdjacency(
           b: footprints[j].id,
           lengthInches: Math.round(total * 1000) / 1000,
         });
+    }
+  }
+  return out;
+}
+
+export interface SectionEdgeSeam {
+  /** The section this edge belongs to. */
+  sectionId: string;
+  /** Index of the edge in that section's own outline — the same index space
+   * `EndplateEdge.index` uses, so a caller can key a UI control off it. */
+  edgeIndex: number;
+  /** The section on the other side of the seam. */
+  otherSectionId: string;
+  /** Length of the shared run, in inches. */
+  inches: number;
+  /** How much of THIS edge the seam covers, 0..1.
+   *
+   * ⚠️ DELIBERATELY ASYMMETRIC. Where a narrow peninsula meets the long edge of
+   * a band, the peninsula's edge is entirely a seam while the band's is a seam
+   * for a fraction of its run — and an endplate can still legitimately sit on
+   * the part of the band's edge that faces open air. One number cannot describe
+   * both sides, so each edge reports its own. */
+  fraction: number;
+}
+
+/**
+ * Which INDIVIDUAL EDGES are internal seams, rather than which sections meet.
+ *
+ * {@link sectionAdjacency} answers "do these two boards touch, and over how
+ * much" — a pair-level total, summed over every edge. That is the right answer
+ * for connectivity ({@link sectionComponents}) and the wrong one for a UI that
+ * has to say *this edge is a joint*: the endplate binding control offers edges
+ * by index and needs to know which of them face another board.
+ *
+ * ⛔ MR HAD A SECOND COPY OF THIS GEOMETRY AND IT DID NOT AGREE. `sectionSeams`
+ * in modulerepo re-derived the same collinear-overlap test with its own
+ * tolerances (0.1″ gap, 0.5″ minimum) while this file used 0.5″ and 1″, so on
+ * one screen the Sections panel could say "Meets section 2" while the edge list
+ * declined to mark the seam. Same question, two answers — the trap this repo
+ * keeps falling into. It lives here now, on `sharedEdgeLength`, so the two
+ * readings cannot drift apart again.
+ *
+ * ⚠️ CURVED EDGES ARE SKIPPED. An edge whose start vertex carries a `bulge`
+ * bows away from its chord, so testing the chord would call two edges
+ * coincident that are up to the bulge apart at their middles. An endplate face
+ * must be straight anyway, so such an edge is not bindable and saying nothing
+ * is honest where the alternative is a guess. (`sectionAdjacency` does test
+ * chords — for "do these boards touch at all" that is the useful reading, and
+ * this is the one place the two deliberately differ.)
+ */
+export function sectionEdgeSeams(
+  sections: readonly {
+    id: string;
+    outline?: { x: number; y: number; bulge?: number }[] | null;
+  }[],
+  opts?: { gapInches?: number; angleDegrees?: number; minOverlapInches?: number },
+): SectionEdgeSeam[] {
+  const gap = opts?.gapInches ?? 0.5;
+  const angle = opts?.angleDegrees ?? 3;
+  const min = opts?.minOverlapInches ?? 1;
+  const shaped = sections.filter((s) => (s.outline?.length ?? 0) >= 3);
+  const out: SectionEdgeSeam[] = [];
+
+  for (const a of shaped) {
+    const ao = a.outline!;
+    for (let i = 0; i < ao.length; i++) {
+      if (ao[i].bulge) continue; // bows away from its chord
+      const e1: [{ x: number; y: number }, { x: number; y: number }] = [
+        ao[i],
+        ao[(i + 1) % ao.length],
+      ];
+      const len = Math.hypot(e1[1].x - e1[0].x, e1[1].y - e1[0].y);
+      if (len < 1e-9) continue; // no length, so no direction to compare
+      let best: SectionEdgeSeam | null = null;
+      for (const b of shaped) {
+        if (b.id === a.id) continue;
+        const bo = b.outline!;
+        for (let j = 0; j < bo.length; j++) {
+          if (bo[j].bulge) continue;
+          const inches = sharedEdgeLength(e1, [bo[j], bo[(j + 1) % bo.length]], gap, angle);
+          if (inches < min) continue;
+          if (!best || inches > best.inches)
+            best = {
+              sectionId: a.id,
+              edgeIndex: i,
+              otherSectionId: b.id,
+              inches: Math.round(inches * 1000) / 1000,
+              fraction: Math.min(1, inches / len),
+            };
+        }
+      }
+      if (best) out.push(best);
     }
   }
   return out;
