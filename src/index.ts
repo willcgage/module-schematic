@@ -2418,6 +2418,127 @@ export function sectionEdgeSeams(
   return out;
 }
 
+export interface SectionSpineEscape {
+  sectionId: string;
+  /** The farthest the centre-line strays outside this board, in inches. */
+  outsideByInches: number;
+  /** Roughly how much of this board's own centre-line is off the board, 0..1. */
+  fraction: number;
+}
+
+/**
+ * Boards whose OWN CENTRE-LINE runs off them (modulerepo#437).
+ *
+ * A section's shape and its geometry are two descriptions of one board, and
+ * nothing makes them agree: the outline is drawn as authored while the spine is
+ * chained from `geometryType`/`geometryDegrees`. Change a shaped board's Shape
+ * to a corner and the outline stays the rectangle it was drawn as while the
+ * spine turns 90° out of it — the track visibly leaves the benchwork, and the
+ * owner is given no clue which of the two the app believes.
+ *
+ * ⛔⛔ THIS REPORTS; IT MUST NOT REPAIR. Will, deciding #351: *"Do not derive
+ * benchwork. You can help an owner build, but don't make a decision on your
+ * own."* Re-deriving the outline would silently throw away a shape somebody
+ * drew, and the board is the thing they actually cut and screwed together. The
+ * caller's job is to say so and offer a one-click reshape — see
+ * [[flagged-never-corrected]].
+ *
+ * ⭐ DERIVED OUTLINES ARE SKIPPED, and not as an optimisation: a derived board
+ * is BUILT from the spine, so it cannot escape it, and anything this reported
+ * there would be a numerical artefact rather than a fact about a module.
+ *
+ * ⚠️ The tolerance is not decoration. A section's spine slice STARTS AND ENDS
+ * exactly on the board's boundary — that is what a seam is — so a zero
+ * tolerance would call every board in the catalogue an escape.
+ */
+export function sectionSpineEscapes(
+  spine: BenchworkPoint[],
+  sections: readonly {
+    id: string;
+    outline?: { x: number; y: number }[] | null;
+    derived?: boolean;
+  }[],
+  spans: readonly { id: string; fromPos: number; toPos: number }[],
+  opts?: { toleranceInches?: number; stepInches?: number },
+): SectionSpineEscape[] {
+  const tol = opts?.toleranceInches ?? 0.5;
+  const step = opts?.stepInches ?? 1;
+  const out: SectionSpineEscape[] = [];
+  if (spine.length < 2) return out;
+
+  for (const sec of sections) {
+    if (sec.derived) continue; // built from the spine; cannot leave it
+    const poly = sec.outline;
+    if (!poly || poly.length < 3) continue;
+    const span = spans.find((x) => x.id === sec.id);
+    if (!span) continue;
+
+    const slice = sliceCenterline(spine, span.fromPos, span.toPos);
+    if (slice.length < 2) continue;
+
+    let worst = 0;
+    let off = 0;
+    let n = 0;
+    for (let i = 0; i < slice.length - 1; i++) {
+      const a = slice[i];
+      const b = slice[i + 1];
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      const steps = Math.max(1, Math.ceil(len / step));
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps;
+        const px = a.x + (b.x - a.x) * t;
+        const py = a.y + (b.y - a.y) * t;
+        n++;
+        if (pointInRing(px, py, poly)) continue;
+        const d = distanceToRing(px, py, poly);
+        if (d > tol) {
+          off++;
+          if (d > worst) worst = d;
+        }
+      }
+    }
+    if (worst > 0)
+      out.push({
+        sectionId: sec.id,
+        outsideByInches: Math.round(worst * 100) / 100,
+        fraction: n ? off / n : 0,
+      });
+  }
+  return out;
+}
+
+/** Ray casting — is (px,py) inside the closed ring? Boundary is undefined and
+ * deliberately so; callers use a tolerance rather than trusting the edge. */
+function pointInRing(px: number, py: number, ring: { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i].x;
+    const yi = ring[i].y;
+    const xj = ring[j].x;
+    const yj = ring[j].y;
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Shortest distance from a point to a closed ring's boundary. */
+function distanceToRing(px: number, py: number, ring: { x: number; y: number }[]): number {
+  let best = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const ax = ring[j].x;
+    const ay = ring[j].y;
+    const bx = ring[i].x;
+    const by = ring[i].y;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const l2 = dx * dx + dy * dy;
+    const t = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+    const d = Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 /** The sections each one touches. */
 export function sectionNeighbours(id: string, adj: SectionAdjacency[]): string[] {
   return adj.filter((x) => x.a === id || x.b === id).map((x) => (x.a === id ? x.b : x.a));
