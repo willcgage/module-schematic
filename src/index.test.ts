@@ -19,6 +19,7 @@ import {
   remapPos,
   WHOLE_MODULE_SECTION_ID,
   sectionAdjacency,
+  sectionEdgeSeams,
   sectionJointSkewDeg,
   sectionNeighbours,
   sectionComponents,
@@ -3862,6 +3863,62 @@ describe("section adjacency from shared edges (#96 phase 2c)", () => {
     expect(adj.find((x) => x.b === "peninsula")!.lengthInches).toBeCloseTo(20);
     // …and it is NOT a neighbour of the board next to it in the list.
     expect(sectionNeighbours("next", adj)).toEqual(["band"]);
+  });
+
+  it("names the INDIVIDUAL EDGES that are seams, from both sides (#96)", () => {
+    // Blairstown's real shape: a 96 x 24 board split at x=48.
+    const seams = sectionEdgeSeams([rect("sec1", 0, 48, -12, 12), rect("sec2", 48, 96, -12, 12)]);
+    // Exactly two edges, one per side of the one joint.
+    expect(seams).toHaveLength(2);
+    const a = seams.find((s) => s.sectionId === "sec1")!;
+    const b = seams.find((s) => s.sectionId === "sec2")!;
+    expect(a.edgeIndex).toBe(1); // (48,-12) -> (48,12)
+    expect(b.edgeIndex).toBe(3);
+    expect(a.otherSectionId).toBe("sec2");
+    expect(a.inches).toBeCloseTo(24);
+    expect(a.fraction).toBeCloseTo(1);
+  });
+
+  it("leaves the module's REAL ends alone — it discriminates", () => {
+    const seams = sectionEdgeSeams([rect("sec1", 0, 48, -12, 12), rect("sec2", 48, 96, -12, 12)]);
+    const keys = seams.map((s) => `${s.sectionId}:${s.edgeIndex}`);
+    // The two genuine endplate edges, and the four long sides, are NOT seams.
+    for (const k of ["sec1:3", "sec2:1", "sec1:0", "sec1:2", "sec2:0", "sec2:2"])
+      expect(keys).not.toContain(k);
+  });
+
+  it("reports the peninsula's fraction ASYMMETRICALLY", () => {
+    // The peninsula's edge is entirely a joint; the band's is a joint for 20
+    // of its 96 inches, and an endplate on the rest of that edge is fine.
+    const seams = sectionEdgeSeams([rect("band", 0, 96, -12, 12), rect("peninsula", 40, 60, 12, 60)]);
+    const band = seams.find((s) => s.sectionId === "band")!;
+    const pen = seams.find((s) => s.sectionId === "peninsula")!;
+    expect(band.inches).toBeCloseTo(20);
+    expect(band.fraction).toBeCloseTo(20 / 96);
+    expect(pen.fraction).toBeCloseTo(1);
+  });
+
+  it("AGREES WITH sectionAdjacency — one geometry, not two", () => {
+    // ⛔ The reason this lives in the package: MR had its own copy with a 0.1"
+    // gap where this file uses 0.5", so boards drawn a third of an inch apart
+    // were "meeting" in one panel and not seamed in the other, on one screen.
+    const boards = [rect("a", 0, 48, -12, 12), rect("b", 48.3, 96, -12, 12)];
+    expect(sectionAdjacency(boards)).toHaveLength(1); // they meet
+    expect(sectionEdgeSeams(boards).length).toBeGreaterThan(0); // …and the edge says so
+    const apart = [rect("a", 0, 48, -12, 12), rect("b", 50, 96, -12, 12)];
+    expect(sectionAdjacency(apart)).toEqual([]);
+    expect(sectionEdgeSeams(apart)).toEqual([]);
+  });
+
+  it("skips a CURVED edge rather than testing its chord — from BOTH sides", () => {
+    const a = rect("a", 0, 48, -12, 12);
+    (a.outline[1] as { bulge?: number }).bulge = 3; // the edge at x=48 bows
+    // ⭐ NEITHER side reports a seam, and that is the point. B's edge there is
+    // straight, but the only thing it could be compared against is A's CHORD —
+    // and A bows up to 3″ away from that chord, so "these two run together"
+    // would be a guess. A straight edge facing a curved one is not a seam this
+    // function is willing to assert.
+    expect(sectionEdgeSeams([a, rect("b", 48, 96, -12, 12)])).toEqual([]);
   });
 
   it("ignores boards that only touch at a corner, or not at all", () => {
