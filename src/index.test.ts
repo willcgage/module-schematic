@@ -160,6 +160,7 @@ import {
   turnoutOccupiedSpan,
   type ConversionAnswers,
   type SchematicTurnout,
+  drawsFromOneEnd,
 } from "./index";
 
 /** Round to hundredths for readable span/length assertions. */
@@ -10248,5 +10249,40 @@ describe("turnoutDivergingLeg", () => {
     const a = leg.points[0], b = leg.railEnd, m = leg.points[8];
     const cross = (b.x - a.x) * (m.y - a.y) - (b.y - a.y) * (m.x - a.x);
     expect(Math.abs(cross)).toBeGreaterThan(1e-6);
+  });
+})
+
+describe("drawsFromOneEnd — one definition for three renderers (#417)", () => {
+  it("is true for the roles that meet the main at a throat", () => {
+    expect(drawsFromOneEnd("spur")).toBe(true);
+    // ⭐ The whole reason `house` was added: a freight-house track is not a
+    // passing siding, and it must draw like the stub it is.
+    expect(drawsFromOneEnd("house")).toBe(true);
+  });
+
+  it("is false for tracks that meet the main at BOTH ends", () => {
+    expect(drawsFromOneEnd("siding")).toBe(false);
+    expect(drawsFromOneEnd("yard")).toBe(false);
+    expect(drawsFromOneEnd("crossover")).toBe(false);
+    expect(drawsFromOneEnd("branch")).toBe(false);
+    expect(drawsFromOneEnd("main")).toBe(false);
+  });
+
+  it("says false for a role it has never heard of, rather than guessing", () => {
+    // ⚠️ A renderer asking about an unknown role must not get "draw it as a
+    // stub" — the two-ended body is the safe answer, and it is what every
+    // caller did before this function existed.
+    expect(drawsFromOneEnd(undefined)).toBe(false);
+    expect(drawsFromOneEnd(null)).toBe(false);
+    expect(drawsFromOneEnd("something-new")).toBe(false);
+  });
+
+  it("MATCHES WHAT THE THREE RENDERERS DID BEFORE IT, for every role that already existed", () => {
+    // The predicate they each carried was literally `role === "spur"`. Anything
+    // else here would silently redraw stored modules, which is the one thing
+    // this change must not do.
+    for (const role of ["main", "siding", "spur", "yard", "crossover", "branch"] as const) {
+      expect(drawsFromOneEnd(role)).toBe(role === "spur");
+    }
   });
 })
