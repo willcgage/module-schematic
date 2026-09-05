@@ -11448,7 +11448,25 @@ export function moduleFeatures(doc: ModuleSchematicDoc): ModuleFeatures {
         fromFrac: clampFrac(Math.min(from, to)),
         toFrac: clampFrac(Math.max(from, to)),
         lane: trackLane.get(sp.track) ?? 0,
-        side: (sp.side as SignalSide) ?? "above",
+        /**
+         * ⛔⛔ A SPOT WITH NO SIDE INHERITS ITS INDUSTRY'S, NOT "above".
+         *
+         * This read `sp.side ?? "above"` while MR — which AUTHORS the document
+         * — has always drawn a sideless spot on `sp.side ?? ind.side`. So one
+         * industry could be drawn below its rail in the builder and its own
+         * spot above it in the dispatcher, from the same bytes. Exactly the
+         * two-sided disagreement the endplate-offset framings cost us.
+         *
+         * ⭐ The industry's side is the only meaningful source: a spot belongs
+         * to its industry, and an owner who put the industry below the rail did
+         * not ask for its other track to be above. `"above"` survives as the
+         * last resort for an industry that has no side either.
+         *
+         * ⚠️ ADDITIVE: for `i === 0` this IS the industry, so `sp.side` and
+         * `ind.side` are the same value and nothing changes; and any spot that
+         * carries its own side is untouched. Only a SIDELESS spot moves.
+         */
+        side: (sp.side as SignalSide) ?? (ind.side as SignalSide) ?? "above",
         labelMode: (ind.labelMode as IndustryLabelMode) ?? "none",
         cars: sp.cars ?? null,
         carTypes: Array.isArray(ind.carTypes) ? ind.carTypes : [],
