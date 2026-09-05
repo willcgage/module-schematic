@@ -20,6 +20,8 @@ import {
   WHOLE_MODULE_SECTION_ID,
   sectionAdjacency,
   sectionEdgeSeams,
+  sectionSpineEscapes,
+  sectionSpans,
   sectionJointSkewDeg,
   sectionNeighbours,
   sectionComponents,
@@ -3919,6 +3921,65 @@ describe("section adjacency from shared edges (#96 phase 2c)", () => {
     // would be a guess. A straight edge facing a curved one is not a seam this
     // function is willing to assert.
     expect(sectionEdgeSeams([a, rect("b", 48, 96, -12, 12)])).toEqual([]);
+  });
+
+  describe("a board whose own centre-line runs off it (modulerepo#437)", () => {
+    const doc = (shape: string, outline: { x: number; y: number }[]) => ({
+      lengthInches: 24,
+      sections: [
+        {
+          id: "sec1",
+          lengthInches: 24,
+          geometryType: shape,
+          ...(shape === "straight" ? {} : { geometryDegrees: 90 }),
+          outline,
+        },
+      ],
+    });
+    const rect24 = [
+      { x: 0, y: 12 },
+      { x: 24, y: 12 },
+      { x: 24, y: -12 },
+      { x: 0, y: -12 },
+    ];
+    const run = (d: ReturnType<typeof doc>) => {
+      const fp = moduleFootprint(d as never);
+      return sectionSpineEscapes(
+        fp.spine,
+        (d.sections as { id: string; outline: { x: number; y: number }[] }[]).map((x) => ({
+          ...x,
+          derived: false,
+        })),
+        sectionSpans(d as never),
+      );
+    };
+
+    it("⭐ THE CONTROL: a straight board drawn as a rectangle is NOT flagged", () => {
+      // Without this the check is worthless — it has to be able to say "fine".
+      expect(run(doc("straight", rect24))).toEqual([]);
+    });
+
+    it("flags a rectangle whose Shape was changed to a 90° corner", () => {
+      const esc = run(doc("corner_90", rect24));
+      expect(esc).toHaveLength(1);
+      expect(esc[0].sectionId).toBe("sec1");
+      // The spine turns out through the long side it was drawn inside of.
+      expect(esc[0].outsideByInches).toBeGreaterThan(1);
+    });
+
+    it("says nothing about a DERIVED board — it is built from the spine", () => {
+      const d = doc("corner_90", rect24);
+      const fp = moduleFootprint(d as never);
+      const derived = [{ id: "sec1", outline: rect24, derived: true }];
+      expect(sectionSpineEscapes(fp.spine, derived, sectionSpans(d as never))).toEqual([]);
+    });
+
+    it("tolerates the seam, where the spine sits exactly ON the boundary", () => {
+      // A slice starts and ends on the board's own edge by definition, so a
+      // zero tolerance would flag every board there is.
+      expect(run(doc("straight", rect24))).toEqual([]);
+      expect(sectionSpineEscapes([], [], [])).toEqual([]);
+    });
   });
 
   it("ignores boards that only touch at a corner, or not at all", () => {
