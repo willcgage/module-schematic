@@ -242,6 +242,66 @@ describe("moduleFeatures", () => {
     expect(f.signals[1]).toMatchObject({ name: "East Siding", facing: "BtoA", side: "below", cp: "cpE" });
   });
 
+  describe("a spot's side (modulerepo#421)", () => {
+    /** One industry BELOW its rail, with two spots: one that states a side and
+     *  one that does not. MR draws the sideless one on `sp.side ?? ind.side`. */
+    const withSpots = {
+      ...oneMile,
+      industries: [
+        {
+          id: "ind1", name: "Ace Feed", track: "sid",
+          fromPos: 60, toPos: 120, side: "below" as const, cars: 3,
+          spots: [
+            { track: "main", fromPos: 140, toPos: 180, cars: 2, side: "above" as const },
+            { track: "main", fromPos: 200, toPos: 240, cars: 1 }, // no side
+          ],
+        },
+      ],
+    };
+    const sides = () => moduleFeatures(withSpots).industries.map((i) => i.side);
+
+    it("INHERITS the industry's side when the spot does not state one", () => {
+      // ⛔ This read `?? "above"`, so a sideless spot came out ABOVE while MR
+      // drew it BELOW from the same bytes — one document, two answers.
+      expect(sides()).toEqual(["below", "above", "below"]);
+      //                        ^industry ^stated  ^inherited, was "above"
+    });
+
+    it("LEAVES A SPOT THAT STATES ITS OWN SIDE ALONE", () => {
+      expect(moduleFeatures(withSpots).industries[1]).toMatchObject({ side: "above" });
+    });
+
+    it("still falls back to \"above\" when the industry has no side either", () => {
+      const noSide = {
+        ...oneMile,
+        industries: [
+          { id: "i2", name: "Nowhere", track: "sid", fromPos: 60, toPos: 120,
+            spots: [{ track: "main", fromPos: 140, toPos: 180 }] },
+        ],
+      };
+      expect(moduleFeatures(noSide).industries.map((i) => i.side)).toEqual(["above", "above"]);
+    });
+
+    it("MATCHES WHAT MR DRAWS, for every combination that already existed", () => {
+      // MR's rule, copied from its canvas builder: `sp.side ?? ind.side`.
+      const mr = (spotSide?: "above" | "below", indSide?: "above" | "below") =>
+        spotSide ?? indSide ?? "above";
+      for (const indSide of ["above", "below", undefined] as const)
+        for (const spotSide of ["above", "below", undefined] as const) {
+          const doc = {
+            ...oneMile,
+            industries: [
+              { id: "x", name: "X", track: "sid", fromPos: 60, toPos: 120,
+                ...(indSide ? { side: indSide } : {}),
+                spots: [{ track: "main", fromPos: 140, toPos: 180,
+                  ...(spotSide ? { side: spotSide } : {}) }] },
+            ],
+          };
+          expect(moduleFeatures(doc).industries[1].side).toBe(mr(spotSide, indSide));
+        }
+    });
+  });
+
   it("reports a double main from the endplate config", () => {
     const dbl = { ...oneMile, endplates: [
       { id: "A", tracks: [{ trackId: "main", lane: 0, config: "double" as const }] },
